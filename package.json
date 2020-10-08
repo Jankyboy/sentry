@@ -99,7 +99,7 @@
     "po-catalog-loader": "2.0.0",
     "prismjs": "^1.21.0",
     "prop-types": "^15.6.0",
-    "query-string": "6.6.0",
+    "query-string": "6.13.2",
     "react": "16.12.0",
     "react-autosize-textarea": "7.1.0",
     "react-bootstrap": "^0.32.0",
