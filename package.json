@@ -63,7 +63,7 @@
     "color": "^3.1.0",
     "compression-webpack-plugin": "3.1.0",
     "core-js": "^3.2.1",
-    "create-react-class": "^15.6.2",
+    "create-react-class": "^15.7.0",
     "crypto-js": "4.0.0",
     "css-loader": "^2.0.1",
     "diff": "4.0.2",
