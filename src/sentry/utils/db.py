@@ -1,10 +1,34 @@
-from __future__ import absolute_import
-
-import six
-
-from django.db import connections, DEFAULT_DB_ALIAS
-
+import sentry_sdk
+from django.db import DEFAULT_DB_ALIAS, connections
 from django.db.models.fields.related_descriptors import ReverseOneToOneDescriptor
+from sentry_sdk.integrations import Integration
+
+
+class DjangoAtomicIntegration(Integration):
+    identifier = "django_atomic"
+
+    @staticmethod
+    def setup_once():
+        from django.db.transaction import Atomic
+
+        original_enter = Atomic.__enter__
+        original_exit = Atomic.__exit__
+
+        def _enter(self):
+            self._sentry_sdk_span = sentry_sdk.start_span(op="transaction.atomic")
+            self._sentry_sdk_span.set_data("using", self.using)
+            self._sentry_sdk_span.__enter__()
+            return original_enter(self)
+
+        def _exit(self, exc_type, exc_value, traceback):
+            rv = original_exit(self, exc_type, exc_value, traceback)
+            if hasattr(self, "_sentry_sdk_span"):
+                self._sentry_sdk_span.__exit__(exc_type, exc_value, traceback)
+                del self._sentry_sdk_span
+            return rv
+
+        Atomic.__enter__ = _enter
+        Atomic.__exit__ = _exit
 
 
 def attach_foreignkey(objects, field, related=(), database=None):
@@ -27,7 +51,7 @@ def attach_foreignkey(objects, field, related=(), database=None):
     if not is_foreignkey:
         field = field.field
         accessor = "_%s_cache" % field.name
-        model = field.rel.to
+        model = field.remote_field.model
         lookup = "pk"
         column = field.column
         key = lookup
@@ -46,7 +70,7 @@ def attach_foreignkey(objects, field, related=(), database=None):
 
     # Ensure values are unique, do not contain already present values, and are not missing
     # values specified in select_related
-    values = set([_f for _f in (getattr(o, column) for o in objects) if _f])
+    values = {_f for _f in (getattr(o, column) for o in objects) if _f}
     if values:
         qs = model._default_manager
         if database:
@@ -57,9 +81,9 @@ def attach_foreignkey(objects, field, related=(), database=None):
         if len(values) > 1:
             qs = qs.filter(**{"%s__in" % lookup: values})
         else:
-            qs = [qs.get(**{lookup: six.next(iter(values))})]
+            qs = [qs.get(**{lookup: next(iter(values))})]
 
-        queryset = dict((getattr(o, key), o) for o in qs)
+        queryset = {getattr(o, key): o for o in qs}
     else:
         queryset = {}
 

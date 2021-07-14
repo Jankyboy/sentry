@@ -1,21 +1,72 @@
-from __future__ import absolute_import
-
+from typing import Optional
 from warnings import warn
 
-from sentry.utils.strings import truncatechars, strip
 from sentry.utils.safe import get_path
+from sentry.utils.strings import strip, truncatechars
 
 # Note: Detecting eventtypes is implemented in the Relay Rust library.
 
 
-class BaseEvent(object):
+def format_title_from_tree_label(tree_label):
+    parts = []
+
+    for x in tree_label:
+        if isinstance(x, str):
+            # XXX(markus): Legacy codepath, should be unnecessary 90d after
+            # 2021-06-09. Same for frontend version.
+            part = x
+        else:
+            part = x.get("function") or x.get("package") or x.get("type")
+
+        parts.append(part or "<unknown>")
+
+    return " | ".join(parts)
+
+
+def compute_title_with_tree_label(title: Optional[str], metadata: dict):
+    tree_label = None
+    if metadata.get("current_tree_label"):
+        tree_label = format_title_from_tree_label(metadata["current_tree_label"])
+
+    elif metadata.get("finest_tree_label"):
+        tree_label = format_title_from_tree_label(metadata["finest_tree_label"])
+
+    if title is None:
+        # Probably a synthetic exception
+        return tree_label or metadata.get("function") or "<unknown>"
+
+    if tree_label is not None:
+        title += " | " + tree_label
+
+    return title
+
+
+class BaseEvent:
     id = None
 
     def get_metadata(self, data):
-        raise NotImplementedError
+        metadata = {}
+        title = data.get("title")
+        if title is not None:
+            metadata["title"] = title
+        for key, value in self.extract_metadata(data).items():
+            # If we already have a custom title, do not override with the
+            # computed title.
+            if key not in metadata:
+                metadata[key] = value
+        return metadata
 
     def get_title(self, metadata):
-        raise NotImplementedError
+        title = metadata.get("title")
+        if title is not None:
+            return title
+        return self.compute_title(metadata) or "<untitled>"
+
+    def compute_title(self, metadata):
+        return None
+
+    def extract_metadata(self, metadata):
+        return {}
 
     def get_location(self, metadata):
         return None
@@ -28,7 +79,7 @@ class BaseEvent(object):
 class DefaultEvent(BaseEvent):
     key = "default"
 
-    def get_metadata(self, data):
+    def extract_metadata(self, data):
         message = strip(
             get_path(data, "logentry", "formatted") or get_path(data, "logentry", "message")
         )
@@ -39,6 +90,3 @@ class DefaultEvent(BaseEvent):
             title = "<unlabeled event>"
 
         return {"title": title}
-
-    def get_title(self, metadata):
-        return metadata.get("title") or "<untitled>"

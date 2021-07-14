@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from django.db import transaction
 from rest_framework import serializers
 
@@ -8,7 +6,7 @@ from sentry.api.bases.monitor import MonitorEndpoint
 from sentry.api.fields.empty_integer import EmptyIntegerField
 from sentry.api.paginator import OffsetPaginator
 from sentry.api.serializers import serialize
-from sentry.models import Monitor, MonitorCheckIn, MonitorStatus, CheckInStatus, ProjectKey
+from sentry.models import CheckInStatus, Monitor, MonitorCheckIn, MonitorStatus, ProjectKey
 
 
 class CheckInSerializer(serializers.Serializer):
@@ -75,6 +73,8 @@ class MonitorCheckInsEndpoint(MonitorEndpoint):
             )
             if checkin.status == CheckInStatus.ERROR and monitor.status != MonitorStatus.DISABLED:
                 if not monitor.mark_failed(last_checkin=checkin.date_added):
+                    if isinstance(request.auth, ProjectKey):
+                        return self.respond(status=200)
                     return self.respond(serialize(checkin, request.user), status=200)
             else:
                 monitor_params = {
@@ -86,5 +86,8 @@ class MonitorCheckInsEndpoint(MonitorEndpoint):
                 Monitor.objects.filter(id=monitor.id).exclude(
                     last_checkin__gt=checkin.date_added
                 ).update(**monitor_params)
+
+        if isinstance(request.auth, ProjectKey):
+            return self.respond({"id": str(checkin.guid)}, status=201)
 
         return self.respond(serialize(checkin, request.user), status=201)

@@ -1,13 +1,11 @@
-from __future__ import absolute_import
-
-from sentry.utils.compat import mock
 import os
 from hashlib import md5
 
 from django.conf import settings
 from sentry_sdk import Hub
 
-import six
+from sentry.utils.compat import mock
+from sentry.utils.warnings import UnsupportedBackend
 
 TEST_ROOT = os.path.normpath(
     os.path.join(os.path.dirname(__file__), os.pardir, os.pardir, os.pardir, os.pardir, "tests")
@@ -15,6 +13,15 @@ TEST_ROOT = os.path.normpath(
 
 
 def pytest_configure(config):
+    import warnings
+
+    # This is just to filter out an obvious warning before the pytest session starts.
+    warnings.filterwarnings(
+        action="ignore",
+        message=r".*sentry.digests.backends.dummy.DummyBackend.*",
+        category=UnsupportedBackend,
+    )
+
     # HACK: Only needed for testing!
     os.environ.setdefault("_SENTRY_SKIP_CONFIGURATION", "1")
 
@@ -66,10 +73,10 @@ def pytest_configure(config):
 
     # Replace real sudo middleware with our mock sudo middleware
     # to assert that the user is always in sudo mode
-    middleware = list(settings.MIDDLEWARE_CLASSES)
+    middleware = list(settings.MIDDLEWARE)
     sudo = middleware.index("sentry.middleware.sudo.SudoMiddleware")
     middleware[sudo] = "sentry.testutils.middleware.SudoMiddleware"
-    settings.MIDDLEWARE_CLASSES = tuple(middleware)
+    settings.MIDDLEWARE = tuple(middleware)
 
     settings.SENTRY_OPTIONS["cloudflare.secret-key"] = "cloudflare-secret-key"
 
@@ -81,9 +88,8 @@ def pytest_configure(config):
     settings.SENTRY_TSDB = "sentry.tsdb.inmemory.InMemoryTSDB"
     settings.SENTRY_TSDB_OPTIONS = {}
 
-    if settings.SENTRY_NEWSLETTER == "sentry.newsletter.base.Newsletter":
-        settings.SENTRY_NEWSLETTER = "sentry.newsletter.dummy.DummyNewsletter"
-        settings.SENTRY_NEWSLETTER_OPTIONS = {}
+    settings.SENTRY_NEWSLETTER = "sentry.newsletter.dummy.DummyNewsletter"
+    settings.SENTRY_NEWSLETTER_OPTIONS = {}
 
     settings.BROKER_BACKEND = "memory"
     settings.BROKER_URL = "memory://"
@@ -91,10 +97,9 @@ def pytest_configure(config):
     settings.CELERY_EAGER_PROPAGATES_EXCEPTIONS = True
 
     settings.DEBUG_VIEWS = True
+    settings.SERVE_UPLOADED_FILES = True
 
     settings.SENTRY_ENCRYPTION_SCHEMES = ()
-
-    settings.DISABLE_RAVEN = True
 
     settings.CACHES = {
         "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"},
@@ -109,6 +114,9 @@ def pytest_configure(config):
         settings.SENTRY_TSDB = "sentry.tsdb.redissnuba.RedisSnubaTSDB"
         settings.SENTRY_EVENTSTREAM = "sentry.eventstream.snuba.SnubaEventStream"
 
+    if os.environ.get("DISABLE_TEST_SDK", False):
+        settings.SENTRY_SDK_CONFIG = {}
+
     if not hasattr(settings, "SENTRY_OPTIONS"):
         settings.SENTRY_OPTIONS = {}
 
@@ -117,10 +125,11 @@ def pytest_configure(config):
             "redis.clusters": {"default": {"hosts": {0: {"db": 9}}}},
             "mail.backend": "django.core.mail.backends.locmem.EmailBackend",
             "system.url-prefix": "http://testserver",
+            "system.secret-key": "a" * 52,
             "slack.client-id": "slack-client-id",
             "slack.client-secret": "slack-client-secret",
             "slack.verification-token": "slack-verification-token",
-            "slack.legacy-app": True,
+            "slack.signing-secret": "slack-signing-secret",
             "github-app.name": "sentry-test-app",
             "github-app.client-id": "github-client-id",
             "github-app.client-secret": "github-client-secret",
@@ -132,8 +141,26 @@ def pytest_configure(config):
             "vercel.client-secret": "vercel-client-secret",
             "msteams.client-id": "msteams-client-id",
             "msteams.client-secret": "msteams-client-secret",
+            "aws-lambda.access-key-id": "aws-key-id",
+            "aws-lambda.secret-access-key": "aws-secret-access-key",
+            "aws-lambda.cloudformation-url": "https://example.com/file.json",
+            "aws-lambda.account-number": "1234",
+            "aws-lambda.node.layer-name": "my-layer",
+            "aws-lambda.node.layer-version": "3",
+            "aws-lambda.python.layer-name": "my-python-layer",
+            "aws-lambda.python.layer-version": "34",
         }
     )
+
+    # Plugin-related settings
+    settings.ASANA_CLIENT_ID = "abc"
+    settings.ASANA_CLIENT_SECRET = "123"
+    settings.BITBUCKET_CONSUMER_KEY = "abc"
+    settings.BITBUCKET_CONSUMER_SECRET = "123"
+    settings.GITHUB_APP_ID = "abc"
+    settings.GITHUB_API_SECRET = "123"
+    # this isn't the real secret
+    settings.SENTRY_OPTIONS["github.integration-hook-secret"] = "b3002c3e321d4b7880360d397db2ccfd"
 
     # django mail uses socket.getfqdn which doesn't play nice if our
     # networking isn't stable
@@ -145,31 +172,13 @@ def pytest_configure(config):
         # This is a hack to force django to sync the database state from the models rather than use migrations.
         settings.MIGRATION_MODULES["sentry"] = None
 
-    from sentry.runner.initializer import (
-        bind_cache_to_option_store,
-        bootstrap_options,
-        configure_structlog,
-        initialize_receivers,
-        monkeypatch_model_unpickle,
-        monkeypatch_django_migrations,
-        setup_services,
+    asset_version_patcher = mock.patch(
+        "sentry.runner.initializer.get_asset_version", return_value="{version}"
     )
+    asset_version_patcher.start()
+    from sentry.runner.initializer import initialize_app
 
-    bootstrap_options(settings)
-    configure_structlog()
-
-    monkeypatch_model_unpickle()
-
-    import django
-
-    django.setup()
-
-    monkeypatch_django_migrations()
-
-    bind_cache_to_option_store()
-
-    initialize_receivers()
-    setup_services()
+    initialize_app({"settings": settings, "options": None})
     register_extensions()
 
     from sentry.utils.redis import clusters
@@ -178,10 +187,9 @@ def pytest_configure(config):
         client.flushdb()
 
     # force celery registration
-    from sentry.celery import app  # NOQA
-
     # disable DISALLOWED_IPS
     from sentry import http
+    from sentry.celery import app  # NOQA
 
     http.DISALLOWED_IPS = set()
 
@@ -193,40 +201,20 @@ def register_extensions():
     plugins.register(TestIssuePlugin2)
 
     from sentry import integrations
-    from sentry.integrations.bitbucket import BitbucketIntegrationProvider
-    from sentry.integrations.bitbucket_server import BitbucketServerIntegrationProvider
     from sentry.integrations.example import (
-        ExampleIntegrationProvider,
+        AlertRuleIntegrationProvider,
         AliasedIntegrationProvider,
+        ExampleIntegrationProvider,
         ExampleRepositoryProvider,
-        ServerExampleProvider,
         FeatureFlagIntegration,
+        ServerExampleProvider,
     )
-    from sentry.integrations.github import GitHubIntegrationProvider
-    from sentry.integrations.github_enterprise import GitHubEnterpriseIntegrationProvider
-    from sentry.integrations.gitlab import GitlabIntegrationProvider
-    from sentry.integrations.jira import JiraIntegrationProvider
-    from sentry.integrations.jira_server import JiraServerIntegrationProvider
-    from sentry.integrations.slack import SlackIntegrationProvider
-    from sentry.integrations.vsts import VstsIntegrationProvider
-    from sentry.integrations.vsts_extension import VstsExtensionIntegrationProvider
-    from sentry.integrations.pagerduty.integration import PagerDutyIntegrationProvider
 
-    integrations.register(BitbucketIntegrationProvider)
-    integrations.register(BitbucketServerIntegrationProvider)
     integrations.register(ExampleIntegrationProvider)
     integrations.register(AliasedIntegrationProvider)
     integrations.register(ServerExampleProvider)
     integrations.register(FeatureFlagIntegration)
-    integrations.register(GitHubIntegrationProvider)
-    integrations.register(GitHubEnterpriseIntegrationProvider)
-    integrations.register(GitlabIntegrationProvider)
-    integrations.register(JiraIntegrationProvider)
-    integrations.register(JiraServerIntegrationProvider)
-    integrations.register(SlackIntegrationProvider)
-    integrations.register(VstsIntegrationProvider)
-    integrations.register(VstsExtensionIntegrationProvider)
-    integrations.register(PagerDutyIntegrationProvider)
+    integrations.register(AlertRuleIntegrationProvider)
 
     from sentry.plugins.base import bindings
     from sentry.plugins.providers.dummy import DummyRepositoryProvider
@@ -286,8 +274,9 @@ def pytest_collection_modifyitems(config, items):
         # XXX: For some reason tests in `tests/acceptance` are not being
         # marked as snuba, so deselect test cases not a subclass of SnubaTestCase
         if os.environ.get("RUN_SNUBA_TESTS_ONLY"):
-            from sentry.testutils import SnubaTestCase
             import inspect
+
+            from sentry.testutils import SnubaTestCase
 
             if inspect.isclass(item.cls) and not issubclass(item.cls, SnubaTestCase):
                 # No need to group if we are deselecting this
@@ -299,10 +288,8 @@ def pytest_collection_modifyitems(config, items):
 
         # In the case where we group by round robin (e.g. TEST_GROUP_STRATEGY is not `file`),
         # we want to only include items in `accepted` list
-
-        # TODO(joshuarli): six 1.12.0 adds ensure_binary: six.ensure_binary(item.location[0])
         item_to_group = (
-            int(md5(six.text_type(item.location[0]).encode("utf-8")).hexdigest(), 16)
+            int(md5(str(item.location[0]).encode("utf-8")).hexdigest(), 16)
             if grouping_strategy == "file"
             else len(accepted) - 1
         )

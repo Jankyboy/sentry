@@ -1,10 +1,8 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ProjectPlugins from 'app/views/settings/projectPlugins/projectPlugins';
 
-describe('ProjectPlugins', function() {
+describe('ProjectPlugins', function () {
   let wrapper;
   const routerContext = TestStubs.routerContext();
   const plugins = TestStubs.Plugins();
@@ -15,7 +13,7 @@ describe('ProjectPlugins', function() {
     projectId: project.slug,
   };
 
-  it('renders', function() {
+  it('renders', function () {
     wrapper = mountWithTheme(
       <ProjectPlugins params={params} plugins={plugins} />,
       routerContext
@@ -24,7 +22,7 @@ describe('ProjectPlugins', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('has loading state', function() {
+  it('has loading state', function () {
     wrapper = mountWithTheme(
       <ProjectPlugins params={params} loading plugins={[]} />,
       routerContext
@@ -33,7 +31,7 @@ describe('ProjectPlugins', function() {
     expect(wrapper.find('LoadingIndicator')).toHaveLength(1);
   });
 
-  it('has error state when plugins=null and loading is true', function() {
+  it('has error state when plugins=null and loading is true', function () {
     wrapper = mountWithTheme(
       <ProjectPlugins
         params={params}
@@ -47,7 +45,7 @@ describe('ProjectPlugins', function() {
     expect(wrapper.find('RouteError')).toHaveLength(1);
   });
 
-  it('has error state when plugins=[]', function() {
+  it('has error state when plugins=[]', function () {
     wrapper = mountWithTheme(
       <ProjectPlugins
         params={params}

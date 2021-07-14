@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 import click
 
 from sentry.runner.decorators import configuration
@@ -20,8 +18,8 @@ def run(ctx, app_name, migration_name):
 
     from django.apps import apps
     from django.db import connections
-    from django.db.migrations.executor import MigrationExecutor
     from django.db.migrations import RunPython
+    from django.db.migrations.executor import MigrationExecutor
 
     migration = MigrationExecutor(connections["default"]).loader.get_migration_by_prefix(
         app_name, migration_name
@@ -29,7 +27,7 @@ def run(ctx, app_name, migration_name):
     for op in migration.operations:
         if not isinstance(op, RunPython):
             raise click.ClickException(
-                "Migration must contain only RunPython ops, found: %s", type(op).__name__
+                "Migration must contain only RunPython ops, found: %s" % type(op).__name__
             )
 
     for op in migration.operations:

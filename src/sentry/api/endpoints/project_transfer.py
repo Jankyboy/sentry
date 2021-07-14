@@ -1,14 +1,12 @@
-from __future__ import absolute_import
-
 import logging
+from urllib.parse import urlencode
 from uuid import uuid4
-from six.moves.urllib.parse import urlencode
 
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
-from sentry import roles, options
+from sentry import options, roles
 from sentry.api.bases.project import ProjectEndpoint, ProjectPermission
 from sentry.api.decorators import sudo_required
 from sentry.models import AuditLogEntryEvent, OrganizationMember
@@ -51,7 +49,7 @@ class ProjectTransferEndpoint(ProjectEndpoint):
         if email is None:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -82,7 +80,7 @@ class ProjectTransferEndpoint(ProjectEndpoint):
             "requester": request.user,
         }
         MessageBuilder(
-            subject="%sRequest for Project Transfer" % (options.get("mail.subject-prefix"),),
+            subject="{}Request for Project Transfer".format(options.get("mail.subject-prefix")),
             template="sentry/emails/transfer_project.txt",
             html_template="sentry/emails/transfer_project.html",
             type="org.confirm_project_transfer_request",

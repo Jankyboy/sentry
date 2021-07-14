@@ -22,9 +22,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
-from __future__ import absolute_import, unicode_literals
 
-import six
 
 from ipaddress import ip_address
 
@@ -45,7 +43,7 @@ def anonymize_ip(
     """
 
     # IP address to be anonymized
-    address_packed = ip_address(six.text_type(address)).packed
+    address_packed = ip_address(str(address)).packed
     address_len = len(address_packed)
 
     if address_len == 4:
@@ -77,17 +75,19 @@ def __apply_mask(address_packed, mask_packed, nr_bytes):
     :return: Anonymized IP address
     :rtype: str
     """
+    address_ints = [b for b in iter(address_packed)]
+    mask_ints = [b for b in iter(mask_packed)]
 
     anon_packed = bytearray()
     for i in range(0, nr_bytes):
-        anon_packed.append(ord(mask_packed[i]) & ord(address_packed[i]))
-    return six.text_type(ip_address(six.binary_type(anon_packed)))
+        anon_packed.append(mask_ints[i] & address_ints[i])
+    return str(ip_address(bytes(anon_packed)))
 
 
 def __validate_ipv4_mask(mask_packed):
     # Test that mask only contains valid numbers
-    for byte in mask_packed:
-        if byte != b"\x00" and byte != b"\xff":
+    for byte in iter(mask_packed):
+        if byte != 0 and byte != 255:
             raise ValueError("ipv4_mask must only contain numbers 0 or 255")
 
     # Test that IP address does not get anonymized completely
@@ -105,8 +105,8 @@ def __validate_ipv4_mask(mask_packed):
 
 def __validate_ipv6_mask(mask_packed):
     # Test that mask only contains valid numbers
-    for byte in mask_packed:
-        if byte != b"\x00" and byte != b"\xff":
+    for byte in iter(mask_packed):
+        if byte != 0 and byte != 255:
             raise ValueError("ipv6_mask must only contain numbers 0 or ffff")
 
     # Test that IP address does not get anonymized completely

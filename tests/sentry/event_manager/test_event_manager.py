@@ -1,28 +1,24 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import, print_function
-
 import logging
-from sentry.utils.compat import mock
-import pytest
 import uuid
-
 from datetime import datetime, timedelta
-from django.utils import timezone
 from time import time
+
+import pytest
+from django.utils import timezone
 
 from sentry import nodestore
 from sentry.app import tsdb
-from sentry.attachments import attachment_cache, CachedAttachment
-from sentry.constants import DataCategory, MAX_VERSION_LENGTH
-from sentry.eventstore.models import Event
+from sentry.attachments import CachedAttachment, attachment_cache
+from sentry.constants import MAX_VERSION_LENGTH, DataCategory
 from sentry.event_manager import (
-    HashDiscarded,
     EventManager,
     EventUser,
+    HashDiscarded,
     has_pending_commit_resolution,
 )
+from sentry.eventstore.models import Event
 from sentry.grouping.utils import hash_from_values
+from sentry.ingest.inbound_filters import FilterStatKeys
 from sentry.models import (
     Activity,
     Commit,
@@ -37,16 +33,16 @@ from sentry.models import (
     GroupStatus,
     GroupTombstone,
     Integration,
+    OrganizationIntegration,
     Release,
     ReleaseCommit,
     ReleaseProjectEnvironment,
-    OrganizationIntegration,
     UserReport,
 )
+from sentry.testutils import TestCase, assert_mock_called_once_with_partial
 from sentry.utils.cache import cache_key_for_event
+from sentry.utils.compat import mock
 from sentry.utils.outcomes import Outcome
-from sentry.testutils import assert_mock_called_once_with_partial, TestCase
-from sentry.ingest.inbound_filters import FilterStatKeys
 
 
 def make_event(**kwargs):
@@ -135,6 +131,89 @@ class EventManagerTest(TestCase):
         assert group.data.get("type") == "default"
         assert group.data.get("metadata") == {"title": "foo bar"}
 
+    def test_applies_secondary_grouping(self):
+        project = self.project
+        project.update_option("sentry:grouping_config", "legacy:2019-03-12")
+        project.update_option("sentry:secondary_grouping_expiry", 0)
+
+        timestamp = time() - 300
+        manager = EventManager(
+            make_event(message="foo 123", event_id="a" * 32, timestamp=timestamp)
+        )
+        manager.normalize()
+        event = manager.save(project.id)
+
+        project.update_option("sentry:grouping_config", "newstyle:2019-10-29")
+        project.update_option("sentry:secondary_grouping_config", "legacy:2019-03-12")
+        project.update_option("sentry:secondary_grouping_expiry", time() + (24 * 90 * 3600))
+
+        # Switching to newstyle grouping changes hashes as 123 will be removed
+
+        manager = EventManager(
+            make_event(message="foo 123", event_id="b" * 32, timestamp=timestamp + 2.0)
+        )
+        manager.normalize()
+
+        with self.tasks():
+            event2 = manager.save(project.id)
+
+        # make sure that events did get into same group because of fallback grouping, not because of hashes which come from primary grouping only
+        assert not set(event.get_hashes().hashes) & set(event2.get_hashes().hashes)
+        assert event.group_id == event2.group_id
+
+        group = Group.objects.get(id=event.group_id)
+
+        assert group.times_seen == 2
+        assert group.last_seen == event2.datetime
+        assert group.message == event2.message
+        assert group.data.get("type") == "default"
+        assert group.data.get("metadata") == {"title": "foo 123"}
+
+    @mock.patch("sentry.event_manager._calculate_background_grouping")
+    def test_applies_background_grouping(self, mock_calc_grouping):
+        timestamp = time() - 300
+        manager = EventManager(
+            make_event(message="foo 123", event_id="a" * 32, timestamp=timestamp)
+        )
+        manager.normalize()
+        manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 0
+
+        with self.options(
+            {
+                "store.background-grouping-config-id": "mobile:2021-02-12",
+                "store.background-grouping-sample-rate": 1.0,
+            }
+        ):
+            manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 1
+
+    @mock.patch("sentry.event_manager._calculate_background_grouping")
+    def test_background_grouping_sample_rate(self, mock_calc_grouping):
+
+        timestamp = time() - 300
+        manager = EventManager(
+            make_event(message="foo 123", event_id="a" * 32, timestamp=timestamp)
+        )
+        manager.normalize()
+        manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 0
+
+        with self.options(
+            {
+                "store.background-grouping-config-id": "mobile:2021-02-12",
+                "store.background-grouping-sample-rate": 0.0,
+            }
+        ):
+            manager.save(self.project.id)
+
+        manager.save(self.project.id)
+
+        assert mock_calc_grouping.call_count == 0
+
     def test_updates_group_with_fingerprint(self):
         ts = time() - 200
         manager = EventManager(
@@ -172,7 +251,8 @@ class EventManagerTest(TestCase):
 
         assert event.group_id != event2.group_id
 
-    def test_unresolves_group(self):
+    @mock.patch("sentry.signals.issue_unresolved.send_robust")
+    def test_unresolves_group(self, send_robust):
         ts = time() - 300
 
         # N.B. EventManager won't unresolve the group unless the event2 has a
@@ -192,6 +272,7 @@ class EventManagerTest(TestCase):
 
         group = Group.objects.get(id=group.id)
         assert not group.is_resolved()
+        assert send_robust.called
 
     @mock.patch("sentry.event_manager.plugin_is_regression")
     def test_does_not_unresolve_group(self, plugin_is_regression):
@@ -326,7 +407,9 @@ class EventManagerTest(TestCase):
         repo = self.create_repo(project=group.project)
         for key in ["a", "b", "c"]:
             commit = Commit.objects.create(
-                organization_id=group.project.organization_id, repository_id=repo.id, key=key * 40,
+                organization_id=group.project.organization_id,
+                repository_id=repo.id,
+                key=key * 40,
             )
             GroupLink.objects.create(
                 group_id=group.id,
@@ -585,6 +668,47 @@ class EventManagerTest(TestCase):
         assert event1.transaction is None
         assert event1.culprit == "foobar"
 
+    def test_culprit_after_stacktrace_processing(self):
+        from sentry.grouping.enhancer import Enhancements
+
+        enhancement = Enhancements.from_config_string(
+            """
+            function:in_app_function +app
+            function:not_in_app_function -app
+            """,
+        )
+
+        manager = EventManager(
+            make_event(
+                platform="native",
+                exception={
+                    "values": [
+                        {
+                            "type": "Hello",
+                            "stacktrace": {
+                                "frames": [
+                                    {
+                                        "function": "not_in_app_function",
+                                    },
+                                    {
+                                        "function": "in_app_function",
+                                    },
+                                ]
+                            },
+                        }
+                    ]
+                },
+            )
+        )
+        manager.normalize()
+        manager.get_data()["grouping_config"] = {
+            "enhancements": enhancement.dumps(),
+            "id": "legacy:2019-03-12",
+        }
+        event1 = manager.save(1)
+        assert event1.transaction is None
+        assert event1.culprit == "in_app_function"
+
     def test_inferred_culprit_from_empty_stacktrace(self):
         manager = EventManager(make_event(stacktrace={"frames": []}))
         manager.normalize()
@@ -631,16 +755,16 @@ class EventManagerTest(TestCase):
         project = self.create_project(name="foo")
         partial_version_len = MAX_VERSION_LENGTH - 4
         release = Release.objects.create(
-            version="foo-%s" % ("a" * partial_version_len,), organization=project.organization
+            version="foo-{}".format("a" * partial_version_len), organization=project.organization
         )
         release.add_project(project)
 
         event = self.make_release_event("a" * partial_version_len, project.id)
 
         group = event.group
-        assert group.first_release.version == "foo-%s" % ("a" * partial_version_len,)
+        assert group.first_release.version == "foo-{}".format("a" * partial_version_len)
         release_tag = [v for k, v in event.tags if k == "sentry:release"][0]
-        assert release_tag == "foo-%s" % ("a" * partial_version_len,)
+        assert release_tag == "foo-{}".format("a" * partial_version_len)
 
     def test_group_release_no_env(self):
         project_id = 1
@@ -725,28 +849,37 @@ class EventManagerTest(TestCase):
             tsdb.models.users_affected_by_group, (event.group.id,), event.datetime, event.datetime
         ) == {event.group.id: 1}
 
-        assert tsdb.get_distinct_counts_totals(
-            tsdb.models.users_affected_by_project,
-            (event.project.id,),
-            event.datetime,
-            event.datetime,
-        ) == {event.project.id: 1}
+        assert (
+            tsdb.get_distinct_counts_totals(
+                tsdb.models.users_affected_by_project,
+                (event.project.id,),
+                event.datetime,
+                event.datetime,
+            )
+            == {event.project.id: 1}
+        )
 
-        assert tsdb.get_distinct_counts_totals(
-            tsdb.models.users_affected_by_group,
-            (event.group.id,),
-            event.datetime,
-            event.datetime,
-            environment_id=environment_id,
-        ) == {event.group.id: 1}
+        assert (
+            tsdb.get_distinct_counts_totals(
+                tsdb.models.users_affected_by_group,
+                (event.group.id,),
+                event.datetime,
+                event.datetime,
+                environment_id=environment_id,
+            )
+            == {event.group.id: 1}
+        )
 
-        assert tsdb.get_distinct_counts_totals(
-            tsdb.models.users_affected_by_project,
-            (event.project.id,),
-            event.datetime,
-            event.datetime,
-            environment_id=environment_id,
-        ) == {event.project.id: 1}
+        assert (
+            tsdb.get_distinct_counts_totals(
+                tsdb.models.users_affected_by_project,
+                (event.project.id,),
+                event.datetime,
+                event.datetime,
+                environment_id=environment_id,
+            )
+            == {event.project.id: 1}
+        )
 
         euser = EventUser.objects.get(project_id=self.project.id, ident="1")
         assert event.get_tag("sentry:user") == euser.tag_value
@@ -782,12 +915,12 @@ class EventManagerTest(TestCase):
         assert euser.ip_address is None
 
     def test_event_user_unicode_identifier(self):
-        manager = EventManager(make_event(**{"user": {"username": u"foô"}}))
+        manager = EventManager(make_event(**{"user": {"username": "foô"}}))
         manager.normalize()
         with self.tasks():
             manager.save(self.project.id)
         euser = EventUser.objects.get(project_id=self.project.id)
-        assert euser.username == u"foô"
+        assert euser.username == "foô"
 
     def test_environment(self):
         manager = EventManager(make_event(**{"environment": "beta"}))
@@ -886,7 +1019,7 @@ class EventManagerTest(TestCase):
         event_id = "a" * 32
 
         UserReport.objects.create(
-            project=project,
+            project_id=project.id,
             event_id=event_id,
             name="foo",
             email="bar@example.com",
@@ -897,7 +1030,7 @@ class EventManagerTest(TestCase):
             data=make_event(environment=environment.name, event_id=event_id), project_id=project.id
         )
 
-        assert UserReport.objects.get(event_id=event_id).environment == environment
+        assert UserReport.objects.get(event_id=event_id).environment_id == environment.id
 
     def test_default_event_type(self):
         manager = EventManager(make_event(message="foo bar"))
@@ -945,7 +1078,9 @@ class EventManagerTest(TestCase):
                     "csp": {
                         "effective_directive": "script-src",
                         "blocked_uri": "http://example.com",
-                    }
+                    },
+                    # this normally is noramlized in relay as part of ingest
+                    "logentry": {"message": "Blocked 'script' from 'example.com'"},
                 }
             )
         )
@@ -958,9 +1093,9 @@ class EventManagerTest(TestCase):
         assert group.data.get("metadata") == {
             "directive": "script-src",
             "uri": "example.com",
-            # Relay will add a logentry that fixes this title, just not as part of StoreNormalizer
-            "title": "<unlabeled event>",
+            "message": "Blocked 'script' from 'example.com'",
         }
+        assert group.title == "Blocked 'script' from 'example.com'"
 
     def test_transaction_event_type(self):
         manager = EventManager(
@@ -1358,6 +1493,130 @@ class EventManagerTest(TestCase):
             ]
             == 1
         )
+
+    def test_category_match_in_app(self):
+        """
+        Regression test to ensure that grouping in-app enhancements work in
+        principle.
+        """
+        from sentry.grouping.enhancer import Enhancements
+
+        enhancement = Enhancements.from_config_string(
+            """
+            function:foo category=bar
+            function:foo2 category=bar
+            category:bar -app
+            """,
+        )
+
+        event = make_event(
+            platform="native",
+            exception={
+                "values": [
+                    {
+                        "type": "Hello",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "foo",
+                                    "in_app": True,
+                                },
+                                {"function": "bar"},
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+        manager = EventManager(event)
+        manager.normalize()
+        manager.get_data()["grouping_config"] = {
+            "enhancements": enhancement.dumps(),
+            "id": "mobile:2021-02-12",
+        }
+        event1 = manager.save(1)
+        assert event1.data["exception"]["values"][0]["stacktrace"]["frames"][0]["in_app"] is False
+
+        event = make_event(
+            platform="native",
+            exception={
+                "values": [
+                    {
+                        "type": "Hello",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "foo2",
+                                    "in_app": True,
+                                },
+                                {"function": "bar"},
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+        manager = EventManager(event)
+        manager.normalize()
+        manager.get_data()["grouping_config"] = {
+            "enhancements": enhancement.dumps(),
+            "id": "mobile:2021-02-12",
+        }
+        event2 = manager.save(1)
+        assert event2.data["exception"]["values"][0]["stacktrace"]["frames"][0]["in_app"] is False
+        assert event1.group_id == event2.group_id
+
+    def test_category_match_group(self):
+        """
+        Regression test to ensure categories are applied consistently and don't
+        produce hash mismatches.
+        """
+        from sentry.grouping.enhancer import Enhancements
+
+        enhancement = Enhancements.from_config_string(
+            """
+            function:foo category=foo_like
+            category:foo_like -group
+            """,
+        )
+
+        event = make_event(
+            platform="native",
+            exception={
+                "values": [
+                    {
+                        "type": "Hello",
+                        "stacktrace": {
+                            "frames": [
+                                {
+                                    "function": "foo",
+                                },
+                                {
+                                    "function": "bar",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            },
+        )
+
+        manager = EventManager(event)
+        manager.normalize()
+
+        grouping_config = {
+            "enhancements": enhancement.dumps(),
+            "id": "mobile:2021-02-12",
+        }
+
+        manager.get_data()["grouping_config"] = grouping_config
+        event1 = manager.save(1)
+
+        event2 = Event(event1.project_id, event1.event_id, data=event1.data)
+
+        assert event1.get_hashes().hashes == event2.get_hashes(grouping_config).hashes
 
 
 class ReleaseIssueTest(TestCase):

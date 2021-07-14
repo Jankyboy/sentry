@@ -1,19 +1,18 @@
-import React from 'react';
 import sortBy from 'lodash/sortBy';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
 
-import GlobalModal from 'app/components/globalModal';
 import {openModal} from 'app/actionCreators/modal';
-import Add from 'app/views/settings/components/dataScrubbing/modals/add';
+import GlobalModal from 'app/components/globalModal';
 import convertRelayPiiConfig from 'app/views/settings/components/dataScrubbing/convertRelayPiiConfig';
+import Add from 'app/views/settings/components/dataScrubbing/modals/add';
 import {MethodType, RuleType} from 'app/views/settings/components/dataScrubbing/types';
 import {
   getMethodLabel,
   getRuleLabel,
 } from 'app/views/settings/components/dataScrubbing/utils';
 
-// @ts-ignore
+// @ts-expect-error
 const relayPiiConfig = TestStubs.DataScrubbingRelayPiiConfig();
 const stringRelayPiiConfig = JSON.stringify(relayPiiConfig);
 const organizationSlug = 'sentry';
@@ -22,7 +21,7 @@ const rules = convertedRules;
 const successfullySaved = jest.fn();
 const projectId = 'foo';
 const endpoint = `/projects/${organizationSlug}/${projectId}/`;
-// @ts-ignore
+// @ts-expect-error
 const api = new MockApiClient();
 
 async function renderComponent() {
@@ -40,7 +39,7 @@ async function renderComponent() {
     />
   ));
 
-  // @ts-ignore
+  // @ts-expect-error
   await tick();
   wrapper.update();
 
@@ -51,9 +50,7 @@ describe('Add Modal', () => {
   it('open Add Rule Modal', async () => {
     const wrapper = await renderComponent();
 
-    expect(wrapper.find('[data-test-id="modal-title"]').text()).toEqual(
-      'Add an advanced data scrubbing rule'
-    );
+    expect(wrapper.find('Header').text()).toEqual('Add an advanced data scrubbing rule');
 
     const fieldGroup = wrapper.find('FieldGroup');
     expect(fieldGroup).toHaveLength(2);
@@ -111,11 +108,11 @@ describe('Add Modal', () => {
     expect(cancelButton.exists()).toBe(true);
     cancelButton.simulate('click');
 
-    // @ts-ignore
+    // @ts-expect-error
     await tick();
     wrapper.update();
 
-    expect(wrapper.find('[data-test-id="modal-title"]')).toHaveLength(0);
+    expect(wrapper.find('GlobalModal[visible=true]').exists()).toBe(false);
   });
 
   it('Display placeholder field', async () => {
@@ -150,16 +147,10 @@ describe('Add Modal', () => {
     wrapper.update();
 
     expect(
-      wrapper
-        .find('[data-test-id="method-field"] input')
-        .at(1)
-        .prop('value')
+      wrapper.find('[data-test-id="method-field"] input').at(1).prop('value')
     ).toEqual(MethodType.REPLACE);
 
-    const updatedMethodGroup = wrapper
-      .find('FieldGroup')
-      .at(0)
-      .find('Field');
+    const updatedMethodGroup = wrapper.find('FieldGroup').at(0).find('Field');
 
     expect(updatedMethodGroup).toHaveLength(2);
 
@@ -187,19 +178,11 @@ describe('Add Modal', () => {
 
     hashOption.simulate('click');
 
-    expect(
-      wrapper
-        .find('[data-test-id="method-field"] input')
-        .at(1)
-        .prop('value')
-    ).toBe(MethodType.HASH);
+    expect(wrapper.find('[data-test-id="method-field"] input').at(1).prop('value')).toBe(
+      MethodType.HASH
+    );
 
-    expect(
-      wrapper
-        .find('FieldGroup')
-        .at(0)
-        .find('Field')
-    ).toHaveLength(1);
+    expect(wrapper.find('FieldGroup').at(0).find('Field')).toHaveLength(1);
   });
 
   it('Display regex field', async () => {
@@ -230,17 +213,11 @@ describe('Add Modal', () => {
     regexOption.simulate('click');
     wrapper.update();
 
-    expect(
-      wrapper
-        .find('[data-test-id="type-field"] input')
-        .at(1)
-        .prop('value')
-    ).toEqual(RuleType.PATTERN);
+    expect(wrapper.find('[data-test-id="type-field"] input').at(1).prop('value')).toEqual(
+      RuleType.PATTERN
+    );
 
-    const updatedTypeGroup = wrapper
-      .find('FieldGroup')
-      .at(1)
-      .find('Field');
+    const updatedTypeGroup = wrapper.find('FieldGroup').at(1).find('Field');
 
     expect(updatedTypeGroup).toHaveLength(2);
 
@@ -263,25 +240,17 @@ describe('Add Modal', () => {
 
     creditCardOption.simulate('click');
 
-    expect(
-      wrapper
-        .find('[data-test-id="type-field"] input')
-        .at(1)
-        .prop('value')
-    ).toBe(RuleType.CREDITCARD);
+    expect(wrapper.find('[data-test-id="type-field"] input').at(1).prop('value')).toBe(
+      RuleType.CREDITCARD
+    );
 
-    expect(
-      wrapper
-        .find('FieldGroup')
-        .at(1)
-        .find('Field')
-    ).toHaveLength(1);
+    expect(wrapper.find('FieldGroup').at(1).find('Field')).toHaveLength(1);
   });
 
   it('Display Event Id', async () => {
     const eventId = '12345678901234567890123456789012';
 
-    // @ts-ignore
+    // @ts-expect-error
     MockApiClient.addMockResponse({
       url: `/organizations/${organizationSlug}/data-scrubbing-selector-suggestions/`,
       body: {
@@ -303,7 +272,7 @@ describe('Add Modal', () => {
 
     eventIdFieldInput.simulate('blur');
 
-    // @ts-ignore
+    // @ts-expect-error
     await tick();
 
     // Loading

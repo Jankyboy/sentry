@@ -1,8 +1,6 @@
-from __future__ import absolute_import
-
 import logging
-import six
-
+import random
+import time
 from contextlib import contextmanager
 
 from sentry.utils.locking import UnableToAcquireLock
@@ -10,7 +8,7 @@ from sentry.utils.locking import UnableToAcquireLock
 logger = logging.getLogger(__name__)
 
 
-class Lock(object):
+class Lock:
     def __init__(self, backend, key, duration, routing_key=None):
         self.backend = backend
         self.key = key
@@ -18,7 +16,7 @@ class Lock(object):
         self.routing_key = routing_key
 
     def __repr__(self):
-        return u"<Lock: {!r}>".format(self.key)
+        return f"<Lock: {self.key!r}>"
 
     def acquire(self):
         """
@@ -32,10 +30,9 @@ class Lock(object):
         try:
             self.backend.acquire(self.key, self.duration, self.routing_key)
         except Exception as error:
-            six.raise_from(
-                UnableToAcquireLock(u"Unable to acquire {!r} due to error: {}".format(self, error)),
-                error,
-            )
+            raise UnableToAcquireLock(
+                f"Unable to acquire {self!r} due to error: {error}"
+            ) from error
 
         @contextmanager
         def releaser():
@@ -45,6 +42,33 @@ class Lock(object):
                 self.release()
 
         return releaser()
+
+    def blocking_acquire(self, initial_delay: float, timeout: float, exp_base=1.6):
+        """
+        Try to acquire the lock in a polling loop.
+
+        :param initial_delay: A random retry delay will be picked between 0
+            and this value (in seconds). The range from which we pick doubles
+            in every iteration.
+        :param timeout: Time in seconds after which ``UnableToAcquireLock``
+            will be raised.
+        """
+        stop = time.monotonic() + timeout
+        attempt = 0
+        while time.monotonic() < stop:
+            try:
+                return self.acquire()
+            except UnableToAcquireLock:
+                delay = (exp_base ** attempt) * random.random() * initial_delay
+                # Redundant check to prevent futile sleep in last iteration:
+                if time.monotonic() + delay > stop:
+                    break
+
+                time.sleep(delay)
+
+            attempt += 1
+
+        raise UnableToAcquireLock(f"Unable to acquire {self!r} because of timeout")
 
     def release(self):
         """
@@ -57,3 +81,9 @@ class Lock(object):
             self.backend.release(self.key, self.routing_key)
         except Exception as error:
             logger.warning("Failed to release %r due to error: %r", self, error, exc_info=True)
+
+    def locked(self):
+        """
+        See if the lock has been taken somewhere else.
+        """
+        return self.backend.locked(self.key, self.routing_key)

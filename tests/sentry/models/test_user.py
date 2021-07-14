@@ -1,7 +1,28 @@
-from __future__ import absolute_import
-
-from sentry.models import Authenticator, OrganizationMember, User, UserEmail
+from sentry.models import Authenticator, OrganizationMember, OrganizationMemberTeam, User, UserEmail
 from sentry.testutils import TestCase
+
+
+class UserTest(TestCase):
+    def test_get_orgs(self):
+        user = self.create_user()
+        org = self.create_organization(owner=user)
+        team = self.create_team(organization=org)
+        member = OrganizationMember.objects.get(user=user, organization=org)
+        OrganizationMemberTeam.objects.create(organizationmember=member, team=team)
+
+        organizations = user.get_orgs()
+        assert {_.id for _ in organizations} == {org.id}
+
+    def test_get_projects(self):
+        user = self.create_user()
+        org = self.create_organization(owner=user)
+        team = self.create_team(organization=org)
+        member = OrganizationMember.objects.get(user=user, organization=org)
+        OrganizationMemberTeam.objects.create(organizationmember=member, team=team)
+        project = self.create_project(teams=[team], name="name")
+
+        projects = user.get_projects()
+        assert {_.id for _ in projects} == {project.id}
 
 
 class UserDetailsTest(TestCase):
@@ -78,7 +99,7 @@ class GetUsersFromTeamsTest(TestCase):
         assert list(User.objects.get_from_teams(org, [team])) == [user2]
         user3 = self.create_user("bar@example.com")
         self.create_member(user=user3, organization=org, role="admin", teams=[team])
-        assert set(list(User.objects.get_from_teams(org, [team]))) == set([user2, user3])
+        assert set(list(User.objects.get_from_teams(org, [team]))) == {user2, user3}
         assert list(User.objects.get_from_teams(org2, [team])) == []
         assert list(User.objects.get_from_teams(org2, [team2])) == []
         self.create_member(user=user, organization=org2, role="member", teams=[team2])
@@ -100,7 +121,7 @@ class GetUsersFromProjectsTest(TestCase):
         assert list(User.objects.get_from_projects(org, [project])) == [user2]
         user3 = self.create_user("bar@example.com")
         self.create_member(user=user3, organization=org, role="admin", teams=[team])
-        assert set(list(User.objects.get_from_projects(org, [project]))) == set([user2, user3])
+        assert set(list(User.objects.get_from_projects(org, [project]))) == {user2, user3}
         assert list(User.objects.get_from_projects(org2, [project])) == []
         assert list(User.objects.get_from_projects(org2, [project2])) == []
         self.create_member(user=user, organization=org2, role="member", teams=[team2])

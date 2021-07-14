@@ -1,14 +1,12 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
-import six
-
+from datetime import datetime
 from uuid import uuid4
+
+from rest_framework.exceptions import ErrorDetail
 
 from sentry import tagstore
 from sentry.api.endpoints.organization_releases import ReleaseSerializerWithProjects
 from sentry.api.serializers import serialize
+from sentry.api.serializers.models.release import get_users_for_authors
 from sentry.models import (
     Commit,
     CommitAuthor,
@@ -22,7 +20,8 @@ from sentry.models import (
     UserEmail,
 )
 from sentry.testutils import SnubaTestCase, TestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.compat.mock import patch
 
 
 class ReleaseSerializerTest(TestCase, SnubaTestCase):
@@ -68,9 +67,7 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
             commit=commit,
             order=1,
         )
-        release.update(
-            authors=[six.text_type(commit_author.id)], commit_count=1, last_commit_id=commit.id
-        )
+        release.update(authors=[str(commit_author.id)], commit_count=1, last_commit_id=commit.id)
 
         result = serialize(release, user)
         assert result["version"] == release.version
@@ -87,10 +84,47 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
         assert result["versionInfo"]["buildHash"] == release_version
         assert result["versionInfo"]["description"] == release_version[:12]
 
-        result = serialize(release, user, project=project)
+        current_formatted_datetime = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        current_project_meta = {
+            "prev_release_version": "foobar@1.0.0",
+            "next_release_version": "foobar@2.0.0",
+            "sessions_lower_bound": current_formatted_datetime,
+            "sessions_upper_bound": current_formatted_datetime,
+            "first_release_version": "foobar@1.0.0",
+            "last_release_version": "foobar@2.0.0",
+        }
+
+        result = serialize(
+            release, user, project=project, current_project_meta=current_project_meta
+        )
         assert result["newGroups"] == 1
         assert result["firstEvent"] == tagvalue1.first_seen
         assert result["lastEvent"] == tagvalue1.last_seen
+
+        assert (
+            result["currentProjectMeta"]["prevReleaseVersion"]
+            == current_project_meta["prev_release_version"]
+        )
+        assert (
+            result["currentProjectMeta"]["nextReleaseVersion"]
+            == current_project_meta["next_release_version"]
+        )
+        assert (
+            result["currentProjectMeta"]["sessionsLowerBound"]
+            == current_project_meta["sessions_lower_bound"]
+        )
+        assert (
+            result["currentProjectMeta"]["sessionsUpperBound"]
+            == current_project_meta["sessions_upper_bound"]
+        )
+        assert (
+            result["currentProjectMeta"]["firstReleaseVersion"]
+            == current_project_meta["first_release_version"]
+        )
+        assert (
+            result["currentProjectMeta"]["lastReleaseVersion"]
+            == current_project_meta["last_release_version"]
+        )
 
     def test_mobile_version(self):
         user = self.create_user()
@@ -186,9 +220,7 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
             commit=commit,
             order=1,
         )
-        release.update(
-            authors=[six.text_type(commit_author.id)], commit_count=1, last_commit_id=commit.id
-        )
+        release.update(authors=[str(commit_author.id)], commit_count=1, last_commit_id=commit.id)
 
         result = serialize(release, user)
         result_author = result["authors"][0]
@@ -229,9 +261,7 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
             order=1,
         )
 
-        release.update(
-            authors=[six.text_type(commit_author.id)], commit_count=1, last_commit_id=commit.id
-        )
+        release.update(authors=[str(commit_author.id)], commit_count=1, last_commit_id=commit.id)
 
         result = serialize(release, user)
         assert len(result["authors"]) == 1
@@ -273,9 +303,7 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
             order=1,
         )
 
-        release.update(
-            authors=[six.text_type(commit_author.id)], commit_count=1, last_commit_id=commit.id
-        )
+        release.update(authors=[str(commit_author.id)], commit_count=1, last_commit_id=commit.id)
 
         assert email.id < otheremail.id
         result = serialize(release, user)
@@ -359,7 +387,7 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
         )
         ReleaseProject.objects.filter(release=release, project=project).update(new_groups=1)
         release.update(
-            authors=[six.text_type(commit_author1.id), six.text_type(commit_author2.id)],
+            authors=[str(commit_author1.id), str(commit_author2.id)],
             commit_count=2,
             last_commit_id=commit2.id,
         )
@@ -388,7 +416,7 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
         result = serialize(release, user)
         assert result["version"] == release.version
         assert result["deployCount"] == 1
-        assert result["lastDeploy"]["id"] == six.text_type(deploy.id)
+        assert result["lastDeploy"]["id"] == str(deploy.id)
 
     def test_release_no_users(self):
         """
@@ -403,12 +431,136 @@ class ReleaseSerializerTest(TestCase, SnubaTestCase):
         release = Release.objects.create(
             organization_id=project.organization_id,
             version=uuid4().hex,
-            authors=[six.text_type(commit_author_id)],
+            authors=[str(commit_author_id)],
             commit_count=1,
             last_commit_id=commit_id,
         )
         release.add_project(project)
         serialize(release)
+
+    def test_get_user_for_authors_simple(self):
+        user = User.objects.create(email="chrib@sentry.io")
+        project = self.create_project()
+        self.create_member(user=user, organization=project.organization)
+        users = get_users_for_authors(organization_id=project.organization_id, authors=[user])
+        assert len(users) == 1
+        assert users[str(user.id)]["email"] == user.email
+
+    def test_get_user_for_authors_no_user(self):
+        user = User(email="notactuallyauser@sentry.io")
+        project = self.create_project()
+        users = get_users_for_authors(organization_id=project.organization_id, authors=[user])
+        assert len(users) == 1
+        assert users[str(user.id)]["email"] == user.email
+
+    @patch("sentry.api.serializers.models.release.serialize")
+    def test_get_user_for_authors_caching(self, patched_serialize_base):
+        # Ensure the fetched/miss caching logic works.
+        user = User.objects.create(email="chrib@sentry.io")
+        user2 = User.objects.create(email="alsochrib@sentry.io")
+        project = self.create_project()
+        self.create_member(user=user, organization=project.organization)
+        self.create_member(user=user2, organization=project.organization)
+        commit_author = CommitAuthor.objects.create(
+            email="chrib@sentry.io", name="Chrib", organization_id=project.organization_id
+        )
+        commit_author2 = CommitAuthor.objects.create(
+            email="alsochrib@sentry.io", name="Also Chrib", organization_id=project.organization_id
+        )
+
+        users = get_users_for_authors(
+            organization_id=project.organization_id, authors=[commit_author]
+        )
+        assert len(users) == 1
+        assert users[str(commit_author.id)]["email"] == user.email
+        patched_serialize_base.call_count = 1
+        users = get_users_for_authors(
+            organization_id=project.organization_id, authors=[commit_author]
+        )
+        assert len(users) == 1
+        assert users[str(commit_author.id)]["email"] == user.email
+        patched_serialize_base.call_count = 1
+        users = get_users_for_authors(
+            organization_id=project.organization_id, authors=[commit_author, commit_author2]
+        )
+        assert len(users) == 2
+        assert users[str(commit_author.id)]["email"] == user.email
+        assert users[str(commit_author2.id)]["email"] == user2.email
+        patched_serialize_base.call_count = 2
+        users = get_users_for_authors(
+            organization_id=project.organization_id, authors=[commit_author, commit_author2]
+        )
+        assert len(users) == 2
+        assert users[str(commit_author.id)]["email"] == user.email
+        assert users[str(commit_author2.id)]["email"] == user2.email
+        patched_serialize_base.call_count = 2
+
+    def test_adoption_stages(self):
+        user = self.create_user()
+        project = self.create_project()
+        release = Release.objects.create(
+            organization_id=project.organization_id, version=uuid4().hex
+        )
+        release.add_project(project)
+        env = Environment.objects.create(organization_id=project.organization_id, name="staging")
+        env.add_project(project)
+        ReleaseProjectEnvironment.objects.create(
+            project_id=project.id, release_id=release.id, environment_id=env.id, new_issues_count=1
+        )
+        result = serialize(release, user)
+        assert "adoptionStages" not in result
+
+        with self.feature("organizations:release-adoption-stage"):
+            result = serialize(release, user)
+            assert "adoptionStages" not in result
+
+            result = serialize(release, user, with_adoption_stages=True)
+            assert result["adoptionStages"][project.slug]["stage"] == "not_adopted"
+            assert result["adoptionStages"][project.slug]["unadopted"] is None
+            assert result["adoptionStages"][project.slug]["adopted"] is None
+
+            env2 = Environment.objects.create(
+                organization_id=project.organization_id, name="production"
+            )
+            rpe = ReleaseProjectEnvironment.objects.create(
+                project_id=project.id,
+                release_id=release.id,
+                environment_id=env2.id,
+                new_issues_count=1,
+                adopted=datetime.utcnow(),
+            )
+
+            result = serialize(release, user, with_adoption_stages=True)
+            assert result["adoptionStages"][project.slug]["stage"] == "adopted"
+            assert result["adoptionStages"][project.slug]["unadopted"] is None
+            assert result["adoptionStages"][project.slug]["adopted"] is not None
+
+            project2 = self.create_project()
+            ReleaseProjectEnvironment.objects.create(
+                project_id=project2.id,
+                release_id=release.id,
+                environment_id=env2.id,
+                new_issues_count=1,
+            )
+            result = serialize(release, user, with_adoption_stages=True)
+            assert result["adoptionStages"][project.slug]["stage"] == "adopted"
+            assert result["adoptionStages"][project2.slug]["stage"] == "not_adopted"
+
+            ReleaseProjectEnvironment.objects.create(
+                project_id=project2.id,
+                release_id=release.id,
+                environment_id=env.id,
+                new_issues_count=1,
+                adopted=datetime.utcnow(),
+            )
+            result = serialize(release, user, with_adoption_stages=True)
+            assert result["adoptionStages"][project.slug]["stage"] == "adopted"
+            assert result["adoptionStages"][project2.slug]["stage"] == "adopted"
+
+            rpe.update(unadopted=datetime.utcnow())
+            result = serialize(release, user, with_adoption_stages=True)
+            assert result["adoptionStages"][project.slug]["stage"] == "replaced"
+            assert result["adoptionStages"][project2.slug]["stage"] == "adopted"
 
 
 class ReleaseRefsSerializerTest(TestCase):
@@ -419,7 +571,9 @@ class ReleaseRefsSerializerTest(TestCase):
         serializer = ReleaseSerializerWithProjects(data=data)
 
         assert not serializer.is_valid()
-        assert serializer.errors == {"refs": ["This field may not be null."]}
+        assert serializer.errors == {
+            "refs": [ErrorDetail("This field may not be null.", code="null")]
+        }
 
         # test good refs
         data = {

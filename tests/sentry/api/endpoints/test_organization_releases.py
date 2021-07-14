@@ -1,18 +1,16 @@
-from __future__ import absolute_import
-
-from sentry.utils.compat.mock import patch
-
 from base64 import b64encode
 from datetime import datetime, timedelta
 
 import pytz
-from django.core.urlresolvers import reverse
+from django.urls import reverse
+from django.utils import timezone
 from exam import fixture
 
 from sentry.api.endpoints.organization_releases import (
     ReleaseHeadCommitSerializer,
     ReleaseSerializerWithProjects,
 )
+from sentry.app import locks
 from sentry.constants import BAD_RELEASE_CHARS, MAX_COMMIT_LENGTH, MAX_VERSION_LENGTH
 from sentry.models import (
     Activity,
@@ -25,15 +23,19 @@ from sentry.models import (
     Release,
     ReleaseCommit,
     ReleaseHeadCommit,
-    ReleaseProjectEnvironment,
     ReleaseProject,
+    ReleaseProjectEnvironment,
     Repository,
 )
 from sentry.plugins.providers.dummy.repository import DummyRepositoryProvider
+from sentry.search.events.constants import RELEASE_STAGE_ALIAS, SEMVER_ALIAS, SEMVER_PACKAGE_ALIAS
 from sentry.testutils import APITestCase, ReleaseCommitPatchTest, SetRefsTestCase, TestCase
+from sentry.utils.compat.mock import patch
 
 
 class OrganizationReleaseListTest(APITestCase):
+    endpoint = "sentry-api-0-organization-releases"
+
     def test_simple(self):
         user = self.create_user(is_staff=False, is_superuser=False)
         org = self.organization
@@ -80,9 +82,97 @@ class OrganizationReleaseListTest(APITestCase):
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 3
-        assert response.data[0]["version"] == release3.version
-        assert response.data[1]["version"] == release4.version
-        assert response.data[2]["version"] == release1.version
+        assert response.data[0]["version"] == release4.version
+        assert response.data[1]["version"] == release1.version
+        assert response.data[2]["version"] == release3.version
+
+    def test_release_list_order_by_date_added(self):
+        """
+        Test that ensures that by relying on the default date sorting, releases
+        will only be sorted according to `Release.date_added`, and
+        `Release.date_released` should have no effect whatsoever on that order
+        """
+        user = self.create_user(is_staff=False, is_superuser=False)
+        org = self.organization
+        org.flags.allow_joinleave = False
+        org.save()
+
+        team = self.create_team(organization=org)
+
+        project = self.create_project(teams=[team], organization=org)
+
+        self.create_member(teams=[team], user=user, organization=org)
+
+        self.login_as(user=user)
+
+        release6 = Release.objects.create(
+            organization_id=org.id,
+            version="6",
+            date_added=datetime(2013, 8, 10, 3, 8, 24, 880386),
+            date_released=datetime(2013, 8, 20, 3, 8, 24, 880386),
+        )
+        release6.add_project(project)
+
+        release7 = Release.objects.create(
+            organization_id=org.id,
+            version="7",
+            date_added=datetime(2013, 8, 12, 3, 8, 24, 880386),
+            date_released=datetime(2013, 8, 18, 3, 8, 24, 880386),
+        )
+        release7.add_project(project)
+
+        release8 = Release.objects.create(
+            organization_id=org.id,
+            version="8",
+            date_added=datetime(2013, 8, 14, 3, 8, 24, 880386),
+            date_released=datetime(2013, 8, 16, 3, 8, 24, 880386),
+        )
+        release8.add_project(project)
+
+        url = reverse("sentry-api-0-organization-releases", kwargs={"organization_slug": org.slug})
+        response = self.client.get(url, format="json")
+
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 3
+        assert response.data[0]["version"] == release8.version
+        assert response.data[1]["version"] == release7.version
+        assert response.data[2]["version"] == release6.version
+
+    def test_release_list_order_by_build_number(self):
+        self.login_as(user=self.user)
+        release_1 = self.create_release(version="test@1.2+1000")
+        release_2 = self.create_release(version="test@1.2+1")
+        release_3 = self.create_release(version="test@1.2+200")
+        self.create_release(version="test@1.2")
+        self.create_release(version="test@1.2+500alpha")
+
+        response = self.get_valid_response(self.organization.slug, sort="build")
+        assert [r["version"] for r in response.data] == [
+            release_1.version,
+            release_3.version,
+            release_2.version,
+        ]
+
+    def test_release_list_order_by_semver(self):
+        self.login_as(user=self.user)
+        release_1 = self.create_release(version="test@2.2")
+        release_2 = self.create_release(version="test@10.0")
+        release_3 = self.create_release(version="test@2.2-alpha")
+        release_4 = self.create_release(version="test@2.2.3")
+        release_5 = self.create_release(version="test@2.20.3")
+        release_6 = self.create_release(version="test@2.20.3.3")
+        self.create_release(version="test@some_thing")
+        self.create_release(version="random_junk")
+
+        response = self.get_valid_response(self.organization.slug, sort="semver")
+        assert [r["version"] for r in response.data] == [
+            release_2.version,
+            release_6.version,
+            release_5.version,
+            release_4.version,
+            release_1.version,
+            release_3.version,
+        ]
 
     def test_query_filter(self):
         user = self.create_user(is_staff=False, is_superuser=False)
@@ -159,6 +249,122 @@ class OrganizationReleaseListTest(APITestCase):
         assert len(response.data) == 1
         assert response.data[0]["version"] == release.version
 
+    def test_semver_filter(self):
+        self.login_as(user=self.user)
+
+        release_1 = self.create_release(version="test@1.2.4")
+        release_2 = self.create_release(version="test@1.2.3")
+        release_3 = self.create_release(version="test2@1.2.5")
+        self.create_release(version="some.release")
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:>1.2.3")
+        assert [r["version"] for r in response.data] == [release_3.version, release_1.version]
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:>=1.2.3")
+        assert [r["version"] for r in response.data] == [
+            release_3.version,
+            release_2.version,
+            release_1.version,
+        ]
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:1.2.*")
+        assert [r["version"] for r in response.data] == [
+            release_3.version,
+            release_2.version,
+            release_1.version,
+        ]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{SEMVER_PACKAGE_ALIAS}:test2"
+        )
+        assert [r["version"] for r in response.data] == [release_3.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{SEMVER_PACKAGE_ALIAS}:test"
+        )
+        assert [r["version"] for r in response.data] == [release_2.version, release_1.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{SEMVER_ALIAS}:>=1.2.3", sort="semver"
+        )
+        assert [r["version"] for r in response.data] == [
+            release_3.version,
+            release_1.version,
+            release_2.version,
+        ]
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:2.2.1")
+        assert [r["version"] for r in response.data] == []
+
+    def test_release_stage_filter(self):
+        self.login_as(user=self.user)
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:adopted"
+        )
+        assert [r["version"] for r in response.data] == []
+
+        replaced_release = self.create_release(version="replaced_release")
+        adopted_release = self.create_release(version="adopted_release")
+        not_adopted_release = self.create_release(version="not_adopted_release")
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=adopted_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=replaced_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+            unadopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=not_adopted_release.id,
+            environment_id=self.environment.id,
+        )
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:adopted"
+        )
+        assert [r["version"] for r in response.data] == [adopted_release.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:not_adopted"
+        )
+        assert [r["version"] for r in response.data] == [not_adopted_release.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:replaced"
+        )
+        assert [r["version"] for r in response.data] == [replaced_release.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:[adopted,replaced]"
+        )
+        assert [r["version"] for r in response.data] == [
+            adopted_release.version,
+            replaced_release.version,
+        ]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:[not_adopted]"
+        )
+        assert [r["version"] for r in response.data] == [not_adopted_release.version]
+
+        # TODO: Test release stage sort here. Not currently supported
+        # response = self.get_valid_response(
+        #     self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:[adopted,not_adopted,replaced]", sort="adopted"
+        # )
+        # assert [r["version"] for r in response.data] == [adopted_release.version, replaced_release.version, not_adopted_release.version]
+
+        response = self.get_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:invalid_stage"
+        )
+        assert response.status_code == 400
+
     def test_project_permissions(self):
         user = self.create_user(is_staff=False, is_superuser=False)
         org = self.create_organization()
@@ -197,8 +403,8 @@ class OrganizationReleaseListTest(APITestCase):
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 2
-        assert response.data[0]["version"] == release3.version
-        assert response.data[1]["version"] == release1.version
+        assert response.data[0]["version"] == release1.version
+        assert response.data[1]["version"] == release3.version
 
     def test_all_projects_parameter(self):
         user = self.create_user(is_staff=False, is_superuser=False)
@@ -244,6 +450,306 @@ class OrganizationReleaseListTest(APITestCase):
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 0
+
+    def test_archive_release(self):
+        self.login_as(user=self.user)
+        url = reverse(
+            "sentry-api-0-organization-releases",
+            kwargs={"organization_slug": self.organization.slug},
+        )
+
+        # test legacy status value of None (=open)
+        self.release.status = None
+        self.release.save()
+
+        response = self.client.get(url, format="json")
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 1
+        (release_data,) = response.data
+
+        response = self.client.post(
+            url,
+            format="json",
+            data={
+                "version": release_data["version"],
+                "projects": [x["slug"] for x in release_data["projects"]],
+                "status": "archived",
+            },
+        )
+        assert response.status_code == 208, response.content
+
+        response = self.client.get(url, format="json")
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 0
+
+        response = self.client.get(url + "?status=archived", format="json")
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 1
+
+        response = self.client.get(url + "?status=", format="json")
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 1
+
+
+class OrganizationReleasesStatsTest(APITestCase):
+    endpoint = "sentry-api-0-organization-releases-stats"
+
+    def setUp(self):
+        self.project1 = self.create_project(teams=[self.team], organization=self.organization)
+        self.project2 = self.create_project(teams=[self.team], organization=self.organization)
+        self.project3 = self.create_project(teams=[self.team], organization=self.organization)
+
+        self.login_as(user=self.user)
+
+    def test_simple(self):
+        release1 = Release.objects.create(
+            organization_id=self.organization.id,
+            version="1",
+            date_added=datetime(2013, 8, 13, 3, 8, 24, 880386, tzinfo=pytz.UTC),
+        )
+        release1.add_project(self.project1)
+
+        release2 = Release.objects.create(
+            organization_id=self.organization.id,
+            version="2",
+            date_added=datetime(2013, 8, 12, 3, 8, 24, 880386, tzinfo=pytz.UTC),
+            date_released=datetime(2013, 8, 15, 3, 8, 24, 880386, tzinfo=pytz.UTC),
+        )
+        release2.add_project(self.project2)
+
+        release3 = Release.objects.create(
+            organization_id=self.organization.id,
+            version="3",
+            date_added=datetime(2013, 8, 14, 3, 8, 24, 880386, tzinfo=pytz.UTC),
+        )
+        release3.add_project(self.project3)
+
+        url = reverse(
+            "sentry-api-0-organization-releases-stats",
+            kwargs={"organization_slug": self.organization.slug},
+        )
+        response = self.client.get(url, format="json")
+
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 3
+
+        assert response.data[0]["version"] == release3.version
+        assert response.data[0]["date"] == release3.date_added
+        assert response.data[1]["version"] == release1.version
+        assert response.data[1]["date"] == release1.date_added
+        assert response.data[2]["version"] == release2.version
+        assert response.data[2]["date"] == release2.date_added
+
+    def test_release_list_order_by_date_added(self):
+        """
+        Test that ensures that by relying on the default date sorting, releases
+        will only be sorted according to `Release.date_added`, and
+        `Release.date_released` should have no effect whatsoever on that order
+        """
+        user = self.create_user(is_staff=False, is_superuser=False)
+        org = self.organization
+        org.flags.allow_joinleave = False
+        org.save()
+
+        team = self.create_team(organization=org)
+
+        project = self.create_project(teams=[team], organization=org)
+
+        self.create_member(teams=[team], user=user, organization=org)
+
+        self.login_as(user=user)
+
+        release6 = Release.objects.create(
+            organization_id=org.id,
+            version="6",
+            date_added=datetime(2013, 8, 10, 3, 8, 24, 880386),
+            date_released=datetime(2013, 8, 20, 3, 8, 24, 880386),
+        )
+        release6.add_project(project)
+
+        release7 = Release.objects.create(
+            organization_id=org.id,
+            version="7",
+            date_added=datetime(2013, 8, 12, 3, 8, 24, 880386),
+            date_released=datetime(2013, 8, 18, 3, 8, 24, 880386),
+        )
+        release7.add_project(project)
+
+        release8 = Release.objects.create(
+            organization_id=org.id,
+            version="8",
+            date_added=datetime(2013, 8, 14, 3, 8, 24, 880386),
+            date_released=datetime(2013, 8, 16, 3, 8, 24, 880386),
+        )
+        release8.add_project(project)
+
+        url = reverse(
+            "sentry-api-0-organization-releases-stats",
+            kwargs={"organization_slug": self.organization.slug},
+        )
+        response = self.client.get(url, format="json")
+
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 3
+        assert response.data[0]["version"] == release8.version
+        assert response.data[1]["version"] == release7.version
+        assert response.data[2]["version"] == release6.version
+
+    def test_with_adoption_stages(self):
+        user = self.create_user(is_staff=False, is_superuser=False)
+        org = self.organization
+        org.save()
+        team1 = self.create_team(organization=org)
+        project1 = self.create_project(teams=[team1], organization=org)
+        self.create_member(teams=[team1], user=user, organization=org)
+        self.login_as(user=user)
+        release1 = Release.objects.create(
+            organization_id=org.id, version="1", date_added=datetime(2013, 8, 13, 3, 8, 24, 880386)
+        )
+        release1.add_project(project1)
+        url = reverse("sentry-api-0-organization-releases", kwargs={"organization_slug": org.slug})
+        response = self.client.get(f"{url}?adoptionStages=1", format="json")
+
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 1
+        # Not returned because we don't have the feature.
+        assert "adoptionStages" not in response.data[0]
+
+        with self.feature("organizations:release-adoption-stage"):
+            response = self.client.get(url, format="json")
+
+            assert response.status_code == 200, response.content
+            assert len(response.data) == 1
+            # Not returned because we don't have `adoptionStages=1`.
+            assert "adoptionStages" not in response.data[0]
+            response = self.client.get(f"{url}?adoptionStages=1", format="json")
+
+            assert response.status_code == 200, response.content
+            assert len(response.data) == 1
+            assert "adoptionStages" in response.data[0]
+
+    def test_semver_filter(self):
+        self.login_as(user=self.user)
+
+        release_1 = self.create_release(version="test@1.2.4")
+        release_2 = self.create_release(version="test@1.2.3")
+        release_3 = self.create_release(version="test2@1.2.5")
+        self.create_release(version="some.release")
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:>1.2.3")
+        assert [r["version"] for r in response.data] == [release_3.version, release_1.version]
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:>=1.2.3")
+        assert [r["version"] for r in response.data] == [
+            release_3.version,
+            release_2.version,
+            release_1.version,
+        ]
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:1.2.*")
+        assert [r["version"] for r in response.data] == [
+            release_3.version,
+            release_2.version,
+            release_1.version,
+        ]
+
+        response = self.get_valid_response(self.organization.slug, query=f"{SEMVER_ALIAS}:2.2.1")
+        assert [r["version"] for r in response.data] == []
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{SEMVER_PACKAGE_ALIAS}:test2"
+        )
+        assert [r["version"] for r in response.data] == [release_3.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{SEMVER_PACKAGE_ALIAS}:test"
+        )
+        assert [r["version"] for r in response.data] == [release_2.version, release_1.version]
+
+    def test_release_stage_filter(self):
+        self.login_as(user=self.user)
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:adopted"
+        )
+        assert [r["version"] for r in response.data] == []
+
+        replaced_release = self.create_release(version="replaced_release")
+        adopted_release = self.create_release(version="adopted_release")
+        not_adopted_release = self.create_release(version="not_adopted_release")
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=adopted_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=replaced_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+            unadopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=not_adopted_release.id,
+            environment_id=self.environment.id,
+        )
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:adopted"
+        )
+        assert [r["version"] for r in response.data] == [adopted_release.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:not_adopted"
+        )
+        assert [r["version"] for r in response.data] == [not_adopted_release.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:replaced"
+        )
+        assert [r["version"] for r in response.data] == [replaced_release.version]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:[adopted,replaced]"
+        )
+        assert [r["version"] for r in response.data] == [
+            adopted_release.version,
+            replaced_release.version,
+        ]
+
+        response = self.get_valid_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:[not_adopted]"
+        )
+        assert [r["version"] for r in response.data] == [not_adopted_release.version]
+
+        # TODO: Test release stage sort here. Not currently supported
+        # response = self.get_valid_response(
+        #     self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:[adopted,not_adopted,replaced]", sort="adopted"
+        # )
+        # assert [r["version"] for r in response.data] == [adopted_release.version, replaced_release.version, not_adopted_release.version]
+
+        response = self.get_response(
+            self.organization.slug, query=f"{RELEASE_STAGE_ALIAS}:invalid_stage"
+        )
+        assert response.status_code == 400
+
+    def test_query_filter(self):
+        self.login_as(user=self.user)
+
+        release = self.create_release(
+            self.project, version="foobar", date_added=datetime(2013, 8, 13, 3, 8, 24, 880386)
+        )
+        self.create_release(
+            self.project, version="sdfsdfsdf", date_added=datetime(2013, 8, 13, 3, 8, 24, 880386)
+        )
+
+        response = self.get_valid_response(self.organization.slug, query="oob")
+        assert [r["version"] for r in response.data] == [release.version]
+
+        response = self.get_valid_response(self.organization.slug, query="baz")
+        assert [r["version"] for r in response.data] == []
 
 
 class OrganizationReleaseCreateTest(APITestCase):
@@ -317,9 +823,9 @@ class OrganizationReleaseCreateTest(APITestCase):
 
         # check that commits are overwritten
         assert release_commits1 == [
-            u"62de626b7c7cfb8e77efb4273b1a3df4123e6216",
-            u"58de626b7c7cfb8e77efb4273b1a3df4123e6345",
-            u"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "62de626b7c7cfb8e77efb4273b1a3df4123e6216",
+            "58de626b7c7cfb8e77efb4273b1a3df4123e6345",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ]
 
         # should be 201 because project was added
@@ -355,9 +861,9 @@ class OrganizationReleaseCreateTest(APITestCase):
 
         # check that commits are overwritten
         assert release_commits2 == [
-            u"cccccccccccccccccccccccccccccccccccccccc",
-            u"dddddddddddddddddddddddddddddddddddddddd",
-            u"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "cccccccccccccccccccccccccccccccccccccccc",
+            "dddddddddddddddddddddddddddddddddddddddd",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         ]
 
         assert response2.status_code == 208, response.content
@@ -647,6 +1153,36 @@ class OrganizationReleaseCreateTest(APITestCase):
         )
         assert response.status_code == 201
 
+    def test_commits_lock_conflict(self):
+        user = self.create_user(is_staff=False, is_superuser=False)
+        org = self.create_organization()
+        org.flags.allow_joinleave = False
+        org.save()
+
+        team = self.create_team(organization=org)
+        project = self.create_project(name="foo", organization=org, teams=[team])
+
+        self.create_member(teams=[team], user=user, organization=org)
+        self.login_as(user=user)
+
+        # Simulate a concurrent request by using an existing release
+        # that has its commit lock taken out.
+        release = self.create_release(project, self.user, version="1.2.1")
+        lock = locks.get(Release.get_lock_key(org.id, release.id), duration=10)
+        lock.acquire()
+
+        url = reverse("sentry-api-0-organization-releases", kwargs={"organization_slug": org.slug})
+        response = self.client.post(
+            url,
+            data={
+                "version": release.version,
+                "commits": [{"id": "a" * 40}, {"id": "b" * 40}],
+                "projects": [project.slug],
+            },
+        )
+        assert response.status_code == 409, (response.status_code, response.content)
+        assert "Release commits" in response.data["detail"]
+
     def test_bad_project_slug(self):
         user = self.create_user(is_staff=False, is_superuser=False)
         org = self.create_organization()
@@ -732,8 +1268,7 @@ class OrganizationReleaseCreateTest(APITestCase):
         response = self.client.post(
             url,
             data={"version": "1.2.1", "projects": [project1.slug]},
-            HTTP_AUTHORIZATION=b"Basic "
-            + b64encode(u"{}:".format(bad_api_key.key).encode("utf-8")),
+            HTTP_AUTHORIZATION=b"Basic " + b64encode(f"{bad_api_key.key}:".encode("utf-8")),
         )
         assert response.status_code == 403
 
@@ -742,8 +1277,7 @@ class OrganizationReleaseCreateTest(APITestCase):
         response = self.client.post(
             url,
             data={"version": "1.2.1", "projects": [project1.slug]},
-            HTTP_AUTHORIZATION=b"Basic "
-            + b64encode(u"{}:".format(wrong_org_api_key.key).encode("utf-8")),
+            HTTP_AUTHORIZATION=b"Basic " + b64encode(f"{wrong_org_api_key.key}:".encode("utf-8")),
         )
         assert response.status_code == 403
 
@@ -752,8 +1286,7 @@ class OrganizationReleaseCreateTest(APITestCase):
         response = self.client.post(
             url,
             data={"version": "1.2.1", "projects": [project1.slug]},
-            HTTP_AUTHORIZATION=b"Basic "
-            + b64encode(u"{}:".format(good_api_key.key).encode("utf-8")),
+            HTTP_AUTHORIZATION=b"Basic " + b64encode(f"{good_api_key.key}:".encode("utf-8")),
         )
         assert response.status_code == 201, response.content
 
@@ -793,7 +1326,7 @@ class OrganizationReleaseCreateTest(APITestCase):
                 ],
                 "projects": [project1.slug],
             },
-            HTTP_AUTHORIZATION=u"Bearer {}".format(api_token.token),
+            HTTP_AUTHORIZATION=f"Bearer {api_token.token}",
         )
 
         mock_fetch_commits.apply_async.assert_called_with(
@@ -832,12 +1365,12 @@ class OrganizationReleaseCreateTest(APITestCase):
             },
         )
         assert response.status_code == 400
-        assert response.data == {"refs": [u"Invalid repository names: not_a_repo"]}
+        assert response.data == {"refs": ["Invalid repository names: not_a_repo"]}
 
 
 class OrganizationReleaseCommitRangesTest(SetRefsTestCase):
     def setUp(self):
-        super(OrganizationReleaseCommitRangesTest, self).setUp()
+        super().setUp()
         self.url = reverse(
             "sentry-api-0-organization-releases", kwargs={"organization_slug": self.org.slug}
         )
@@ -1025,8 +1558,8 @@ class OrganizationReleaseListEnvironmentsTest(APITestCase):
         assert response.status_code == 200, response.content
         assert len(response.data) == len(releases)
 
-        response_versions = sorted([r["version"] for r in response.data])
-        releases_versions = sorted([r.version for r in releases])
+        response_versions = sorted(r["version"] for r in response.data)
+        releases_versions = sorted(r.version for r in releases)
         assert response_versions == releases_versions
 
     def test_environments_filter(self):
@@ -1198,7 +1731,7 @@ class OrganizationReleaseCreateCommitPatch(ReleaseCommitPatchTest):
 
 class ReleaseSerializerWithProjectsTest(TestCase):
     def setUp(self):
-        super(ReleaseSerializerWithProjectsTest, self).setUp()
+        super().setUp()
         self.version = "1234567890"
         self.repo_name = "repo/name"
         self.repo2_name = "repo2/name"
@@ -1243,6 +1776,7 @@ class ReleaseSerializerWithProjectsTest(TestCase):
                 "headCommits",
                 "refs",
                 "projects",
+                "status",
             ]
         )
         result = serializer.validated_data
@@ -1343,10 +1877,10 @@ class ReleaseSerializerWithProjectsTest(TestCase):
 
 class ReleaseHeadCommitSerializerTest(TestCase):
     def setUp(self):
-        super(ReleaseHeadCommitSerializerTest, self).setUp()
+        super().setUp()
         self.repo_name = "repo/name"
         self.commit = "b" * 40
-        self.commit_range = "%s..%s" % ("a" * 40, "b" * 40)
+        self.commit_range = "{}..{}".format("a" * 40, "b" * 40)
         self.prev_commit = "a" * 40
 
     def test_simple(self):
@@ -1419,32 +1953,38 @@ class ReleaseHeadCommitSerializerTest(TestCase):
 
     def test_commit_range_does_not_allow_empty_commits(self):
         serializer = ReleaseHeadCommitSerializer(
-            data={"commit": "%s..%s" % ("", "b" * MAX_COMMIT_LENGTH), "repository": self.repo_name}
+            data={
+                "commit": "{}..{}".format("", "b" * MAX_COMMIT_LENGTH),
+                "repository": self.repo_name,
+            }
         )
         assert not serializer.is_valid()
         serializer = ReleaseHeadCommitSerializer(
-            data={"commit": "%s..%s" % ("a" * MAX_COMMIT_LENGTH, ""), "repository": self.repo_name}
+            data={
+                "commit": "{}..{}".format("a" * MAX_COMMIT_LENGTH, ""),
+                "repository": self.repo_name,
+            }
         )
         assert not serializer.is_valid()
 
     def test_commit_range_limited_by_max_commit_length(self):
         serializer = ReleaseHeadCommitSerializer(
             data={
-                "commit": "%s..%s" % ("a" * MAX_COMMIT_LENGTH, "b" * MAX_COMMIT_LENGTH),
+                "commit": "{}..{}".format("a" * MAX_COMMIT_LENGTH, "b" * MAX_COMMIT_LENGTH),
                 "repository": self.repo_name,
             }
         )
         assert serializer.is_valid()
         serializer = ReleaseHeadCommitSerializer(
             data={
-                "commit": "%s..%s" % ("a" * (MAX_COMMIT_LENGTH + 1), "b" * MAX_COMMIT_LENGTH),
+                "commit": "{}..{}".format("a" * (MAX_COMMIT_LENGTH + 1), "b" * MAX_COMMIT_LENGTH),
                 "repository": self.repo_name,
             }
         )
         assert not serializer.is_valid()
         serializer = ReleaseHeadCommitSerializer(
             data={
-                "commit": "%s..%s" % ("a" * MAX_COMMIT_LENGTH, "b" * (MAX_COMMIT_LENGTH + 1)),
+                "commit": "{}..{}".format("a" * MAX_COMMIT_LENGTH, "b" * (MAX_COMMIT_LENGTH + 1)),
                 "repository": self.repo_name,
             }
         )

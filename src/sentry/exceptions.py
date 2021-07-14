@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from django.core.exceptions import SuspiciousOperation
 
 
@@ -49,7 +47,7 @@ class PluginIdentityRequired(PluginError):
 
 class InvalidIdentity(Exception):
     def __init__(self, message="", identity=None):
-        super(InvalidIdentity, self).__init__(message)
+        super().__init__(message)
         self.identity = identity
 
 
@@ -62,4 +60,8 @@ class NotRegistered(Exception):
 
 
 class ApiTokenLimitError(Exception):
+    pass
+
+
+class InvalidSearchQuery(Exception):
     pass

@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from copy import deepcopy
 
 import sentry_sdk
@@ -11,7 +9,7 @@ from sentry.utils.services import Service
 from .models import Event
 
 
-class Filter(object):
+class Filter:
     """
     A set of conditions, start/end times and project, group and event ID sets
     used to restrict the results of a Snuba query.
@@ -20,6 +18,9 @@ class Filter(object):
     end (DateTime): Start datetime - default None
     conditions (Sequence[Sequence[str, str, Any]]): List of conditions to fetch - default None
     having (Sequence[str, str, Any]]): List of having conditions to filter by - default None
+    user_id (int): The user ID to fetch - default None
+    organization_id (int): The organization ID to fetch - default None
+    team_id (Sequence[int]): List of team IDs to fetch - default None
     project_ids (Sequence[int]): List of project IDs to fetch - default None
     group_ids (Sequence[int]): List of group IDs to fetch - default None
     event_ids (Sequence[int]): List of event IDs to fetch - default None
@@ -27,6 +28,9 @@ class Filter(object):
     selected_columns (Sequence[str]): List of columns to select
     aggregations (Sequence[Any, str|None, str]): Aggregate functions to fetch.
     groupby (Sequence[str]): List of columns to group results by
+
+    condition_aggregates (Sequence[str]): List of aggregates used in the condition
+    aliases (Dict[str, Alias]): Endpoint specific aliases
     """
 
     def __init__(
@@ -35,6 +39,9 @@ class Filter(object):
         end=None,
         conditions=None,
         having=None,
+        user_id=None,
+        organization_id=None,
+        team_id=None,
         project_ids=None,
         group_ids=None,
         event_ids=None,
@@ -43,11 +50,16 @@ class Filter(object):
         rollup=None,
         groupby=None,
         orderby=None,
+        condition_aggregates=None,
+        aliases=None,
     ):
         self.start = start
         self.end = end
         self.conditions = conditions
         self.having = having
+        self.user_id = user_id
+        self.organization_id = organization_id
+        self.team_id = team_id
         self.project_ids = project_ids
         self.group_ids = group_ids
         self.event_ids = event_ids
@@ -57,6 +69,8 @@ class Filter(object):
         self.aggregations = aggregations if aggregations is not None else []
         self.groupby = groupby
         self.orderby = orderby
+        self.condition_aggregates = condition_aggregates
+        self.aliases = aliases
 
     @property
     def filter_keys(self):
@@ -77,11 +91,20 @@ class Filter(object):
         return filter_keys
 
     @property
-    def date_params(self):
+    def params(self):
         """
         Get the datetime parameters as a dictionary
         """
-        return {"start": self.start, "end": self.end}
+        return {
+            "start": self.start,
+            "end": self.end,
+            # needed for the key transaction column
+            "user_id": self.user_id,
+            "organization_id": self.organization_id,
+            # needed for the team key transaction column
+            "team_id": self.team_id,
+            "project_id": self.project_ids,
+        }
 
     def update_with(self, updates):
         keys = ("selected_columns", "aggregations", "conditions", "orderby", "groupby")
@@ -159,13 +182,16 @@ class EventStorage(Service):
         """
         raise NotImplementedError
 
-    def get_event_by_id(self, project_id, event_id):
+    def get_event_by_id(self, project_id, event_id, group_id=None):
         """
         Gets a single event given a project_id and event_id.
+        Returns None if an event cannot be found.
 
         Arguments:
         project_id (int): Project ID
         event_id (str): Event ID
+        group_id (Optional[int]): If the group ID for this event is already known, pass
+            it here to save one Snuba query.
         """
         raise NotImplementedError
 

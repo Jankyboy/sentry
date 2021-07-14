@@ -1,19 +1,17 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import GroupTagDistributionMeter from 'app/components/group/tagDistributionMeter';
 
-describe('TagDistributionMeter', function() {
+describe('TagDistributionMeter', function () {
   let element;
   let emptyElement;
   let organization;
   const tags = TestStubs.Tags();
 
-  beforeEach(function() {
+  beforeEach(function () {
     organization = TestStubs.Organization();
 
-    element = mount(
+    element = mountWithTheme(
       <GroupTagDistributionMeter
         key="element"
         tag="browser"
@@ -25,7 +23,7 @@ describe('TagDistributionMeter', function() {
       />
     );
 
-    emptyElement = mount(
+    emptyElement = mountWithTheme(
       <GroupTagDistributionMeter
         key="emptyElement"
         tag="browser"
@@ -37,8 +35,8 @@ describe('TagDistributionMeter', function() {
     );
   });
 
-  describe('renderBody()', function() {
-    it('should return null if loading', function() {
+  describe('renderBody()', function () {
+    it('should return null if loading', function () {
       element.setState({
         loading: true,
         error: false,
@@ -47,7 +45,7 @@ describe('TagDistributionMeter', function() {
       expect(element.find('Segment')).toHaveLength(0);
     });
 
-    it('should return null if in an error state', function() {
+    it('should return null if in an error state', function () {
       element.setState({
         error: true,
         loading: false,
@@ -56,7 +54,7 @@ describe('TagDistributionMeter', function() {
       expect(element.find('Segment')).toHaveLength(0);
     });
 
-    it('should return "no recent data" if no total values present', function() {
+    it('should return "no recent data" if no total values present', function () {
       emptyElement.setState({
         error: false,
         loading: false,
@@ -65,7 +63,7 @@ describe('TagDistributionMeter', function() {
       expect(emptyElement.find('p').text()).toEqual('No recent data.');
     });
 
-    it('should call renderSegments() if values present', function() {
+    it('should call renderSegments() if values present', function () {
       element.setState({loading: false, error: false});
       expect(element.find('Segment').length).toEqual(2);
       expect(element.find('OtherSegment').length).toEqual(1);

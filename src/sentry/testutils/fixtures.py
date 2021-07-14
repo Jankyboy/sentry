@@ -1,12 +1,8 @@
-from __future__ import absolute_import, print_function, unicode_literals
-
-import six
-
-from sentry.models import Activity, OrganizationMember, OrganizationMemberTeam
-from sentry.incidents.models import IncidentActivityType
-
 import pytest
 from django.utils.functional import cached_property
+
+from sentry.incidents.models import IncidentActivityType
+from sentry.models import Activity, Integration, OrganizationMember, OrganizationMemberTeam
 from sentry.testutils.factories import Factories
 from sentry.testutils.helpers.datetime import before_now, iso_format
 
@@ -14,7 +10,7 @@ from sentry.testutils.helpers.datetime import before_now, iso_format
 # XXX(dcramer): this is a compatibility layer to transition to pytest-based fixtures
 # all of the memoized fixtures are copypasta due to our inability to use pytest fixtures
 # on a per-class method basis
-class Fixtures(object):
+class Fixtures:
     @cached_property
     def session(self):
         return Factories.create_session()
@@ -58,6 +54,7 @@ class Fixtures(object):
 
     @cached_property
     def group(self):
+        # こんにちは konichiwa
         return self.create_group(message="\u3053\u3093\u306b\u3061\u306f")
 
     @cached_property
@@ -121,7 +118,7 @@ class Fixtures(object):
             action_match=action_match,
             condition_match=condition_match,
             *args,
-            **kwargs
+            **kwargs,
         )
 
     def create_slack_project_rule(
@@ -135,7 +132,7 @@ class Fixtures(object):
             channel_id=channel_id,
             channel_name=channel_name,
             *args,
-            **kwargs
+            **kwargs,
         )
 
     def create_release(self, project=None, user=None, *args, **kwargs):
@@ -143,10 +140,10 @@ class Fixtures(object):
             project = self.project
         return Factories.create_release(project=project, user=user, *args, **kwargs)
 
-    def create_release_file(self, release=None, file=None, name=None, dist=None):
-        if release is None:
-            release = self.release
-        return Factories.create_release_file(release, file, name, dist)
+    def create_release_file(self, release_id=None, file=None, name=None, dist_id=None):
+        if release_id is None:
+            release_id = self.release.id
+        return Factories.create_release_file(release_id, file, name, dist_id)
 
     def create_artifact_bundle(self, org=None, release=None, *args, **kwargs):
         if org is None:
@@ -154,6 +151,18 @@ class Fixtures(object):
         if release is None:
             release = self.release.version
         return Factories.create_artifact_bundle(org, release, *args, **kwargs)
+
+    def create_release_archive(self, org=None, release=None, *args, **kwargs):
+        if org is None:
+            org = self.organization.slug
+        if release is None:
+            release = self.release.version
+        return Factories.create_release_archive(org, release, *args, **kwargs)
+
+    def create_code_mapping(self, project=None, repo=None, **kwargs):
+        if project is None:
+            project = self.project
+        return Factories.create_code_mapping(project, repo, **kwargs)
 
     def create_repo(self, project=None, *args, **kwargs):
         if project is None:
@@ -276,13 +285,13 @@ class Fixtures(object):
         target_identifier=None,
         triggered_for_incident=None,
         *args,
-        **kwargs
+        **kwargs,
     ):
         if not alert_rule_trigger:
             alert_rule_trigger = self.create_alert_rule_trigger()
 
         if not target_identifier:
-            target_identifier = six.text_type(self.user.id)
+            target_identifier = str(self.user.id)
 
         if triggered_for_incident is not None:
             Factories.create_incident_trigger(triggered_for_incident, alert_rule_trigger)
@@ -290,6 +299,41 @@ class Fixtures(object):
         return Factories.create_alert_rule_trigger_action(
             alert_rule_trigger, target_identifier=target_identifier, **kwargs
         )
+
+    def create_external_user(self, user=None, organization=None, integration=None, **kwargs):
+        if not user:
+            user = self.user
+        if not organization:
+            organization = self.organization  # Force creation.
+        if not integration:
+            integration = Integration.objects.create(
+                provider="github", name="GitHub", external_id="github:1"
+            )
+            integration.add_organization(self.organization, self.user)
+        return Factories.create_external_user(
+            user=user, organization=organization, integration_id=integration.id, **kwargs
+        )
+
+    def create_external_team(self, team=None, integration=None, **kwargs):
+        if not team:
+            team = self.team
+        if not integration:
+            integration = Integration.objects.create(
+                provider="github", name="GitHub", external_id="github:1"
+            )
+            integration.add_organization(self.organization, self.user)
+        return Factories.create_external_team(
+            team=team, organization=team.organization, integration_id=integration.id, **kwargs
+        )
+
+    def create_codeowners(self, project=None, code_mapping=None, **kwargs):
+        if not project:
+            project = self.project
+        if not code_mapping:
+            self.repo = self.create_repo(self.project)
+            code_mapping = self.create_code_mapping(self.project, self.repo)
+
+        return Factories.create_codeowners(project=project, code_mapping=code_mapping, **kwargs)
 
     @pytest.fixture(autouse=True)
     def _init_insta_snapshot(self, insta_snapshot):

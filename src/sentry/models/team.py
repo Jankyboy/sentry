@@ -1,10 +1,8 @@
-from __future__ import absolute_import, print_function
-
 import warnings
 from collections import defaultdict
 
 from django.conf import settings
-from django.db import connections, IntegrityError, models, router, transaction
+from django.db import IntegrityError, connections, models, router, transaction
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
@@ -27,14 +25,14 @@ class TeamManager(BaseManager):
         """
         from sentry.auth.superuser import is_active_superuser
         from sentry.models import (
+            OrganizationMember,
             OrganizationMemberTeam,
             Project,
             ProjectStatus,
             ProjectTeam,
-            OrganizationMember,
         )
 
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             return []
 
         base_team_qs = self.filter(organization=organization, status=TeamStatus.VISIBLE)
@@ -89,7 +87,7 @@ class TeamManager(BaseManager):
 
 
 # TODO(dcramer): pull in enum library
-class TeamStatus(object):
+class TeamStatus:
     VISIBLE = 0
     PENDING_DELETION = 1
     DELETION_IN_PROGRESS = 2
@@ -100,7 +98,7 @@ class Team(Model):
     A team represents a group of individuals which maintain ownership of projects.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     organization = FlexibleForeignKey("sentry.Organization")
     slug = models.SlugField()
@@ -113,6 +111,9 @@ class Team(Model):
         ),
         default=TeamStatus.VISIBLE,
     )
+    actor = FlexibleForeignKey(
+        "sentry.Actor", db_index=True, unique=True, null=True, on_delete=models.PROTECT
+    )
     date_added = models.DateTimeField(default=timezone.now, null=True)
 
     objects = TeamManager(cache_fields=("pk", "slug"))
@@ -124,20 +125,19 @@ class Team(Model):
 
     __repr__ = sane_repr("name", "slug")
 
-    def __unicode__(self):
-        return u"%s (%s)" % (self.name, self.slug)
+    def __str__(self):
+        return f"{self.name} ({self.slug})"
 
     def save(self, *args, **kwargs):
         if not self.slug:
             lock = locks.get("slug:team", duration=5)
             with TimedRetryPolicy(10)(lock.acquire):
                 slugify_instance(self, self.name, organization=self.organization)
-            super(Team, self).save(*args, **kwargs)
-        else:
-            super(Team, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     @property
     def member_set(self):
+        """:returns a QuerySet of all Users that belong to this Team"""
         return self.organization.member_set.filter(
             organizationmemberteam__team=self,
             organizationmemberteam__is_active=True,
@@ -245,3 +245,8 @@ class Team(Model):
 
     def get_audit_log_data(self):
         return {"id": self.id, "slug": self.slug, "name": self.name, "status": self.status}
+
+    def get_projects(self):
+        from sentry.models import Project
+
+        return Project.objects.get_for_team_ids({self.id})

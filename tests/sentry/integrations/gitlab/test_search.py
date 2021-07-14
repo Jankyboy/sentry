@@ -1,8 +1,10 @@
-from __future__ import absolute_import
+from urllib.parse import parse_qs
 
 import responses
+from django.urls import reverse
 
-from django.core.urlresolvers import reverse
+from sentry.utils import json
+
 from .testutils import GitLabTestCase
 
 
@@ -10,7 +12,7 @@ class GitlabSearchTest(GitLabTestCase):
     provider = "gitlab"
 
     def setUp(self):
-        super(GitlabSearchTest, self).setUp()
+        super().setUp()
         self.url = reverse(
             "sentry-extensions-gitlab-search",
             kwargs={
@@ -44,7 +46,7 @@ class GitlabSearchTest(GitLabTestCase):
     def test_finds_external_issue_results_with_iid(self):
         responses.add(
             responses.GET,
-            "https://example.gitlab.com/api/v4/projects/5/issues?scope=all&search=25",
+            "https://example.gitlab.com/api/v4/projects/5/issues?scope=all&iids=25",
             json=[{"iid": 25, "title": "AEIOU Error", "project_id": "5"}],
         )
         resp = self.client.get(
@@ -58,7 +60,7 @@ class GitlabSearchTest(GitLabTestCase):
     def test_finds_project_results(self):
         responses.add(
             responses.GET,
-            "https://example.gitlab.com/api/v4/groups/1/projects?query=GetSentry&simple=True",
+            "https://example.gitlab.com/api/v4/groups/1/projects?search=GetSentry&simple=True&include_subgroups=False&page=1&per_page=100",
             json=[
                 {
                     "id": "1",
@@ -81,6 +83,42 @@ class GitlabSearchTest(GitLabTestCase):
         ]
 
     @responses.activate
+    def test_finds_project_results_with_pagination(self):
+        project_a = {
+            "id": "1",
+            "name_with_namespace": "GetSentry / Sentry",
+            "path_with_namespace": "getsentry/sentry",
+        }
+        project_b = {
+            "id": "2",
+            "name_with_namespace": "GetSentry2 / Sentry2",
+            "path_with_namespace": "getsentry2/sentry2",
+        }
+
+        def request_callback(request):
+            query = parse_qs(request.url.split("?")[1])
+            # allow for 220 responses
+            if int(query["page"][0]) >= 3:
+                projects = [project_a, project_b] * 10
+            else:
+                projects = [project_a, project_b] * 50
+            return (200, {}, json.dumps(projects))
+
+        responses.add_callback(
+            responses.GET,
+            "https://example.gitlab.com/api/v4/groups/1/projects",
+            callback=request_callback,
+            match_querystring=False,
+        )
+        resp = self.client.get(self.url, data={"field": "project", "query": "GetSentry"})
+
+        assert resp.status_code == 200
+        assert resp.data[0] == {"value": "1", "label": "GetSentry / Sentry"}
+        assert resp.data[1] == {"value": "2", "label": "GetSentry2 / Sentry2"}
+
+        assert len(resp.data) == 220
+
+    @responses.activate
     def test_finds_no_external_issues_results(self):
         responses.add(
             responses.GET,
@@ -98,7 +136,7 @@ class GitlabSearchTest(GitLabTestCase):
     def test_finds_no_external_issues_results_iid(self):
         responses.add(
             responses.GET,
-            "https://example.gitlab.com/api/v4/projects/5/issues?scope=all&search=11",
+            "https://example.gitlab.com/api/v4/projects/5/issues?scope=all&iids=11",
             json=[],
         )
         resp = self.client.get(
@@ -112,7 +150,7 @@ class GitlabSearchTest(GitLabTestCase):
     def test_finds_no_project_results(self):
         responses.add(
             responses.GET,
-            "https://example.gitlab.com/api/v4/groups/1/projects?query=GetSentry&simple=True",
+            "https://example.gitlab.com/api/v4/groups/1/projects?search=GetSentry&simple=True&include_subgroups=False&page=1&per_page=100",
             json=[],
         )
         resp = self.client.get(self.url, data={"field": "project", "query": "GetSentry"})
@@ -169,13 +207,13 @@ class GitlabSearchTest(GitLabTestCase):
     # Distributed System Issues
     @responses.activate
     def test_search_issues_request_fails(self):
-        responses.add(responses.GET, u"https://example.gitlab.com/api/v4/issues", status=503)
+        responses.add(responses.GET, "https://example.gitlab.com/api/v4/issues", status=503)
         resp = self.client.get(
             self.url, data={"field": "externalIssue", "query": "GetSentry", "project": "5"}
         )
         assert resp.status_code == 400
 
     def test_projects_request_fails(self):
-        responses.add(responses.GET, u"https://example.gitlab.com/api/v4/projects", status=503)
+        responses.add(responses.GET, "https://example.gitlab.com/api/v4/projects", status=503)
         resp = self.client.get(self.url, data={"field": "project", "query": "GetSentry"})
         assert resp.status_code == 400

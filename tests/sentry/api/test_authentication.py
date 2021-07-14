@@ -1,18 +1,23 @@
-from __future__ import absolute_import
+import uuid
 
 import pytest
-
 from django.http import HttpRequest
+from django.test import RequestFactory, override_settings
 from rest_framework.exceptions import AuthenticationFailed
+from sentry_relay import generate_key_pair
 
-from sentry.api.authentication import ClientIdSecretAuthentication, DSNAuthentication
-from sentry.models import ProjectKeyStatus
+from sentry.api.authentication import (
+    ClientIdSecretAuthentication,
+    DSNAuthentication,
+    RelayAuthentication,
+)
+from sentry.models import ProjectKeyStatus, Relay
 from sentry.testutils import TestCase
 
 
 class TestClientIdSecretAuthentication(TestCase):
     def setUp(self):
-        super(TestClientIdSecretAuthentication, self).setUp()
+        super().setUp()
 
         self.auth = ClientIdSecretAuthentication()
         self.org = self.create_organization(owner=self.user)
@@ -70,7 +75,7 @@ class TestClientIdSecretAuthentication(TestCase):
 
 class TestDSNAuthentication(TestCase):
     def setUp(self):
-        super(TestDSNAuthentication, self).setUp()
+        super().setUp()
 
         self.auth = DSNAuthentication()
         self.org = self.create_organization(owner=self.user)
@@ -79,19 +84,77 @@ class TestDSNAuthentication(TestCase):
 
     def test_authenticate(self):
         request = HttpRequest()
-        request.META["HTTP_AUTHORIZATION"] = u"DSN {}".format(self.project_key.dsn_public)
+        request.META["HTTP_AUTHORIZATION"] = f"DSN {self.project_key.dsn_public}"
 
         result = self.auth.authenticate(request)
         assert result is not None
 
         user, auth = result
-        assert user.is_anonymous()
+        assert user.is_anonymous
         assert auth == self.project_key
 
     def test_inactive_key(self):
         self.project_key.update(status=ProjectKeyStatus.INACTIVE)
         request = HttpRequest()
-        request.META["HTTP_AUTHORIZATION"] = u"DSN {}".format(self.project_key.dsn_public)
+        request.META["HTTP_AUTHORIZATION"] = f"DSN {self.project_key.dsn_public}"
 
         with pytest.raises(AuthenticationFailed):
             self.auth.authenticate(request)
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("internal", [True, False])
+def test_registered_relay(internal):
+    sk, pk = generate_key_pair()
+    relay_id = str(uuid.uuid4())
+
+    data = {"some_data": "hello"}
+    packed, signature = sk.pack(data)
+    request = RequestFactory().post("/", data=packed, content_type="application/json")
+    request.META["HTTP_X_SENTRY_RELAY_SIGNATURE"] = signature
+    request.META["HTTP_X_SENTRY_RELAY_ID"] = relay_id
+    request.META["REMOTE_ADDR"] = "200.200.200.200"  # something that is NOT local network
+
+    Relay.objects.create(relay_id=relay_id, public_key=str(pk))
+    if internal:
+        white_listed_pk = [str(pk)]  # mark the relay as internal
+    else:
+        white_listed_pk = []
+
+    authenticator = RelayAuthentication()
+    with override_settings(SENTRY_RELAY_WHITELIST_PK=white_listed_pk):
+        authenticator.authenticate(request)
+
+    # now the request should contain a relay
+    relay = request.relay
+    assert relay.is_internal == internal
+    assert relay.public_key == str(pk)
+    # data should be deserialized in request.relay_request_data
+    assert request.relay_request_data == data
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("internal", [True, False])
+def test_statically_configured_relay(settings, internal):
+    sk, pk = generate_key_pair()
+    relay_id = str(uuid.uuid4())
+
+    data = {"some_data": "hello"}
+    packed, signature = sk.pack(data)
+    request = RequestFactory().post("/", data=packed, content_type="application/json")
+    request.META["HTTP_X_SENTRY_RELAY_SIGNATURE"] = signature
+    request.META["HTTP_X_SENTRY_RELAY_ID"] = relay_id
+    request.META["REMOTE_ADDR"] = "200.200.200.200"  # something that is NOT local network
+
+    relay_options = {relay_id: {"internal": internal, "public_key": str(pk)}}
+
+    settings.SENTRY_OPTIONS["relay.static_auth"] = relay_options
+    authenticator = RelayAuthentication()
+    authenticator.authenticate(request)
+
+    # now the request should contain a relay
+    relay = request.relay
+    assert relay.is_internal == internal
+    assert relay.public_key == str(pk)
+    # data should be deserialized in request.relay_request_data
+    assert request.relay_request_data == data

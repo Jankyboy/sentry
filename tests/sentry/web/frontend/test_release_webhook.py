@@ -1,30 +1,31 @@
-from __future__ import absolute_import
-
 import hmac
-
-from django.core.urlresolvers import reverse
-from exam import fixture
 from hashlib import sha256
-from sentry.utils.compat.mock import patch
+
+from django.urls import reverse
+from exam import fixture
 
 from sentry.models import ProjectOption
 from sentry.testutils import TestCase
 from sentry.utils import json
+from sentry.utils.compat.mock import patch
 
 
-class ReleaseWebhookTest(TestCase):
+class ReleaseWebhookTestBase(TestCase):
     def setUp(self):
-        super(ReleaseWebhookTest, self).setUp()
+        super().setUp()
         self.organization = self.create_organization()
         self.team = self.create_team(organization=self.organization)
         self.project = self.create_project(teams=[self.team])
         self.token = "a2587e3af83411e4a28634363b8514c2"
-        self.signature = hmac.new(
+        ProjectOption.objects.set_value(self.project, "sentry:release-token", self.token)
+
+    @fixture
+    def signature(self):
+        return hmac.new(
             key=self.token.encode("utf-8"),
-            msg=("dummy-{}".format(self.project.id)).encode("utf-8"),
+            msg=(f"{self.plugin_id}-{self.project.id}").encode("utf-8"),
             digestmod=sha256,
         ).hexdigest()
-        ProjectOption.objects.set_value(self.project, "sentry:release-token", self.token)
 
     @fixture
     def path(self):
@@ -32,10 +33,16 @@ class ReleaseWebhookTest(TestCase):
             "sentry-release-hook",
             kwargs={
                 "project_id": self.project.id,
-                "plugin_id": "dummy",
+                "plugin_id": self.plugin_id,
                 "signature": self.signature,
             },
         )
+
+
+class ReleaseWebhookTest(ReleaseWebhookTestBase):
+    def setUp(self):
+        super().setUp()
+        self.plugin_id = "dummy"
 
     def test_no_token(self):
         project = self.create_project(teams=[self.team])
@@ -84,30 +91,10 @@ class ReleaseWebhookTest(TestCase):
         assert not MockPlugin.get_release_hook.called
 
 
-class BuiltinReleaseWebhookTest(TestCase):
+class BuiltinReleaseWebhookTest(ReleaseWebhookTestBase):
     def setUp(self):
-        super(BuiltinReleaseWebhookTest, self).setUp()
-        self.organization = self.create_organization()
-        self.team = self.create_team(organization=self.organization)
-        self.project = self.create_project(teams=[self.team])
-        self.token = "a2587e3af83411e4a28634363b8514c2"
-        self.signature = hmac.new(
-            key=self.token.encode("utf-8"),
-            msg=("builtin-{}".format(self.project.id)).encode("utf-8"),
-            digestmod=sha256,
-        ).hexdigest()
-        ProjectOption.objects.set_value(self.project, "sentry:release-token", self.token)
-
-    @fixture
-    def path(self):
-        return reverse(
-            "sentry-release-hook",
-            kwargs={
-                "project_id": self.project.id,
-                "plugin_id": "builtin",
-                "signature": self.signature,
-            },
-        )
+        super().setUp()
+        self.plugin_id = "builtin"
 
     def test_invalid_params(self):
         resp = self.client.post(self.path, content_type="application/json")
@@ -120,3 +107,8 @@ class BuiltinReleaseWebhookTest(TestCase):
         assert resp.status_code == 201, resp.content
         data = json.loads(resp.content)
         assert data["version"] == "a"
+
+    def test_no_teams_and_no_user(self):
+        self.project.remove_team(self.team)
+        resp = self.client.post(self.path, user=None, content_type="application/json")
+        assert resp.status_code == 403

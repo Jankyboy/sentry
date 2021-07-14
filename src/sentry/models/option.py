@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 from django.db import models
 from django.utils import timezone
 
@@ -16,7 +14,7 @@ class Option(Model):
     their key. e.g. key='myplugin:optname'
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     key = models.CharField(max_length=64, unique=True)
     value = EncryptedPickledObjectField()

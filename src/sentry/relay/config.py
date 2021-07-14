@@ -1,27 +1,48 @@
-from __future__ import absolute_import
-
-import six
 import uuid
+from datetime import datetime
+from typing import List
 
+from pytz import utc
 from sentry_sdk import Hub
 
-from datetime import datetime
-from pytz import utc
-
-from sentry import quotas, utils, features
+from sentry import features, quotas, utils
 from sentry.constants import ObjectStatus
+from sentry.datascrubbing import get_datascrubbing_settings, get_pii_config
 from sentry.grouping.api import get_grouping_config_dict_for_project
-from sentry.interfaces.security import DEFAULT_DISALLOWED_SOURCES
 from sentry.ingest.inbound_filters import (
-    get_all_filter_specs,
-    FilterTypes,
     FilterStatKeys,
+    FilterTypes,
+    get_all_filter_specs,
     get_filter_key,
 )
+from sentry.interfaces.security import DEFAULT_DISALLOWED_SOURCES
+from sentry.models import Project, ProjectKeyStatus
+from sentry.relay.utils import to_camel_case_name
 from sentry.utils.http import get_origins
 from sentry.utils.sdk import configure_scope
-from sentry.relay.utils import to_camel_case_name
-from sentry.datascrubbing import get_pii_config, get_datascrubbing_settings
+
+#: These features will be listed in the project config
+EXPOSABLE_FEATURES = [
+    "organizations:metrics-extraction",
+]
+
+
+def get_exposed_features(project: Project) -> List[str]:
+
+    active_features = []
+    for feature in EXPOSABLE_FEATURES:
+        if feature.startswith("organizations:"):
+            if features.has(feature, project.organization):
+                active_features.append(feature)
+
+        elif feature.startswith("projects:"):
+            if features.has(feature, project):
+                active_features.append(feature)
+
+        else:
+            raise RuntimeError("EXPOSABLE_FEATURES must start with 'organizations:' or 'projects:'")
+
+    return active_features
 
 
 def get_project_key_config(project_key):
@@ -33,13 +54,16 @@ def get_public_key_configs(project, full_config, project_keys=None):
     public_keys = []
 
     for project_key in project_keys or ():
-        key = {"publicKey": project_key.public_key, "isEnabled": project_key.status == 0}
+        key = {
+            "publicKey": project_key.public_key,
+            "numericId": project_key.id,
+            "isEnabled": project_key.status == ProjectKeyStatus.ACTIVE,
+        }
 
         if full_config:
             key["quotas"] = [
                 q.to_json_legacy() for q in quotas.get_quotas(project, key=project_key)
             ]
-            key["numericId"] = project_key.id
 
         public_keys.append(key)
 
@@ -55,11 +79,11 @@ def get_filter_settings(project):
         filter_settings[filter_id] = settings
 
     if features.has("projects:custom-inbound-filters", project):
-        invalid_releases = project.get_option(u"sentry:{}".format(FilterTypes.RELEASES))
+        invalid_releases = project.get_option(f"sentry:{FilterTypes.RELEASES}")
         if invalid_releases:
             filter_settings["releases"] = {"releases": invalid_releases}
 
-        error_messages = project.get_option(u"sentry:{}".format(FilterTypes.ERROR_MESSAGES))
+        error_messages = project.get_option(f"sentry:{FilterTypes.ERROR_MESSAGES}")
         if error_messages:
             filter_settings["errorMessages"] = {"patterns": error_messages}
 
@@ -124,15 +148,26 @@ def get_project_config(project, full_config=True, project_keys=None):
                 ],
                 "piiConfig": get_pii_config(project),
                 "datascrubbingSettings": get_datascrubbing_settings(project),
+                "features": get_exposed_features(project),
             },
             "organizationId": project.organization_id,
             "projectId": project.id,  # XXX: Unused by Relay, required by Python store
         }
+    allow_dynamic_sampling = features.has(
+        "organizations:filters-and-sampling",
+        project.organization,
+    )
+    if allow_dynamic_sampling:
+        dynamic_sampling = project.get_option("sentry:dynamic_sampling")
+        if dynamic_sampling is not None:
+            cfg["config"]["dynamicSampling"] = dynamic_sampling
 
     if not full_config:
         # This is all we need for external Relay processors
         return ProjectConfig(project, **cfg)
 
+    if features.has("organizations:performance-ops-breakdown", project.organization):
+        cfg["config"]["breakdownsV2"] = project.get_option("sentry:breakdowns")
     with Hub.current.start_span(op="get_filter_settings"):
         cfg["config"]["filterSettings"] = get_filter_settings(project)
     with Hub.current.start_span(op="get_grouping_config_dict_for_project"):
@@ -145,7 +180,7 @@ def get_project_config(project, full_config=True, project_keys=None):
     return ProjectConfig(project, **cfg)
 
 
-class _ConfigBase(object):
+class _ConfigBase:
     """
     Base class for configuration objects
 
@@ -166,7 +201,7 @@ class _ConfigBase(object):
     def __init__(self, **kwargs):
         data = {}
         object.__setattr__(self, "data", data)
-        for (key, val) in six.iteritems(kwargs):
+        for (key, val) in kwargs.items():
             if val is not None:
                 data[key] = val
 
@@ -190,7 +225,7 @@ class _ConfigBase(object):
         data = self.__get_data()
         return {
             key: value.to_dict() if isinstance(value, _ConfigBase) else value
-            for (key, value) in six.iteritems(data)
+            for (key, value) in data.items()
         }
 
     def to_json_string(self):
@@ -245,10 +280,10 @@ class _ConfigBase(object):
         try:
             return utils.json.dumps(self.to_dict(), sort_keys=True)
         except Exception as e:
-            return "Content Error:{}".format(e)
+            return f"Content Error:{e}"
 
     def __repr__(self):
-        return "({0}){1}".format(self.__class__.__name__, self)
+        return f"({self.__class__.__name__}){self}"
 
 
 class ProjectConfig(_ConfigBase):
@@ -259,7 +294,7 @@ class ProjectConfig(_ConfigBase):
     def __init__(self, project, **kwargs):
         object.__setattr__(self, "project", project)
 
-        super(ProjectConfig, self).__init__(**kwargs)
+        super().__init__(**kwargs)
 
 
 def _load_filter_settings(flt, project):
@@ -273,7 +308,7 @@ def _load_filter_settings(flt, project):
         default options for the filter will be returned
     """
     filter_id = flt.id
-    filter_key = u"filters:{}".format(filter_id)
+    filter_key = f"filters:{filter_id}"
     setting = project.get_option(filter_key)
 
     return _filter_option_to_config_setting(flt, setting)
@@ -289,7 +324,7 @@ def _filter_option_to_config_setting(flt, setting):
     """
     if setting is None:
         raise ValueError(
-            "Could not find filter state for filter {0}."
+            "Could not find filter state for filter {}."
             " You need to register default filter state in projectoptions.defaults.".format(flt.id)
         )
 

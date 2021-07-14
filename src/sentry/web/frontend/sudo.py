@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from sudo.views import SudoView as BaseSudoView
 
 from sentry.models import Authenticator
@@ -15,7 +13,7 @@ class SudoView(BaseSudoView):
 
         try:
             interface = Authenticator.objects.get_interface(request.user, "u2f")
-            if not interface.is_enrolled:
+            if not interface.is_enrolled():
                 raise LookupError()
         except LookupError:
             return False

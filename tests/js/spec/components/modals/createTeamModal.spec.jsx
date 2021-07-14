@@ -1,6 +1,3 @@
-import {Modal} from 'react-bootstrap';
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {createTeam} from 'app/actionCreators/teams';
@@ -10,24 +7,24 @@ jest.mock('app/actionCreators/teams', () => ({
   createTeam: jest.fn((...args) => new Promise(resolve => resolve(...args))),
 }));
 
-describe('CreateTeamModal', function() {
+describe('CreateTeamModal', function () {
   const org = TestStubs.Organization();
   const closeModal = jest.fn();
   const onClose = jest.fn();
   const onSuccess = jest.fn();
 
-  beforeEach(function() {
+  beforeEach(function () {
     onClose.mockReset();
     onSuccess.mockReset();
   });
 
-  afterEach(function() {});
+  afterEach(function () {});
 
-  it('calls createTeam action creator on submit', async function() {
+  it('calls createTeam action creator on submit', async function () {
     const wrapper = mountWithTheme(
       <CreateTeamModal
-        Body={Modal.Body}
-        Header={Modal.Header}
+        Body={p => p.children}
+        Header={p => p.children}
         organization={org}
         closeModal={closeModal}
         onClose={onClose}

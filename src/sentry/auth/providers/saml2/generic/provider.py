@@ -1,11 +1,9 @@
-from __future__ import absolute_import, print_function
+from sentry.auth.providers.saml2.provider import SAML2Provider, SCIMMixin
 
-from sentry.auth.providers.saml2.provider import SAML2Provider
-
-from .views import SAML2ConfigureView, SelectIdP, MapAttributes
+from .views import MapAttributes, SAML2ConfigureView, SelectIdP
 
 
-class GenericSAML2Provider(SAML2Provider):
+class GenericSAML2Provider(SCIMMixin, SAML2Provider):
     name = "SAML2"
 
     def get_configure_view(self):

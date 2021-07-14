@@ -1,13 +1,9 @@
-from __future__ import absolute_import
+from django.urls import reverse
 
-import six
-
-from django.core.urlresolvers import reverse
-
-from sentry.testutils import APITestCase
-from sentry.utils import json
 from sentry.models import ApiToken
 from sentry.models.sentryapp import MASKED_VALUE
+from sentry.testutils import APITestCase
+from sentry.utils import json
 
 
 class SentryInternalAppTokenTest(APITestCase):
@@ -82,15 +78,23 @@ class GetSentryInternalAppTokenTest(SentryInternalAppTokenTest):
         # should not include tokens from other internal app
         assert len(response_content) == 1
 
-        assert response_content[0]["id"] == six.text_type(token.id)
+        assert response_content[0]["id"] == str(token.id)
         assert response_content[0]["token"] == token.token
+
+    def no_access_for_members(self):
+        user = self.create_user(email="meep@example.com")
+        self.create_member(organization=self.org, user=user)
+        self.login_as(user)
+
+        response = self.client.get(self.url, format="json")
+        assert response.status_code == 403
 
     def test_token_is_masked(self):
         user = self.create_user(email="meep@example.com")
-        self.create_member(organization=self.org, user=user)
+        self.create_member(organization=self.org, user=user, role="manager")
         # create an app with scopes higher than what a member role has
         sentry_app = self.create_internal_integration(
-            name="AnothaOne", organization=self.org, scopes=("project:write",)
+            name="AnothaOne", organization=self.org, scopes=("org:admin",)
         )
 
         self.login_as(user)

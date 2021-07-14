@@ -1,6 +1,5 @@
-from __future__ import absolute_import
-
 from django.db import models
+
 from sentry.db.models import BoundedBigIntegerField, Model, sane_repr
 
 
@@ -10,7 +9,7 @@ class GroupRedirect(Model):
     deleted) to the group that superceded it.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     organization_id = BoundedBigIntegerField(null=True)
     group_id = BoundedBigIntegerField(db_index=True)

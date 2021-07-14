@@ -1,15 +1,14 @@
-from __future__ import absolute_import
-
 from django.db import transaction
 from django.db.models import Q
 from rest_framework.response import Response
 
 from sentry import roles
-from sentry.app import locks
 from sentry.api.bases.organization import OrganizationEndpoint, OrganizationPermission
 from sentry.api.paginator import OffsetPaginator
-from sentry.api.serializers import serialize, OrganizationMemberWithTeamsSerializer
-from sentry.models import AuditLogEntryEvent, OrganizationMember, InviteStatus
+from sentry.api.serializers import serialize
+from sentry.api.serializers.models.organization_member import OrganizationMemberWithTeamsSerializer
+from sentry.app import locks
+from sentry.models import AuditLogEntryEvent, InviteStatus, OrganizationMember
 from sentry.tasks.members import send_invite_request_notification_email
 from sentry.utils.retries import TimedRetryPolicy
 
@@ -51,7 +50,7 @@ class OrganizationInviteRequestIndexEndpoint(OrganizationEndpoint):
         Add a invite request to Organization
         ````````````````````````````````````
 
-        Creates an invite request given an email and sugested role / teams.
+        Creates an invite request given an email and suggested role / teams.
 
         :pparam string organization_slug: the slug of the organization the member will belong to
         :param string email: the email address to invite
@@ -80,7 +79,7 @@ class OrganizationInviteRequestIndexEndpoint(OrganizationEndpoint):
             )
 
             if result["teams"]:
-                lock = locks.get(u"org:member:{}".format(om.id), duration=5)
+                lock = locks.get(f"org:member:{om.id}", duration=5)
                 with TimedRetryPolicy(10)(lock.acquire):
                     save_team_assignments(om, result["teams"])
 

@@ -1,8 +1,6 @@
-from __future__ import absolute_import
-
 from functools import wraps
 
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from social_auth.backends import get_backend
 from social_auth.exceptions import WrongBackend

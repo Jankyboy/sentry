@@ -1,19 +1,18 @@
-from __future__ import absolute_import
-
 from datetime import timedelta
+
 from django.conf import settings
-from django.core.urlresolvers import reverse
 from django.db import models
+from django.urls import reverse
 from django.utils import timezone
 
 from sentry.db.models import FlexibleForeignKey, Model, sane_repr
 from sentry.utils.http import absolute_uri
 
-CHARACTERS = u"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+CHARACTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
 
 class LostPasswordHash(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL, unique=True)
     hash = models.CharField(max_length=32)
@@ -28,7 +27,7 @@ class LostPasswordHash(Model):
     def save(self, *args, **kwargs):
         if not self.hash:
             self.set_hash()
-        super(LostPasswordHash, self).save(*args, **kwargs)
+        super().save(*args, **kwargs)
 
     def set_hash(self):
         from django.utils.crypto import get_random_string
@@ -61,9 +60,9 @@ class LostPasswordHash(Model):
         template = "set_password" if mode == "set_password" else "recover_account"
 
         msg = MessageBuilder(
-            subject=u"{}Password Recovery".format(options.get("mail.subject-prefix")),
-            template=u"sentry/emails/{name}.txt".format(name=template),
-            html_template=u"sentry/emails/{name}.html".format(name=template),
+            subject="{}Password Recovery".format(options.get("mail.subject-prefix")),
+            template=f"sentry/emails/{template}.txt",
+            html_template=f"sentry/emails/{template}.html",
             type="user.password_recovery",
             context=context,
         )

@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
@@ -7,8 +5,8 @@ import AdminQueue from 'app/views/admin/adminQueue';
 
 // TODO(dcramer): this doesnt really test anything as we need to
 // mock the API Response/wait on it
-describe('AdminQueue', function() {
-  describe('render()', function() {
+describe('AdminQueue', function () {
+  describe('render()', function () {
     beforeEach(() => {
       Client.addMockResponse({
         url: '/internal/queue/tasks/',
@@ -57,7 +55,7 @@ describe('AdminQueue', function() {
       });
     });
 
-    it('renders', function() {
+    it('renders', function () {
       const wrapper = mountWithTheme(<AdminQueue params={{}} />, {
         context: {
           router: TestStubs.router(),

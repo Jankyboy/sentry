@@ -1,30 +1,20 @@
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils.encoding import force_text
-
 from rest_framework.response import Response
 
 from sentry import integrations
-from sentry.api.bases.organization import OrganizationEndpoint
-from sentry.api.bases import OrganizationPermission
-from sentry.plugins.base import plugins
+from sentry.api.bases.organization_request_change import OrganizationRequestChangeEndpoint
 from sentry.models import SentryApp
+from sentry.plugins.base import plugins
 from sentry.utils.email import MessageBuilder
 from sentry.utils.http import absolute_uri
 
 
-class OrganizationIntegrationRequestPermission(OrganizationPermission):
-    scope_map = {
-        "POST": ["org:read"],
-    }
-
-
 def get_url(organization, provider_type, provider_slug):
     return absolute_uri(
-        u"/".join(
+        "/".join(
             [
-                u"/settings",
+                "/settings",
                 organization.slug,
                 {
                     "first_party": "integrations",
@@ -61,14 +51,12 @@ def get_provider_name(provider_type, provider_slug):
         elif provider_type == "sentry_app":
             return SentryApp.objects.get(slug=provider_slug).name
         else:
-            raise ValueError(u"Invalid providerType {}".format(provider_type))
+            raise ValueError(f"Invalid providerType {provider_type}")
     except (KeyError, SentryApp.DoesNotExist):
-        raise RuntimeError(u"Provider {} not found".format(provider_slug))
+        raise RuntimeError(f"Provider {provider_slug} not found")
 
 
-class OrganizationIntegrationRequestEndpoint(OrganizationEndpoint):
-    permission_classes = (OrganizationIntegrationRequestPermission,)
-
+class OrganizationIntegrationRequestEndpoint(OrganizationRequestChangeEndpoint):
     def post(self, request, organization):
         """
         Email the organization owners asking them to install an integration.
@@ -110,15 +98,13 @@ class OrganizationIntegrationRequestEndpoint(OrganizationEndpoint):
                 "organization_name": organization.name,
                 "requester_name": requester.name or requester.username,
                 "requester_link": absolute_uri(
-                    "/settings/{organization_slug}/members/{user_id}/".format(
-                        organization_slug=organization.slug, user_id=requester.id,
-                    )
+                    f"/settings/{organization.slug}/members/{requester.id}/"
                 ),
                 "settings_link": absolute_uri(
                     reverse("sentry-organization-settings", args=[organization.slug])
                 ),
             },
         )
-        msg.send_async([user.email for user in owners_list])
+        msg.send([user.email for user in owners_list])
 
         return Response(status=201)

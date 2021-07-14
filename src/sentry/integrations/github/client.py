@@ -1,9 +1,10 @@
-from __future__ import absolute_import
-
 from datetime import datetime
 
-from sentry.integrations.github.utils import get_jwt
+import sentry_sdk
+
 from sentry.integrations.client import ApiClient
+from sentry.integrations.github.utils import get_jwt
+from sentry.utils import jwt
 
 
 class GitHubClientMixin(ApiClient):
@@ -19,24 +20,24 @@ class GitHubClientMixin(ApiClient):
         # return api request that fetches last ~30 commits
         # see https://developer.github.com/v3/repos/commits/#list-commits-on-a-repository
         # using end_sha as parameter
-        return self.get_cached(u"/repos/{}/commits".format(repo), params={"sha": end_sha})
+        return self.get_cached(f"/repos/{repo}/commits", params={"sha": end_sha})
 
     def compare_commits(self, repo, start_sha, end_sha):
         # see https://developer.github.com/v3/repos/commits/#compare-two-commits
         # where start sha is oldest and end is most recent
-        return self.get_cached(u"/repos/{}/compare/{}...{}".format(repo, start_sha, end_sha))
+        return self.get_cached(f"/repos/{repo}/compare/{start_sha}...{end_sha}")
 
     def repo_hooks(self, repo):
-        return self.get(u"/repos/{}/hooks".format(repo))
+        return self.get(f"/repos/{repo}/hooks")
 
     def get_commits(self, repo):
-        return self.get(u"/repos/{}/commits".format(repo))
+        return self.get(f"/repos/{repo}/commits")
 
     def get_commit(self, repo, sha):
-        return self.get_cached(u"/repos/{}/commits/{}".format(repo, sha))
+        return self.get_cached(f"/repos/{repo}/commits/{sha}")
 
     def get_repo(self, repo):
-        return self.get(u"/repos/{}".format(repo))
+        return self.get(f"/repos/{repo}")
 
     def get_repositories(self):
         repositories = self.get("/installation/repositories", params={"per_page": 100})
@@ -47,27 +48,73 @@ class GitHubClientMixin(ApiClient):
         return self.get("/search/repositories", params={"q": query})
 
     def get_assignees(self, repo):
-        return self.get(u"/repos/{}/assignees".format(repo))
+        return self.get_with_pagination(f"/repos/{repo}/assignees")
+
+    def get_with_pagination(self, path, *args, **kwargs):
+        """
+        Github uses the Link header to provide pagination links. Github recommends using the provided link relations and not constructing our own URL.
+        https://docs.github.com/en/rest/guides/traversing-with-pagination
+        """
+        try:
+            with sentry_sdk.configure_scope() as scope:
+                parent_span_id = scope.span.span_id
+                trace_id = scope.span.trace_id
+        except AttributeError:
+            parent_span_id = None
+            trace_id = None
+
+        with sentry_sdk.start_transaction(
+            op=f"{self.integration_type}.http.pagination",
+            name=f"{self.integration_type}.http_response.pagination.{self.name}",
+            parent_span_id=parent_span_id,
+            trace_id=trace_id,
+            sampled=True,
+        ):
+            output = []
+            resp = self.get(path, params={"per_page": self.page_size})
+            output.extend(resp)
+            page_number = 1
+
+            def get_next_link(resp):
+                link = resp.headers.get("link")
+                if link is None:
+                    return None
+
+                # Should be a comma separated string of links
+                links = link.split(",")
+
+                for link in links:
+                    # If there is a 'next' link return the URL between the angle brackets, or None
+                    if 'rel="next"' in link:
+                        return link[link.find("<") + 1 : link.find(">")]
+
+                return None
+
+            while get_next_link(resp) and page_number < self.page_number_limit:
+                resp = self.get(get_next_link(resp))
+                output.extend(resp)
+                page_number += 1
+            return output
 
     def get_issues(self, repo):
-        return self.get(u"/repos/{}/issues".format(repo))
+        return self.get(f"/repos/{repo}/issues")
 
     def search_issues(self, query):
         return self.get("/search/issues", params={"q": query})
 
     def get_issue(self, repo, number):
-        return self.get(u"/repos/{}/issues/{}".format(repo, number))
+        return self.get(f"/repos/{repo}/issues/{number}")
 
     def create_issue(self, repo, data):
-        endpoint = u"/repos/{}/issues".format(repo)
+        endpoint = f"/repos/{repo}/issues"
         return self.post(endpoint, data=data)
 
     def create_comment(self, repo, issue_id, data):
-        endpoint = u"/repos/{}/issues/{}/comments".format(repo, issue_id)
+        endpoint = f"/repos/{repo}/issues/{issue_id}/comments"
         return self.post(endpoint, data=data)
 
     def get_user(self, gh_username):
-        return self.get(u"/users/{}".format(gh_username))
+        return self.get(f"/users/{gh_username}")
 
     def request(self, method, path, headers=None, data=None, params=None):
         if headers is None:
@@ -103,17 +150,35 @@ class GitHubClientMixin(ApiClient):
         return token
 
     def create_token(self):
+        headers = {
+            # TODO(jess): remove this whenever it's out of preview
+            "Accept": "application/vnd.github.machine-man-preview+json",
+        }
+        headers.update(jwt.authorization_header(self.get_jwt()))
         return self.post(
-            u"/app/installations/{}/access_tokens".format(self.integration.external_id),
-            headers={
-                "Authorization": "Bearer %s" % self.get_jwt(),
-                # TODO(jess): remove this whenever it's out of preview
-                "Accept": "application/vnd.github.machine-man-preview+json",
-            },
+            f"/app/installations/{self.integration.external_id}/access_tokens",
+            headers=headers,
         )
+
+    def check_file(self, repo, path, version):
+        repo_name = repo.name
+        return self.head_cached(path=f"/repos/{repo_name}/contents/{path}", params={"ref": version})
+
+    def search_file(self, repo, filename):
+        query = f"filename:{filename}+repo:{repo}"
+        results = self.get(path="/search/code", params={"q": query})
+        return results
+
+    def get_file(self, repo, path):
+        from base64 import b64decode
+
+        # default ref will be the default_branch
+        contents = self.get(path=f"/repos/{repo}/contents/{path}")
+        encoded_content = contents["content"]
+        return b64decode(encoded_content)
 
 
 class GitHubAppsClient(GitHubClientMixin):
     def __init__(self, integration):
         self.integration = integration
-        super(GitHubAppsClient, self).__init__()
+        super().__init__()

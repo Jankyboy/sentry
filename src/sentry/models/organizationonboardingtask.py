@@ -1,9 +1,6 @@
-from __future__ import absolute_import
-
-import six
 from django.conf import settings
 from django.core.cache import cache
-from django.db import models, IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from sentry.db.models import (
@@ -16,7 +13,7 @@ from sentry.db.models import (
 )
 
 
-class OnboardingTask(object):
+class OnboardingTask:
     FIRST_PROJECT = 1
     FIRST_EVENT = 2
     INVITE_MEMBER = 3
@@ -30,7 +27,7 @@ class OnboardingTask(object):
     FIRST_TRANSACTION = 11
 
 
-class OnboardingTaskStatus(object):
+class OnboardingTaskStatus:
     COMPLETE = 1
     PENDING = 2
     SKIPPED = 3
@@ -56,7 +53,7 @@ class OnboardingTaskStatus(object):
 
 class OrganizationOnboardingTaskManager(BaseManager):
     def record(self, organization_id, task, **kwargs):
-        cache_key = "organizationonboardingtask:%s:%s" % (organization_id, task)
+        cache_key = f"organizationonboardingtask:{organization_id}:{task}"
         if cache.get(cache_key) is None:
             try:
                 with transaction.atomic():
@@ -76,7 +73,7 @@ class OrganizationOnboardingTask(Model):
     Onboarding tasks walk new Sentry orgs through basic features of Sentry.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     TASK_CHOICES = (
         (OnboardingTask.FIRST_PROJECT, "create_project"),
@@ -138,9 +135,11 @@ class OrganizationOnboardingTask(Model):
     )
 
     organization = FlexibleForeignKey("sentry.Organization")
-    user = FlexibleForeignKey(settings.AUTH_USER_MODEL, null=True)  # user that completed
-    task = BoundedPositiveIntegerField(choices=[(k, six.text_type(v)) for k, v in TASK_CHOICES])
-    status = BoundedPositiveIntegerField(choices=[(k, six.text_type(v)) for k, v in STATUS_CHOICES])
+    user = FlexibleForeignKey(
+        settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL
+    )  # user that completed
+    task = BoundedPositiveIntegerField(choices=[(k, str(v)) for k, v in TASK_CHOICES])
+    status = BoundedPositiveIntegerField(choices=[(k, str(v)) for k, v in STATUS_CHOICES])
     completion_seen = models.DateTimeField(null=True)
     date_completed = models.DateTimeField(default=timezone.now)
     project = FlexibleForeignKey("sentry.Project", db_constraint=False, null=True)

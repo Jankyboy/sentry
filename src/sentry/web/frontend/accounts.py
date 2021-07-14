@@ -1,28 +1,33 @@
-from __future__ import absolute_import
-
 import logging
 from functools import partial, update_wrapper
 
 from django.contrib import messages
-from django.contrib.auth import login as login_user, authenticate
-from django.template.context_processors import csrf
-from django.core.urlresolvers import reverse
+from django.contrib.auth import authenticate
+from django.contrib.auth import login as login_user
 from django.db import transaction
-from django.http import HttpResponseRedirect, Http404, HttpResponse
-from django.views.decorators.http import require_http_methods
+from django.http import Http404, HttpResponse, HttpResponseRedirect
+from django.template.context_processors import csrf
+from django.urls import reverse
+from django.utils.translation import ugettext as _
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
-from django.utils.translation import ugettext as _
+from django.views.decorators.http import require_http_methods
 
-from sentry.models import UserEmail, LostPasswordHash, Project, UserOption, Authenticator
+from sentry.models import Authenticator, LostPasswordHash, NotificationSetting, Project, UserEmail
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.security import capture_security_activity
 from sentry.signals import email_verified
-from sentry.web.decorators import login_required, signed_auth_required
-from sentry.web.forms.accounts import RecoverPasswordForm, ChangePasswordRecoverForm
-from sentry.web.helpers import render_to_response
+from sentry.types.integrations import ExternalProviders
 from sentry.utils import auth
+from sentry.web.decorators import login_required, set_referrer_policy, signed_auth_required
+from sentry.web.forms.accounts import ChangePasswordRecoverForm, RecoverPasswordForm
+from sentry.web.helpers import render_to_response
 
 logger = logging.getLogger("sentry.accounts")
+
+
+def get_template(mode, name):
+    return f"sentry/account/{mode}/{name}.html"
 
 
 @login_required
@@ -36,7 +41,7 @@ def expired(request, user):
     password_hash.send_email(request)
 
     context = {"email": password_hash.user.email}
-    return render_to_response("sentry/account/recover/expired.html", context, request)
+    return render_to_response(get_template("recover", "expired"), context, request)
 
 
 def recover(request):
@@ -48,7 +53,7 @@ def recover(request):
     }
 
     if request.method == "POST" and ratelimiter.is_limited(
-        u"accounts:recover:{}".format(extra["ip_address"]),
+        "accounts:recover:{}".format(extra["ip_address"]),
         limit=5,
         window=60,  # 5 per minute should be enough for anyone
     ):
@@ -76,20 +81,19 @@ def recover(request):
 
             logger.info("recover.sent", extra=extra)
 
-        tpl = "sentry/account/recover/sent.html"
         context = {"email": email}
 
-        return render_to_response(tpl, context, request)
+        return render_to_response(get_template("recover", "sent"), context, request)
 
     if form._errors:
         logger.warning("recover.error", extra=extra)
 
-    tpl = "sentry/account/recover/index.html"
     context = {"form": form}
 
-    return render_to_response(tpl, context, request)
+    return render_to_response(get_template("recover", "index"), context, request)
 
 
+@set_referrer_policy("strict-origin-when-cross-origin")
 def recover_confirm(request, user_id, hash, mode="recover"):
     try:
         password_hash = LostPasswordHash.objects.get(user=user_id, hash=hash)
@@ -99,7 +103,7 @@ def recover_confirm(request, user_id, hash, mode="recover"):
         user = password_hash.user
 
     except LostPasswordHash.DoesNotExist:
-        return render_to_response(u"sentry/account/{}/{}.html".format(mode, "failure"), {}, request)
+        return render_to_response(get_template(mode, "failure"), {}, request)
 
     if request.method == "POST":
         form = ChangePasswordRecoverForm(request.POST)
@@ -131,9 +135,7 @@ def recover_confirm(request, user_id, hash, mode="recover"):
     else:
         form = ChangePasswordRecoverForm()
 
-    return render_to_response(
-        u"sentry/account/{}/{}.html".format(mode, "confirm"), {"form": form}, request
-    )
+    return render_to_response(get_template(mode, "confirm"), {"form": form}, request)
 
 
 # Set password variation of password recovery
@@ -147,7 +149,7 @@ def start_confirm_email(request):
     from sentry.app import ratelimiter
 
     if ratelimiter.is_limited(
-        u"auth:confirm-email:{}".format(request.user.id),
+        f"auth:confirm-email:{request.user.id}",
         limit=10,
         window=60,  # 10 per minute should be enough for anyone
     ):
@@ -189,6 +191,7 @@ def start_confirm_email(request):
     return HttpResponseRedirect(reverse("sentry-account-settings-emails"))
 
 
+@set_referrer_policy("strict-origin-when-cross-origin")
 def confirm_email(request, user_id, hash):
     msg = _("Thanks for confirming your email")
     level = messages.SUCCESS
@@ -197,7 +200,7 @@ def confirm_email(request, user_id, hash):
         if not email.hash_is_valid():
             raise UserEmail.DoesNotExist
     except UserEmail.DoesNotExist:
-        if request.user.is_anonymous() or request.user.has_unverified_emails():
+        if request.user.is_anonymous or request.user.has_unverified_emails():
             msg = _(
                 "There was an error confirming your email. Please try again or "
                 "visit your Account Settings to resend the verification email."
@@ -235,8 +238,12 @@ def email_unsubscribe_project(request, project_id):
 
     if request.method == "POST":
         if "cancel" not in request.POST:
-            UserOption.objects.set_value(
-                user=request.user, key="mail:alert", value=0, project=project
+            NotificationSetting.objects.update_settings(
+                ExternalProviders.EMAIL,
+                NotificationSettingTypes.ISSUE_ALERTS,
+                NotificationSettingOptionValues.NEVER,
+                user=request.user,
+                project=project,
             )
         return HttpResponseRedirect(auth.get_login_url())
 

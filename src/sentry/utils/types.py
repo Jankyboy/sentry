@@ -1,7 +1,3 @@
-from __future__ import absolute_import, print_function
-
-import six
-
 from yaml.parser import ParserError
 from yaml.scanner import ScannerError
 
@@ -14,16 +10,16 @@ class InvalidTypeError(TypeError):
     pass
 
 
-class Type(object):
-    """Base Type that provides type coersion"""
+class Type:
+    """Base Type that provides type coercion"""
 
     name = ""
     # Default value to be returned when initializing
     default = None
     # Types that do not need to be coerced
     expected_types = ()
-    # Types that are acceptable for coersion
-    compatible_types = six.string_types
+    # Types that are acceptable for coercion
+    compatible_types = (str,)
 
     def __call__(self, value=None):
         if value is None:
@@ -36,7 +32,7 @@ class Type(object):
             # and give us the type we were expecting
             if self.test(rv):
                 return rv
-        raise InvalidTypeError(u"{!r} is not a valid {}".format(value, repr(self)))
+        raise InvalidTypeError(f"{value!r} is not a valid {self!r}")
 
     def convert(self, value):
         return value
@@ -53,7 +49,7 @@ class Type(object):
 
 
 class AnyType(Type):
-    """A type that accepts any value and does no coersion"""
+    """A type that accepts any value and does no coercion"""
 
     name = "any"
     expected_types = (object,)
@@ -65,10 +61,10 @@ class BoolType(Type):
     name = "boolean"
     default = False
     expected_types = (bool,)
-    compatible_types = six.string_types + six.integer_types
+    compatible_types = (str, int)
 
     def convert(self, value):
-        if isinstance(value, six.integer_types):
+        if isinstance(value, int):
             return bool(value)
         value = value.lower()
         if value in ("y", "yes", "t", "true", "1", "on"):
@@ -82,7 +78,7 @@ class IntType(Type):
 
     name = "integer"
     default = 0
-    expected_types = six.integer_types
+    expected_types = (int,)
 
     def convert(self, value):
         try:
@@ -97,7 +93,7 @@ class FloatType(Type):
     name = "float"
     default = 0.0
     expected_types = (float,)
-    compatible_types = six.string_types + six.integer_types + (float,)
+    compatible_types = (str, int, float)
 
     def convert(self, value):
         try:
@@ -107,12 +103,12 @@ class FloatType(Type):
 
 
 class StringType(Type):
-    """String type without any coersion, must be a string"""
+    """String type without any coercion, must be a string"""
 
     name = "string"
-    default = u""
-    expected_types = six.string_types
-    compatible_types = six.string_types
+    default = ""
+    expected_types = (str,)
+    compatible_types = (str,)
 
 
 class DictType(Type):
@@ -138,10 +134,10 @@ class SequenceType(Type):
     name = "sequence"
     default = ()
     expected_types = (tuple, list)
-    compatible_types = six.string_types + (tuple, list)
+    compatible_types = (str, tuple, list)
 
     def convert(self, value):
-        if isinstance(value, six.string_types):
+        if isinstance(value, str):
             try:
                 value = safe_load(value)
             except (AttributeError, ParserError, ScannerError):
@@ -165,8 +161,8 @@ _type_mapping = {
     bool: Bool,
     int: Int,
     float: Float,
-    six.binary_type: String,
-    six.text_type: String,
+    bytes: String,
+    str: String,
     dict: Dict,
     tuple: Sequence,
     list: Sequence,

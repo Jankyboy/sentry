@@ -1,8 +1,6 @@
-from __future__ import absolute_import
+from datetime import datetime, timedelta
 
 import pytest
-from sentry.utils.compat import mock
-from datetime import datetime, timedelta
 from django.utils import timezone
 
 from sentry.models import (
@@ -14,16 +12,18 @@ from sentry.models import (
     Team,
     User,
 )
-from sentry.testutils import TestCase
 from sentry.search.base import ANY
 from sentry.search.utils import (
-    parse_query,
+    InvalidQuery,
+    convert_user_tag_to_query,
     get_latest_release,
     get_numeric_field_value,
-    convert_user_tag_to_query,
+    parse_duration,
+    parse_query,
     tokenize_query,
-    InvalidQuery,
 )
+from sentry.testutils import TestCase
+from sentry.utils.compat import mock
 
 
 def test_get_numeric_field_value():
@@ -48,6 +48,61 @@ def test_get_numeric_field_value():
     }
 
 
+class TestParseDuration(TestCase):
+    def test_ms(self):
+        assert parse_duration(123, "ms") == 123
+
+    def test_sec(self):
+        assert parse_duration(456, "s") == 456000
+
+    def test_minutes(self):
+        assert parse_duration(789, "min") == 789 * 60 * 1000
+        assert parse_duration(789, "m") == 789 * 60 * 1000
+
+    def test_hours(self):
+        assert parse_duration(234, "hr") == 234 * 60 * 60 * 1000
+        assert parse_duration(234, "h") == 234 * 60 * 60 * 1000
+
+    def test_days(self):
+        assert parse_duration(567, "day") == 567 * 24 * 60 * 60 * 1000
+        assert parse_duration(567, "d") == 567 * 24 * 60 * 60 * 1000
+
+    def test_weeks(self):
+        assert parse_duration(890, "wk") == 890 * 7 * 24 * 60 * 60 * 1000
+        assert parse_duration(890, "w") == 890 * 7 * 24 * 60 * 60 * 1000
+
+    def test_errors(self):
+        with self.assertRaises(InvalidQuery):
+            parse_duration("test", "ms")
+
+        with self.assertRaises(InvalidQuery):
+            parse_duration(123, "test")
+
+    def test_large_durations(self):
+        max_duration = 999999999 * 24 * 60 * 60 * 1000
+        assert parse_duration(999999999, "d") == max_duration
+        assert parse_duration(999999999 * 24, "h") == max_duration
+        assert parse_duration(999999999 * 24 * 60, "m") == max_duration
+        assert parse_duration(999999999 * 24 * 60 * 60, "s") == max_duration
+        assert parse_duration(999999999 * 24 * 60 * 60 * 1000, "ms") == max_duration
+
+    def test_overflow_durations(self):
+        with self.assertRaises(InvalidQuery):
+            assert parse_duration(999999999 + 1, "d")
+
+        with self.assertRaises(InvalidQuery):
+            assert parse_duration((999999999 + 1) * 24, "h")
+
+        with self.assertRaises(InvalidQuery):
+            assert parse_duration((999999999 + 1) * 24 * 60 + 1, "m")
+
+        with self.assertRaises(InvalidQuery):
+            assert parse_duration((999999999 + 1) * 24 * 60 * 60 + 1, "s")
+
+        with self.assertRaises(InvalidQuery):
+            assert parse_duration((999999999 + 1) * 24 * 60 * 60 * 1000 + 1, "ms")
+
+
 def test_tokenize_query_only_keyed_fields():
     tests = [
         ("a:a", {"a": ["a"]}),
@@ -65,6 +120,11 @@ def test_tokenize_query_only_keyed_fields():
         (
             "((x y)) a():>a AND (!b:b OR c():<c) z)",
             {"a()": [">a"], "!b": ["b"], "c()": ["<c"], "query": ["x", "y", "z"]},
+        ),
+        ('a:"\\"a\\""', {"a": ['\\"a\\"']}),
+        (
+            'a:"i \\" quote" b:"b\\"bb" c:"cc"',
+            {"a": ['i \\" quote'], "b": ['b\\"bb'], "c": ["cc"]},
         ),
     ]
 
@@ -289,8 +349,12 @@ class ParseQueryTest(TestCase):
         result = self.parse_query("assigned:me")
         assert result == {"assigned_to": self.user, "tags": {}, "query": ""}
 
+    def test_assigned_none(self):
+        result = self.parse_query("assigned:none")
+        assert result == {"assigned_to": None, "tags": {}, "query": ""}
+
     def test_assigned_email(self):
-        result = self.parse_query("assigned:%s" % (self.user.email,))
+        result = self.parse_query(f"assigned:{self.user.email}")
         assert result == {"assigned_to": self.user, "tags": {}, "query": ""}
 
     def test_assigned_unknown_user(self):
@@ -299,12 +363,12 @@ class ParseQueryTest(TestCase):
         assert result["assigned_to"].id == 0
 
     def test_assigned_valid_team(self):
-        result = self.parse_query(u"assigned:#{}".format(self.team.slug))
+        result = self.parse_query(f"assigned:#{self.team.slug}")
         assert result["assigned_to"] == self.team
 
     def test_assigned_unassociated_team(self):
         team2 = self.create_team(organization=self.organization)
-        result = self.parse_query(u"assigned:#{}".format(team2.slug))
+        result = self.parse_query(f"assigned:#{team2.slug}")
         assert isinstance(result["assigned_to"], Team)
         assert result["assigned_to"].id == 0
 
@@ -318,7 +382,7 @@ class ParseQueryTest(TestCase):
         assert result == {"bookmarked_by": self.user, "tags": {}, "query": ""}
 
     def test_bookmarks_email(self):
-        result = self.parse_query("bookmarks:%s" % (self.user.email,))
+        result = self.parse_query(f"bookmarks:{self.user.email}")
         assert result == {"bookmarked_by": self.user, "tags": {}, "query": ""}
 
     def test_bookmarks_unknown_user(self):
@@ -403,6 +467,18 @@ class ParseQueryTest(TestCase):
     def test_is_assigned(self):
         result = self.parse_query("is:assigned")
         assert result == {"unassigned": False, "tags": {}, "query": ""}
+
+    def test_is_inbox(self):
+        result = self.parse_query("is:for_review")
+        assert result == {"for_review": True, "tags": {}, "query": ""}
+
+    def test_is_unlinked(self):
+        result = self.parse_query("is:unlinked")
+        assert result == {"linked": False, "tags": {}, "query": ""}
+
+    def test_is_linked(self):
+        result = self.parse_query("is:linked")
+        assert result == {"linked": True, "tags": {}, "query": ""}
 
     def test_age_from(self):
         result = self.parse_query("age:-24h")
@@ -503,6 +579,42 @@ class ParseQueryTest(TestCase):
         result = self.parse_query("country:canada :unresolved")
         assert result["query"] == ":unresolved"
         assert result["tags"]["country"] == "canada"
+
+    def test_assigned_or_suggested_me(self):
+        result = self.parse_query("assigned_or_suggested:me")
+        assert result == {"assigned_or_suggested": self.user, "tags": {}, "query": ""}
+
+    def test_assigned_or_suggested_none(self):
+        result = self.parse_query("assigned_or_suggested:none")
+        assert result == {
+            "assigned_or_suggested": None,
+            "tags": {},
+            "query": "",
+        }
+
+    def test_owner_email(self):
+        result = self.parse_query(f"assigned_or_suggested:{self.user.email}")
+        assert result == {"assigned_or_suggested": self.user, "tags": {}, "query": ""}
+
+    def test_assigned_or_suggested_unknown_user(self):
+        result = self.parse_query("assigned_or_suggested:fake@example.com")
+        assert isinstance(result["assigned_or_suggested"], User)
+        assert result["assigned_or_suggested"].id == 0
+
+    def test_owner_valid_team(self):
+        result = self.parse_query(f"assigned_or_suggested:#{self.team.slug}")
+        assert result["assigned_or_suggested"] == self.team
+
+    def test_assigned_or_suggested_unassociated_team(self):
+        team2 = self.create_team(organization=self.organization)
+        result = self.parse_query(f"assigned_or_suggested:#{team2.slug}")
+        assert isinstance(result["assigned_or_suggested"], Team)
+        assert result["assigned_or_suggested"].id == 0
+
+    def test_owner_invalid_team(self):
+        result = self.parse_query("assigned_or_suggested:#invalid")
+        assert isinstance(result["assigned_or_suggested"], Team)
+        assert result["assigned_or_suggested"].id == 0
 
 
 class GetLatestReleaseTest(TestCase):

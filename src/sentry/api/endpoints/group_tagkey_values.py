@@ -1,33 +1,20 @@
-from __future__ import absolute_import
-
 from sentry import tagstore
-from sentry.api.base import DocSection, EnvironmentMixin
+from sentry.api.base import EnvironmentMixin
 from sentry.api.bases.group import GroupEndpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.helpers.environments import get_environments
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models.tagvalue import UserTagValueSerializer
-from sentry.models import Group
-from sentry.utils.apidocs import scenario
-
-
-@scenario("ListTagValues")
-def list_tag_values_scenario(runner):
-    group = Group.objects.filter(project=runner.default_project).first()
-    runner.request(method="GET", path="/issues/%s/tags/%s/values/" % (group.id, "browser"))
 
 
 class GroupTagKeyValuesEndpoint(GroupEndpoint, EnvironmentMixin):
-    doc_section = DocSection.EVENTS
-
-    # XXX: this scenario does not work for some inexplicable reasons
-    # @attach_scenarios([list_tag_values_scenario])
     def get(self, request, group, key):
         """
         List a Tag's Values
         ```````````````````
 
         Return a list of values associated with this key for an issue.
+        When paginated can return at most 1000 values.
 
         :pparam string issue_id: the ID of the issue to retrieve.
         :pparam string key: the tag key to look the values up for.

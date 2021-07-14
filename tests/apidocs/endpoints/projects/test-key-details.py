@@ -1,24 +1,18 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
 from django.test.client import RequestFactory
+from django.urls import reverse
 
 from tests.apidocs.util import APIDocsTestCase
 
 
 class ProjectKeyDetailsDocs(APIDocsTestCase):
     def setUp(self):
-        organization = self.create_organization()
-        key = self.create_project_key(project=self.project)
 
         self.url = reverse(
             "sentry-api-0-project-key-details",
             kwargs={
-                "organization_slug": organization.slug,
+                "organization_slug": self.project.organization.slug,
                 "project_slug": self.project.slug,
-                "key_id": key.id,
+                "key_id": self.projectkey.public_key,
             },
         )
 

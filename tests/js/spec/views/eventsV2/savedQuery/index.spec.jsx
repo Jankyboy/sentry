@@ -1,13 +1,12 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
-import SavedQueryButtonGroup from 'app/views/eventsV2/savedQuery';
-import {ALL_VIEWS} from 'app/views/eventsV2/data';
 import EventView from 'app/utils/discover/eventView';
+import DiscoverBanner from 'app/views/eventsV2/banner';
+import {ALL_VIEWS} from 'app/views/eventsV2/data';
+import SavedQueryButtonGroup from 'app/views/eventsV2/savedQuery';
 import * as utils from 'app/views/eventsV2/savedQuery/utils';
 
-const SELECTOR_BUTTON_SAVE_AS = 'ButtonSaveAs';
+const SELECTOR_BUTTON_SAVE_AS = 'button[aria-label="Save as"]';
 const SELECTOR_BUTTON_SAVED = '[data-test-id="discover2-savedquery-button-saved"]';
 const SELECTOR_BUTTON_UPDATE = '[data-test-id="discover2-savedquery-button-update"]';
 const SELECTOR_BUTTON_DELETE = '[data-test-id="discover2-savedquery-button-delete"]';
@@ -33,9 +32,9 @@ function generateWrappedComponent(
   );
 }
 
-describe('EventsV2 > SaveQueryButtonGroup', function() {
+describe('EventsV2 > SaveQueryButtonGroup', function () {
   // Organization + Location does not affect state in this component
-  const organization = TestStubs.Organization();
+  const organization = TestStubs.Organization({features: ['discover-query']});
   const location = {
     pathname: '/organization/eventsv2/',
     query: {},
@@ -72,7 +71,7 @@ describe('EventsV2 > SaveQueryButtonGroup', function() {
       );
 
       const buttonSaveAs = wrapper.find(SELECTOR_BUTTON_SAVE_AS);
-      expect(buttonSaveAs.props().disabled).toBe(true);
+      expect(buttonSaveAs.props()['aria-disabled']).toBe(true);
     });
 
     it('renders the correct set of buttons', () => {
@@ -92,6 +91,32 @@ describe('EventsV2 > SaveQueryButtonGroup', function() {
       expect(buttonSaved.exists()).toBe(false);
       expect(buttonUpdate.exists()).toBe(false);
       expect(buttonDelete.exists()).toBe(false);
+    });
+
+    it('hides the banner when save is complete.', async () => {
+      const wrapper = generateWrappedComponent(
+        location,
+        organization,
+        errorsView,
+        undefined
+      );
+
+      // Click on ButtonSaveAs to open dropdown
+      const buttonSaveAs = wrapper.find('DropdownControl').first();
+      buttonSaveAs.simulate('click');
+
+      // Fill in the Input
+      buttonSaveAs
+        .find('ButtonSaveInput')
+        .simulate('change', {target: {value: 'My New Query Name'}}); // currentTarget.value does not work
+      await tick();
+
+      // Click on Save in the Dropdown
+      await buttonSaveAs.find('ButtonSaveDropDown Button').simulate('click');
+
+      // The banner should not render
+      const banner = mountWithTheme(<DiscoverBanner />);
+      expect(banner.find('BannerTitle').exists()).toBe(false);
     });
 
     it('saves a well-formed query', async () => {

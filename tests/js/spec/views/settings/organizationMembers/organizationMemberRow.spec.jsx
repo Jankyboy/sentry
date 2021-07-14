@@ -1,10 +1,8 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import OrganizationMemberRow from 'app/views/settings/organizationMembers/organizationMemberRow';
 
-describe('OrganizationMemberRow', function() {
+describe('OrganizationMemberRow', function () {
   const member = {
     id: '1',
     email: '',
@@ -48,9 +46,9 @@ describe('OrganizationMemberRow', function() {
   const leaveButton = 'StyledButton[aria-label="Leave"]';
   const removeButton = 'StyledButton[aria-label="Remove"]';
 
-  beforeEach(function() {});
+  beforeEach(function () {});
 
-  it('does not have 2fa warning if user has 2fa', function() {
+  it('does not have 2fa warning if user has 2fa', function () {
     const wrapper = mountWithTheme(
       <OrganizationMemberRow
         {...defaultProps}
@@ -67,7 +65,7 @@ describe('OrganizationMemberRow', function() {
     expect(wrapper.find('IconFlag')).toHaveLength(0);
   });
 
-  it('has 2fa warning if user does not have 2fa enabled', function() {
+  it('has 2fa warning if user does not have 2fa enabled', function () {
     const wrapper = mountWithTheme(
       <OrganizationMemberRow
         {...defaultProps}
@@ -84,7 +82,7 @@ describe('OrganizationMemberRow', function() {
     expect(wrapper.find('IconFlag')).toHaveLength(1);
   });
 
-  describe('Pending user', function() {
+  describe('Pending user', function () {
     const props = {
       ...defaultProps,
       member: {
@@ -93,7 +91,7 @@ describe('OrganizationMemberRow', function() {
       },
     };
 
-    it('has "Invited" status, no "Resend Invite"', function() {
+    it('has "Invited" status, no "Resend Invite"', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow
           {...props}
@@ -108,14 +106,14 @@ describe('OrganizationMemberRow', function() {
       expect(wrapper.find(resendButton).prop('disabled')).toBe(true);
     });
 
-    it('has "Resend Invite" button only if `canAddMembers` is true', function() {
+    it('has "Resend Invite" button only if `canAddMembers` is true', function () {
       const wrapper = mountWithTheme(<OrganizationMemberRow {...props} canAddMembers />);
 
       expect(wrapper.find('[data-test-id="member-role"]').text()).toBe('Invited Member');
       expect(wrapper.find(resendButton).prop('disabled')).toBe(false);
     });
 
-    it('has the right inviting states', function() {
+    it('has the right inviting states', function () {
       let wrapper = mountWithTheme(<OrganizationMemberRow {...props} canAddMembers />);
 
       expect(wrapper.find(resendButton).exists()).toBe(true);
@@ -141,8 +139,8 @@ describe('OrganizationMemberRow', function() {
     });
   });
 
-  describe('Expired user', function() {
-    it('has "Expired" status', function() {
+  describe('Expired user', function () {
+    it('has "Expired" status', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow
           {...defaultProps}
@@ -160,7 +158,7 @@ describe('OrganizationMemberRow', function() {
     });
   });
 
-  describe('Requires SSO Link', function() {
+  describe('Requires SSO Link', function () {
     const props = {
       ...defaultProps,
       flags: {
@@ -169,7 +167,7 @@ describe('OrganizationMemberRow', function() {
       requireLink: true,
     };
 
-    it('shows "Invited" status if user has not registered and not linked', function() {
+    it('shows "Invited" status if user has not registered and not linked', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow
           {...props}
@@ -185,7 +183,7 @@ describe('OrganizationMemberRow', function() {
       expect(wrapper.find(resendButton).prop('disabled')).toBe(false);
     });
 
-    it('shows "missing SSO link" message if user is registered and needs link', function() {
+    it('shows "missing SSO link" message if user is registered and needs link', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow
           {...props}
@@ -199,7 +197,7 @@ describe('OrganizationMemberRow', function() {
       expect(wrapper.find(resendSsoButton).prop('disabled')).toBe(true);
     });
 
-    it('has "Resend SSO link" button only if `canAddMembers` is true and no link', function() {
+    it('has "Resend SSO link" button only if `canAddMembers` is true and no link', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow
           {...props}
@@ -213,7 +211,7 @@ describe('OrganizationMemberRow', function() {
       expect(wrapper.find(resendSsoButton).prop('disabled')).toBe(false);
     });
 
-    it('has 2fa warning if user is linked does not have 2fa enabled', function() {
+    it('has 2fa warning if user is linked does not have 2fa enabled', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow
           {...defaultProps}
@@ -235,7 +233,7 @@ describe('OrganizationMemberRow', function() {
     });
   });
 
-  describe('Is Current User', function() {
+  describe('Is Current User', function () {
     const props = {
       ...defaultProps,
       member: {
@@ -244,14 +242,14 @@ describe('OrganizationMemberRow', function() {
       },
     };
 
-    it('has button to leave organization and no button to remove', function() {
+    it('has button to leave organization and no button to remove', function () {
       const wrapper = mountWithTheme(<OrganizationMemberRow {...props} memberCanLeave />);
 
       expect(wrapper.find(leaveButton).exists()).toBe(true);
       expect(wrapper.find(removeButton).exists()).toBe(false);
     });
 
-    it('has disabled button to leave organization and no button to remove when member can not leave', function() {
+    it('has disabled button to leave organization and no button to remove when member can not leave', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow {...props} memberCanLeave={false} />
       );
@@ -261,24 +259,24 @@ describe('OrganizationMemberRow', function() {
     });
   });
 
-  describe('Not Current User', function() {
+  describe('Not Current User', function () {
     const props = {
       ...defaultProps,
     };
 
-    it('does not have Leave button', function() {
+    it('does not have Leave button', function () {
       const wrapper = mountWithTheme(<OrganizationMemberRow {...props} memberCanLeave />);
 
       expect(wrapper.find(leaveButton).exists()).toBe(false);
     });
 
-    it('has Remove disabled button when `canRemoveMembers` is false', function() {
+    it('has Remove disabled button when `canRemoveMembers` is false', function () {
       const wrapper = mountWithTheme(<OrganizationMemberRow {...props} />);
 
       expect(wrapper.find(removeButton).prop('disabled')).toBe(true);
     });
 
-    it('has Remove button when `canRemoveMembers` is true', function() {
+    it('has Remove button when `canRemoveMembers` is true', function () {
       const wrapper = mountWithTheme(
         <OrganizationMemberRow {...props} canRemoveMembers />
       );

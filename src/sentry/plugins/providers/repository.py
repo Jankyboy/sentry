@@ -1,10 +1,7 @@
-from __future__ import absolute_import
-
 from logging import getLogger
 
-import six
-from django.core.urlresolvers import reverse
 from django.db import IntegrityError, transaction
+from django.urls import reverse
 from rest_framework.response import Response
 
 from sentry.api.serializers import serialize
@@ -15,7 +12,6 @@ from sentry.signals import repo_linked
 
 from .base import ProviderMixin
 
-
 logger = getLogger("sentry.integrations")
 
 
@@ -23,7 +19,7 @@ class RepositoryProvider(ProviderMixin):
     """
     Plugin Repository Provider
     Includes all plugins such as those in sentry-plugins repo
-    as well as any outside plugin respoitories (i.e. Trello, Youtrack).
+    as well as any outside plugin repositories (i.e. Trello, Youtrack).
     Does not include the integrations in the sentry repository.
     """
 
@@ -66,7 +62,7 @@ class RepositoryProvider(ProviderMixin):
             )
         except PluginError as e:
             logger.exception("repo.create-error")
-            return Response({"errors": {"__all__": six.text_type(e)}}, status=400)
+            return Response({"errors": {"__all__": str(e)}}, status=400)
 
         try:
             with transaction.atomic():

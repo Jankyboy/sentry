@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
@@ -9,8 +7,8 @@ jest.mock('scroll-to-element', () => {});
 
 const ENDPOINT = '/users/me/emails/';
 
-describe('AccountEmails', function() {
-  beforeEach(function() {
+describe('AccountEmails', function () {
+  beforeEach(function () {
     Client.clearMockResponses();
     Client.addMockResponse({
       url: ENDPOINT,
@@ -18,13 +16,13 @@ describe('AccountEmails', function() {
     });
   });
 
-  it('renders with emails', function() {
+  it('renders with emails', function () {
     const wrapper = mountWithTheme(<AccountEmails />, TestStubs.routerContext());
 
     expect(wrapper).toSnapshot();
   });
 
-  it('can remove an email', function() {
+  it('can remove an email', function () {
     const mock = Client.addMockResponse({
       url: ENDPOINT,
       method: 'DELETE',
@@ -36,10 +34,7 @@ describe('AccountEmails', function() {
     expect(mock).not.toHaveBeenCalled();
 
     // The first Button should be delete button for first secondary email (NOT primary)
-    wrapper
-      .find('[data-test-id="remove"]')
-      .at(1)
-      .simulate('click');
+    wrapper.find('[data-test-id="remove"]').at(1).simulate('click');
 
     expect(mock).toHaveBeenCalledWith(
       ENDPOINT,
@@ -52,7 +47,7 @@ describe('AccountEmails', function() {
     );
   });
 
-  it('can change a secondary email to primary an email', function() {
+  it('can change a secondary email to primary an email', function () {
     const mock = Client.addMockResponse({
       url: ENDPOINT,
       method: 'PUT',
@@ -64,10 +59,7 @@ describe('AccountEmails', function() {
     expect(mock).not.toHaveBeenCalled();
 
     // The first Button should be delete button for first secondary email (NOT primary)
-    wrapper
-      .find('Button[children="Set as primary"]')
-      .first()
-      .simulate('click');
+    wrapper.find('Button[children="Set as primary"]').first().simulate('click');
 
     expect(mock).toHaveBeenCalledWith(
       ENDPOINT,
@@ -80,7 +72,7 @@ describe('AccountEmails', function() {
     );
   });
 
-  it('can resend verification email', function() {
+  it('can resend verification email', function () {
     const mock = Client.addMockResponse({
       url: `${ENDPOINT}confirm/`,
       method: 'POST',
@@ -104,7 +96,7 @@ describe('AccountEmails', function() {
     );
   });
 
-  it('can add a secondary email', function() {
+  it('can add a secondary email', function () {
     const mock = Client.addMockResponse({
       url: ENDPOINT,
       method: 'POST',

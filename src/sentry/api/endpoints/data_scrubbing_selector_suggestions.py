@@ -1,28 +1,11 @@
-from __future__ import absolute_import
-
-import six
 from rest_framework.response import Response
-
-from sentry import eventstore
-from sentry.api.base import DocSection
-from sentry.api.bases.organization import OrganizationEndpoint
-from sentry.utils.apidocs import scenario, attach_scenarios
-
 from sentry_relay import pii_selector_suggestions_from_event
 
-
-@scenario("GetSelectorSuggestionsForOrganization")
-def get_selector_suggestions_for_organization_scenario(runner):
-    runner.request(
-        method="GET",
-        path="/organizations/%s/data-scrubbing-selector-suggestions/" % (runner.org.slug,),
-    )
+from sentry import eventstore
+from sentry.api.bases.organization import OrganizationEndpoint
 
 
 class DataScrubbingSelectorSuggestionsEndpoint(OrganizationEndpoint):
-    doc_section = DocSection.ORGANIZATIONS
-
-    @attach_scenarios([get_selector_suggestions_for_organization_scenario])
     def get(self, request, organization):
         """
         Generate a list of data scrubbing selectors from existing event data.
@@ -61,7 +44,7 @@ class DataScrubbingSelectorSuggestionsEndpoint(OrganizationEndpoint):
             {
                 "suggestions": [
                     {"type": "value", "value": value, "examples": examples}
-                    for value, examples in six.iteritems(suggestions)
+                    for value, examples in suggestions.items()
                 ]
             }
         )

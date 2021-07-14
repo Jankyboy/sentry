@@ -1,5 +1,5 @@
 ---
-created: '2020-08-27T09:56:22.300669Z'
+created: '2021-01-05T09:42:17.220118Z'
 creator: sentry
 source: tests/symbolicator/test_minidump_full.py
 ---
@@ -31,7 +31,7 @@ debug_meta:
     code_id: 57898e12145000
     debug_file: dbghelp.pdb
     debug_id: 9c2a902b-6fdf-40ad-8308-588a41d572a0-1
-    debug_status: missing
+    debug_status: unused
     features:
       has_debug_info: false
       has_sources: false
@@ -330,29 +330,9 @@ exception:
           symbolicator_status: missing
         function: null
         in_app: false
-        instruction_addr: '0x75810000'
-        lineno: null
-        package: C:\Windows\System32\rpcrt4.dll
-        symbol: null
-        trust: scan
-      - data:
-          orig_in_app: -1
-          symbolicator_status: missing
-        function: null
-        in_app: false
         instruction_addr: '0x70b7ae40'
         lineno: null
         package: C:\Windows\System32\dbgcore.dll
-        symbol: null
-        trust: scan
-      - data:
-          orig_in_app: -1
-          symbolicator_status: missing
-        function: null
-        in_app: false
-        instruction_addr: '0x70850000'
-        lineno: null
-        package: C:\Windows\System32\dbghelp.dll
         symbol: null
         trust: scan
       - data:
@@ -406,8 +386,7 @@ threads:
     id: 1636
     raw_stacktrace: null
     stacktrace: null
-  - crashed: false
-    id: 3580
+  - id: 3580
     raw_stacktrace: null
     stacktrace:
       frames:
@@ -462,8 +441,7 @@ threads:
         eip: '0x771e016c'
         esi: '0x13b4930'
         esp: '0x159f900'
-  - crashed: false
-    id: 2600
+  - id: 2600
     raw_stacktrace: null
     stacktrace:
       frames:
@@ -518,8 +496,7 @@ threads:
         eip: '0x771e016c'
         esi: '0x13b7a68'
         esp: '0x169f9f4'
-  - crashed: false
-    id: 2920
+  - id: 2920
     raw_stacktrace: null
     stacktrace:
       frames:

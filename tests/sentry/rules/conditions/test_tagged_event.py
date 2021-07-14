@@ -1,7 +1,5 @@
-from __future__ import absolute_import
-
+from sentry.rules.conditions.tagged_event import MatchType, TaggedEventCondition
 from sentry.testutils.cases import RuleTestCase
-from sentry.rules.conditions.tagged_event import TaggedEventCondition, MatchType
 
 
 class TaggedEventConditionTest(RuleTestCase):
@@ -18,8 +16,8 @@ class TaggedEventConditionTest(RuleTestCase):
         return event
 
     def test_render_label(self):
-        rule = self.get_rule(data={"match": MatchType.EQUAL, "key": u"\xc3", "value": u"\xc4"})
-        assert rule.render_label() == u"The event's tags match \xc3 equals \xc4"
+        rule = self.get_rule(data={"match": MatchType.EQUAL, "key": "\xc3", "value": "\xc4"})
+        assert rule.render_label() == "The event's tags match \xc3 equals \xc4"
 
     def test_equals(self):
         event = self.get_event()
@@ -57,6 +55,18 @@ class TaggedEventConditionTest(RuleTestCase):
         )
         self.assertDoesNotPass(rule, event)
 
+    def test_does_not_start_with(self):
+        event = self.get_event()
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_STARTS_WITH, "key": "logger", "value": "sentry."}
+        )
+        self.assertDoesNotPass(rule, event)
+
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_STARTS_WITH, "key": "logger", "value": "bar."}
+        )
+        self.assertPasses(rule, event)
+
     def test_ends_with(self):
         event = self.get_event()
         rule = self.get_rule(
@@ -66,6 +76,18 @@ class TaggedEventConditionTest(RuleTestCase):
 
         rule = self.get_rule(data={"match": MatchType.ENDS_WITH, "key": "logger", "value": ".foo"})
         self.assertDoesNotPass(rule, event)
+
+    def test_does_not_end_with(self):
+        event = self.get_event()
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_ENDS_WITH, "key": "logger", "value": ".example"}
+        )
+        self.assertDoesNotPass(rule, event)
+
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_ENDS_WITH, "key": "logger", "value": ".foo"}
+        )
+        self.assertPasses(rule, event)
 
     def test_contains(self):
         event = self.get_event()

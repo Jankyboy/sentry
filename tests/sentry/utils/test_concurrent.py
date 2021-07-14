@@ -1,13 +1,11 @@
-from __future__ import absolute_import
-
+import _thread
 import sys
-
-import pytest
-from six.moves.queue import Full
-from six.moves import _thread
 from concurrent.futures import CancelledError, Future
 from contextlib import contextmanager
+from queue import Full
 from threading import Event
+
+import pytest
 
 from sentry.utils.compat import mock
 from sentry.utils.concurrent import (
@@ -169,6 +167,17 @@ def test_synchronous_executor():
         assert e.args[0] == mock.sentinel.EXCEPTION
     else:
         assert False, "expected future to raise"
+
+
+def test_threaded_same_priority_Tasks():
+    executor = ThreadedExecutor(worker_count=1)
+
+    def callable():
+        pass
+
+    # Test that we can correctly submit multiple tasks
+    executor.submit(callable)
+    executor.submit(callable)
 
 
 def test_threaded_executor():

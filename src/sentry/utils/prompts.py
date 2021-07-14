@@ -1,14 +1,20 @@
-from __future__ import absolute_import
-
+from sentry.models import PromptsActivity
+from sentry.utils.request_cache import request_cache
 
 DEFAULT_PROMPTS = {
     "releases": {"required_fields": ["organization_id", "project_id"]},
     "suspect_commits": {"required_fields": ["organization_id", "project_id"]},
     "alert_stream": {"required_fields": ["organization_id"]},
+    "app_store_connect_updates": {"required_fields": ["organization_id", "project_id"]},
+    "sdk_updates": {"required_fields": ["organization_id"]},
+    "suggest_mobile_project": {"required_fields": ["organization_id"]},
+    "stacktrace_link": {"required_fields": ["organization_id", "project_id"]},
+    "distributed_tracing": {"required_fields": ["organization_id", "project_id"]},
+    "quick_trace_missing": {"required_fields": ["organization_id", "project_id"]},
 }
 
 
-class PromptsConfig(object):
+class PromptsConfig:
     """
     Used to configure available 'prompts' (frontend modals or UI that may be
     dismissed or have some other action recorded about it). This config
@@ -22,7 +28,7 @@ class PromptsConfig(object):
 
     def add(self, name, config):
         if self.has(name):
-            raise Exception(u"Prompt key {} is already in use".format(name))
+            raise Exception(f"Prompt key {name} is already in use")
         if "required_fields" not in config:
             raise Exception("'required_fields' must be present in the config dict")
 
@@ -39,3 +45,10 @@ class PromptsConfig(object):
 
 
 prompt_config = PromptsConfig(DEFAULT_PROMPTS)
+
+
+@request_cache
+def get_prompt_activities(organization_ids, features):
+    return PromptsActivity.objects.filter(
+        organization_id__in=organization_ids, feature__in=features
+    )

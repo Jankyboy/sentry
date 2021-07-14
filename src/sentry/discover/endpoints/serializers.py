@@ -1,16 +1,23 @@
-from __future__ import absolute_import
-
-import six
 import re
+from typing import Sequence
+
+from django.db.models import Count, Max
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from sentry.discover.models import KeyTransaction, MAX_KEY_TRANSACTIONS
 from sentry.api.fields.empty_integer import EmptyIntegerField
-from sentry.api.event_search import get_filter, InvalidSearchQuery
 from sentry.api.serializers.rest_framework import ListField
-from sentry.api.utils import get_date_range_from_params, InvalidParams
+from sentry.api.utils import InvalidParams, get_date_range_from_params
 from sentry.constants import ALL_ACCESS_PROJECTS
+from sentry.discover.models import (
+    MAX_KEY_TRANSACTIONS,
+    MAX_TEAM_KEY_TRANSACTIONS,
+    KeyTransaction,
+    TeamKeyTransaction,
+)
+from sentry.exceptions import InvalidSearchQuery
+from sentry.models import Team
+from sentry.search.events.filter import get_filter
 from sentry.utils.snuba import SENTRY_SNUBA_MAP
 
 
@@ -33,7 +40,7 @@ class DiscoverQuerySerializer(serializers.Serializer):
     turbo = serializers.BooleanField(required=False)
 
     def __init__(self, *args, **kwargs):
-        super(DiscoverQuerySerializer, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         data = kwargs["data"]
 
@@ -75,7 +82,7 @@ class DiscoverQuerySerializer(serializers.Serializer):
                 optional=True,
             )
         except InvalidParams as e:
-            raise serializers.ValidationError(six.text_type(e))
+            raise serializers.ValidationError(str(e))
 
         if start is None or end is None:
             raise serializers.ValidationError("Either start and end dates or range is required")
@@ -90,15 +97,13 @@ class DiscoverQuerySerializer(serializers.Serializer):
         return [self.get_condition(condition) for condition in value]
 
     def validate_aggregations(self, value):
-        valid_functions = set(["count()", "uniq", "avg", "sum"])
-        requested_functions = set(agg[0] for agg in value)
+        valid_functions = {"count()", "uniq", "avg", "sum"}
+        requested_functions = {agg[0] for agg in value}
 
         if not requested_functions.issubset(valid_functions):
-            invalid_functions = ", ".join((requested_functions - valid_functions))
+            invalid_functions = ", ".join(requested_functions - valid_functions)
 
-            raise serializers.ValidationError(
-                u"Invalid aggregate function - {}".format(invalid_functions)
-            )
+            raise serializers.ValidationError(f"Invalid aggregate function - {invalid_functions}")
 
         return value
 
@@ -118,7 +123,7 @@ class DiscoverQuerySerializer(serializers.Serializer):
             condition[2] = int(condition[2])
 
         # Strip double quotes on strings
-        if isinstance(condition[2], six.string_types):
+        if isinstance(condition[2], str):
             match = re.search(r'^"(.*)"$', condition[2])
             if match:
                 condition[2] = match.group(1)
@@ -127,8 +132,8 @@ class DiscoverQuerySerializer(serializers.Serializer):
         if array_field and has_equality_operator and (array_field.group(1) != self.arrayjoin):
             value = condition[2]
 
-            if isinstance(value, six.string_types):
-                value = u"'{}'".format(value)
+            if isinstance(value, str):
+                value = f"'{value}'"
 
             bool_value = 1 if condition[1] == "=" else 0
 
@@ -165,8 +170,8 @@ class DiscoverSavedQuerySerializer(serializers.Serializer):
     display = serializers.CharField(required=False, allow_null=True)
 
     disallowed_fields = {
-        1: set(["environment", "query", "yAxis", "display"]),
-        2: set(["groupby", "rollup", "aggregations", "conditions", "limit"]),
+        1: {"environment", "query", "yAxis", "display"},
+        2: {"groupby", "rollup", "aggregations", "conditions", "limit"},
     }
 
     def validate_projects(self, projects):
@@ -218,7 +223,7 @@ class DiscoverSavedQuerySerializer(serializers.Serializer):
             try:
                 get_filter(query["query"], self.context["params"])
             except InvalidSearchQuery as err:
-                raise serializers.ValidationError("Cannot save invalid query: {}".format(err))
+                raise serializers.ValidationError(f"Cannot save invalid query: {err}")
 
         return {
             "name": data["name"],
@@ -244,11 +249,51 @@ class KeyTransactionSerializer(serializers.Serializer):
     transaction = serializers.CharField(required=True, max_length=200)
 
     def validate(self, data):
-        data = super(KeyTransactionSerializer, self).validate(data)
+        data = super().validate(data)
         base_filter = self.context.copy()
         # Limit the number of key transactions
         if KeyTransaction.objects.filter(**base_filter).count() >= MAX_KEY_TRANSACTIONS:
             raise serializers.ValidationError(
-                "At most {} Key Transactions can be added".format(MAX_KEY_TRANSACTIONS)
+                f"At most {MAX_KEY_TRANSACTIONS} Key Transactions can be added"
             )
+        return data
+
+
+class TeamKeyTransactionSerializer(serializers.Serializer):
+    transaction = serializers.CharField(required=True, max_length=200)
+    team = serializers.ListField(child=serializers.IntegerField())
+
+    def validate_team(self, team_ids: Sequence[int]) -> Team:
+        request = self.context["request"]
+        organization = self.context["organization"]
+        verified_teams = {team.id for team in Team.objects.get_for_user(organization, request.user)}
+
+        teams = Team.objects.filter(id__in=team_ids)
+
+        for team in teams:
+            if team.id in verified_teams:
+                continue
+
+            if not request.access.has_team_access(team):
+                raise serializers.ValidationError(
+                    f"You do not have permission to access {team.name}"
+                )
+
+        return teams
+
+    def validate(self, data):
+        data = super().validate(data)
+        if self.context.get("mode") == "create":
+            team = data["team"]
+            count = (
+                TeamKeyTransaction.objects.values("project_team")
+                .filter(project_team__team_id__in=[item.id for item in team])
+                .annotate(total=Count("project_team"))
+                .aggregate(max=Max("total"))
+            )
+            # Limit the number of key transactions for a team
+            if count["max"] and count["max"] >= MAX_TEAM_KEY_TRANSACTIONS:
+                raise serializers.ValidationError(
+                    f"At most {MAX_TEAM_KEY_TRANSACTIONS} Key Transactions can be added for a team"
+                )
         return data

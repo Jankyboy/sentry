@@ -1,6 +1,4 @@
-from __future__ import absolute_import
-
-from django.db.models import DateTimeField, DO_NOTHING
+from django.db.models import DO_NOTHING, DateTimeField
 from django.db.models.signals import post_delete
 from django.utils import timezone
 
@@ -9,7 +7,7 @@ from sentry.utils.cache import cache
 
 
 class GroupEnvironment(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     group = FlexibleForeignKey("sentry.Group", db_constraint=False)
     environment = FlexibleForeignKey("sentry.Environment", db_constraint=False)
@@ -33,7 +31,7 @@ class GroupEnvironment(Model):
 
     @classmethod
     def _get_cache_key(self, group_id, environment_id):
-        return u"groupenv:1:{}:{}".format(group_id, environment_id)
+        return f"groupenv:1:{group_id}:{environment_id}"
 
     @classmethod
     def get_or_create(cls, group_id, environment_id, defaults=None):

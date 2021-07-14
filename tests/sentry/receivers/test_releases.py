@@ -1,8 +1,4 @@
-from __future__ import absolute_import
-
-import six
 from hashlib import sha1
-from sentry.utils.compat.mock import patch
 from uuid import uuid4
 
 from sentry.models import (
@@ -11,6 +7,8 @@ from sentry.models import (
     CommitAuthor,
     Group,
     GroupAssignee,
+    GroupInbox,
+    GroupInboxReason,
     GroupLink,
     GroupStatus,
     GroupSubscription,
@@ -19,8 +17,10 @@ from sentry.models import (
     Repository,
     UserEmail,
     UserOption,
+    add_group_to_inbox,
 )
 from sentry.testutils import TestCase
+from sentry.utils.compat.mock import patch
 
 
 class ResolveGroupResolutionsTest(TestCase):
@@ -40,16 +40,19 @@ class ResolvedInCommitTest(TestCase):
         assert Group.objects.filter(
             id=group.id, status=GroupStatus.RESOLVED, resolved_at__isnull=False
         ).exists()
+        assert not GroupInbox.objects.filter(group=group).exists()
 
     def assertNotResolvedFromCommit(self, group, commit):
         assert not GroupLink.objects.filter(
             group_id=group.id, linked_type=GroupLink.LinkedType.commit, linked_id=commit.id
         ).exists()
         assert not Group.objects.filter(id=group.id, status=GroupStatus.RESOLVED).exists()
+        assert GroupInbox.objects.filter(group=group).exists()
 
     # TODO(dcramer): pull out short ID matching and expand regexp tests
     def test_simple_no_author(self):
         group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
 
         repo = Repository.objects.create(name="example", organization_id=self.group.organization.id)
 
@@ -57,13 +60,14 @@ class ResolvedInCommitTest(TestCase):
             key=sha1(uuid4().hex.encode("utf-8")).hexdigest(),
             repository_id=repo.id,
             organization_id=group.organization.id,
-            message=u"Foo Biz\n\nFixes {}".format(group.qualified_short_id),
+            message=f"Foo Biz\n\nFixes {group.qualified_short_id}",
         )
 
         self.assertResolvedFromCommit(group, commit)
 
     def test_updating_commit(self):
         group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
 
         repo = Repository.objects.create(name="example", organization_id=self.group.organization.id)
 
@@ -75,13 +79,14 @@ class ResolvedInCommitTest(TestCase):
 
         self.assertNotResolvedFromCommit(group, commit)
 
-        commit.message = u"Foo Biz\n\nFixes {}".format(group.qualified_short_id)
+        commit.message = f"Foo Biz\n\nFixes {group.qualified_short_id}"
         commit.save()
 
         self.assertResolvedFromCommit(group, commit)
 
     def test_updating_commit_with_existing_grouplink(self):
         group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
 
         repo = Repository.objects.create(name="example", organization_id=self.group.organization.id)
 
@@ -89,18 +94,19 @@ class ResolvedInCommitTest(TestCase):
             key=sha1(uuid4().hex.encode("utf-8")).hexdigest(),
             repository_id=repo.id,
             organization_id=group.organization.id,
-            message=u"Foo Biz\n\nFixes {}".format(group.qualified_short_id),
+            message=f"Foo Biz\n\nFixes {group.qualified_short_id}",
         )
 
         self.assertResolvedFromCommit(group, commit)
 
-        commit.message = u"Foo Bar Biz\n\nFixes {}".format(group.qualified_short_id)
+        commit.message = f"Foo Bar Biz\n\nFixes {group.qualified_short_id}"
         commit.save()
 
         self.assertResolvedFromCommit(group, commit)
 
     def test_removes_group_link_when_message_changes(self):
         group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
 
         repo = Repository.objects.create(name="example", organization_id=self.group.organization.id)
 
@@ -108,7 +114,7 @@ class ResolvedInCommitTest(TestCase):
             key=sha1(uuid4().hex.encode("utf-8")).hexdigest(),
             repository_id=repo.id,
             organization_id=group.organization.id,
-            message=u"Foo Biz\n\nFixes {}".format(group.qualified_short_id),
+            message=f"Foo Biz\n\nFixes {group.qualified_short_id}",
         )
 
         self.assertResolvedFromCommit(group, commit)
@@ -116,6 +122,7 @@ class ResolvedInCommitTest(TestCase):
         commit.message = "no groups here"
         commit.save()
 
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
         self.assertNotResolvedFromCommit(group, commit)
 
     def test_no_matching_group(self):
@@ -125,7 +132,7 @@ class ResolvedInCommitTest(TestCase):
             key=sha1(uuid4().hex.encode("utf-8")).hexdigest(),
             repository_id=repo.id,
             organization_id=self.organization.id,
-            message=u"Foo Biz\n\nFixes {}-12F".format(self.project.slug.upper()),
+            message=f"Foo Biz\n\nFixes {self.project.slug.upper()}-12F",
         )
 
         assert not GroupLink.objects.filter(
@@ -134,6 +141,7 @@ class ResolvedInCommitTest(TestCase):
 
     def test_matching_author_with_assignment(self):
         group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
         user = self.create_user(name="Foo Bar", email="foo@example.com", is_active=True)
         email = UserEmail.get_primary_email(user=user)
         email.is_verified = True
@@ -146,7 +154,7 @@ class ResolvedInCommitTest(TestCase):
             key=sha1(uuid4().hex.encode("utf-8")).hexdigest(),
             organization_id=group.organization.id,
             repository_id=repo.id,
-            message=u"Foo Biz\n\nFixes {}".format(group.qualified_short_id),
+            message=f"Foo Biz\n\nFixes {group.qualified_short_id}",
             author=CommitAuthor.objects.create(
                 organization_id=group.organization.id, name=user.name, email=user.email
             ),
@@ -159,7 +167,7 @@ class ResolvedInCommitTest(TestCase):
         assert Activity.objects.filter(
             project=group.project, group=group, type=Activity.ASSIGNED, user=user
         )[0].data == {
-            "assignee": six.text_type(user.id),
+            "assignee": str(user.id),
             "assigneeEmail": user.email,
             "assigneeType": "user",
         }
@@ -168,6 +176,7 @@ class ResolvedInCommitTest(TestCase):
 
     def test_matching_author_without_assignment(self):
         group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.MANUAL)
         user = self.create_user(name="Foo Bar", email="foo@example.com", is_active=True)
         email = UserEmail.get_primary_email(user=user)
         email.is_verified = True
@@ -180,7 +189,7 @@ class ResolvedInCommitTest(TestCase):
             key=sha1(uuid4().hex.encode("utf-8")).hexdigest(),
             organization_id=group.organization.id,
             repository_id=repo.id,
-            message=u"Foo Biz\n\nFixes {}".format(group.qualified_short_id),
+            message=f"Foo Biz\n\nFixes {group.qualified_short_id}",
             author=CommitAuthor.objects.create(
                 organization_id=group.organization.id, name=user.name, email=user.email
             ),

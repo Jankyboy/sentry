@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 __all__ = ("Sdk",)
 
 from sentry.interfaces.base import Interface
@@ -24,11 +22,11 @@ class Sdk(Interface):
     """
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         for key in ("name", "version", "integrations", "packages"):
             data.setdefault(key, None)
 
-        return cls(**data)
+        return super().to_python(data, **kwargs)
 
     def to_json(self):
         return prune_empty_keys(

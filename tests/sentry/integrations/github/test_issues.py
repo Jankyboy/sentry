@@ -1,17 +1,13 @@
-from __future__ import absolute_import
-
 import responses
-import six
-
-from sentry.utils.compat.mock import patch
-from exam import fixture
 from django.test import RequestFactory
+from exam import fixture
 
 from sentry.integrations.github.integration import GitHubIntegration
-from sentry.models import Integration, ExternalIssue
+from sentry.models import ExternalIssue, Integration
 from sentry.testutils import TestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.utils import json
+from sentry.utils.compat.mock import patch
 
 
 class GitHubIssueBasicTest(TestCase):
@@ -186,8 +182,8 @@ class GitHubIssueBasicTest(TestCase):
             },
         )
 
-        resp = self.integration.get_create_issue_config(group=event.group)
-        assert resp[0]["choices"] == [(u"getsentry/sentry", u"sentry")]
+        resp = self.integration.get_create_issue_config(group=event.group, user=self.user)
+        assert resp[0]["choices"] == [("getsentry/sentry", "sentry")]
 
         responses.add(
             responses.GET,
@@ -197,17 +193,17 @@ class GitHubIssueBasicTest(TestCase):
 
         # create an issue
         data = {"params": {"repo": "getsentry/hello"}}
-        resp = self.integration.get_create_issue_config(group=event.group, **data)
+        resp = self.integration.get_create_issue_config(group=event.group, user=self.user, **data)
         assert resp[0]["choices"] == [
-            (u"getsentry/hello", u"hello"),
-            (u"getsentry/sentry", u"sentry"),
+            ("getsentry/hello", "hello"),
+            ("getsentry/sentry", "sentry"),
         ]
         # link an issue
         data = {"params": {"repo": "getsentry/hello"}}
         resp = self.integration.get_link_issue_config(group=event.group, **data)
         assert resp[0]["choices"] == [
-            (u"getsentry/hello", u"hello"),
-            (u"getsentry/sentry", u"sentry"),
+            ("getsentry/hello", "hello"),
+            ("getsentry/sentry", "sentry"),
         ]
 
     @responses.activate
@@ -233,7 +229,7 @@ class GitHubIssueBasicTest(TestCase):
         self.integration.after_link_issue(external_issue, data=data)
 
         request = responses.calls[0].request
-        assert request.headers["Authorization"] == "Bearer jwt_token_1"
+        assert request.headers["Authorization"] == b"Bearer jwt_token_1"
 
         request = responses.calls[1].request
         assert request.headers["Authorization"] == "token token_1"
@@ -257,9 +253,7 @@ class GitHubIssueBasicTest(TestCase):
 
         org_integration = self.integration.org_integration
         org_integration.config = {
-            "project_issue_defaults": {
-                six.text_type(group.project_id): {"repo": "getsentry/sentry"}
-            }
+            "project_issue_defaults": {str(group.project_id): {"repo": "getsentry/sentry"}}
         }
         org_integration.save()
         fields = self.integration.get_link_issue_config(group)
@@ -293,12 +287,10 @@ class GitHubIssueBasicTest(TestCase):
         group = event.group
         org_integration = self.integration.org_integration
         org_integration.config = {
-            "project_issue_defaults": {
-                six.text_type(group.project_id): {"repo": "getsentry/sentry"}
-            }
+            "project_issue_defaults": {str(group.project_id): {"repo": "getsentry/sentry"}}
         }
         org_integration.save()
-        fields = self.integration.get_create_issue_config(group)
+        fields = self.integration.get_create_issue_config(group, self.user)
         for field in fields:
             if field["name"] == "repo":
                 repo_field = field
@@ -339,7 +331,7 @@ class GitHubIssueBasicTest(TestCase):
         event = self.store_event(
             data={"event_id": "a" * 32, "timestamp": self.min_ago}, project_id=self.project.id
         )
-        fields = self.integration.get_create_issue_config(event.group)
+        fields = self.integration.get_create_issue_config(event.group, self.user)
         repo_field = [field for field in fields if field["name"] == "repo"][0]
         assignee_field = [field for field in fields if field["name"] == "assignee"][0]
 

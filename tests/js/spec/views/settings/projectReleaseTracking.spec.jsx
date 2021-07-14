@@ -1,22 +1,21 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
+import {mountGlobalModal} from 'sentry-test/modal';
 
+import {fetchPlugins} from 'app/actionCreators/plugins';
 import ProjectReleaseTrackingContainer, {
   ProjectReleaseTracking,
 } from 'app/views/settings/project/projectReleaseTracking';
-import {fetchPlugins} from 'app/actionCreators/plugins';
 
 jest.mock('app/actionCreators/plugins', () => ({
   fetchPlugins: jest.fn().mockResolvedValue([]),
 }));
 
-describe('ProjectReleaseTracking', function() {
+describe('ProjectReleaseTracking', function () {
   const org = TestStubs.Organization();
   const project = TestStubs.Project();
   const url = `/projects/${org.slug}/${project.slug}/releases/token/`;
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/plugins/`,
@@ -33,7 +32,7 @@ describe('ProjectReleaseTracking', function() {
     });
   });
 
-  it('renders with token', function() {
+  it('renders with token', function () {
     const wrapper = mountWithTheme(
       <ProjectReleaseTracking
         organization={org}
@@ -47,7 +46,7 @@ describe('ProjectReleaseTracking', function() {
     expect(wrapper.find('TextCopyInput').prop('children')).toBe('token token token');
   });
 
-  it('can regenerate token', function(done) {
+  it('can regenerate token', async function () {
     const wrapper = mountWithTheme(
       <ProjectReleaseTracking
         organization={org}
@@ -61,31 +60,35 @@ describe('ProjectReleaseTracking', function() {
     const mock = MockApiClient.addMockResponse({
       url,
       method: 'POST',
+      body: {
+        webhookUrl: 'webhook-url',
+        token: 'token token token',
+      },
     });
 
     // Click Regenerate Token
     wrapper.find('Field[label="Regenerate Token"] Button').simulate('click');
-    expect(wrapper.find('ModalDialog')).toHaveLength(1);
+
+    const modal = await mountGlobalModal();
+    expect(modal.find('Modal')).toHaveLength(1);
 
     expect(mock).not.toHaveBeenCalled();
 
-    wrapper.find('ModalDialog Button[priority="danger"]').simulate('click');
+    modal.find('Button[priority="danger"]').simulate('click');
 
-    setTimeout(() => {
-      expect(mock).toHaveBeenCalledWith(
-        url,
-        expect.objectContaining({
-          method: 'POST',
-          data: {
-            project: project.slug,
-          },
-        })
-      );
-      done();
-    }, 1);
+    await tick();
+    expect(mock).toHaveBeenCalledWith(
+      url,
+      expect.objectContaining({
+        method: 'POST',
+        data: {
+          project: project.slug,
+        },
+      })
+    );
   });
 
-  it('fetches new plugins when project changes', function() {
+  it('fetches new plugins when project changes', function () {
     const wrapper = mountWithTheme(
       <ProjectReleaseTrackingContainer
         organization={org}

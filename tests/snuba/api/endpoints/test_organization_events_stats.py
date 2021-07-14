@@ -1,23 +1,21 @@
-from __future__ import absolute_import
-
-import mock
-import six
 import uuid
-
-from pytz import utc
 from datetime import timedelta
+from uuid import uuid4
 
-from django.core.urlresolvers import reverse
+import pytest
+from django.urls import reverse
+from pytz import utc
 
+from sentry.models.transaction_threshold import ProjectTransactionThreshold, TransactionMetric
 from sentry.testutils import APITestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
-from sentry.utils.compat import zip
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.compat import mock, zip
 from sentry.utils.samples import load_data
 
 
 class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
     def setUp(self):
-        super(OrganizationEventsStatsEndpointTest, self).setUp()
+        super().setUp()
         self.login_as(user=self.user)
         self.authed_user = self.user
 
@@ -75,6 +73,25 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
 
         assert response.status_code == 200, response.content
         assert [attrs for time, attrs in response.data["data"]] == [[{"count": 1}], [{"count": 2}]]
+
+    def test_misaligned_last_bucket(self):
+        response = self.client.get(
+            self.url,
+            data={
+                "start": iso_format(self.day_ago - timedelta(minutes=30)),
+                "end": iso_format(self.day_ago + timedelta(hours=1, minutes=30)),
+                "interval": "1h",
+                "partial": "1",
+            },
+            format="json",
+        )
+
+        assert response.status_code == 200, response.content
+        assert [attrs for time, attrs in response.data["data"]] == [
+            [{"count": 0}],
+            [{"count": 1}],
+            [{"count": 2}],
+        ]
 
     def test_no_projects(self):
         org = self.create_organization(owner=self.user)
@@ -174,6 +191,102 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             )
         assert response.status_code == 200
 
+    def test_aggregate_function_apdex(self):
+        project1 = self.create_project()
+        project2 = self.create_project()
+
+        events = [
+            ("one", 400, project1.id),
+            ("one", 400, project1.id),
+            ("two", 3000, project2.id),
+            ("two", 1000, project2.id),
+            ("three", 3000, project2.id),
+        ]
+        for idx, event in enumerate(events):
+            data = load_data(
+                "transaction",
+                start_timestamp=self.day_ago + timedelta(minutes=(1 + idx)),
+                timestamp=self.day_ago + timedelta(minutes=(1 + idx), milliseconds=event[1]),
+            )
+            data["event_id"] = f"{idx}" * 32
+            data["transaction"] = f"/apdex/new/{event[0]}"
+            data["user"] = {"email": f"{idx}@example.com"}
+            self.store_event(data, project_id=event[2])
+
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "apdex()",
+                },
+            )
+        assert response.status_code == 200, response.content
+
+        assert [attrs for time, attrs in response.data["data"]] == [
+            [{"count": 0.3}],
+            [{"count": 0}],
+        ]
+
+        ProjectTransactionThreshold.objects.create(
+            project=project1,
+            organization=project1.organization,
+            threshold=100,
+            metric=TransactionMetric.DURATION.value,
+        )
+
+        ProjectTransactionThreshold.objects.create(
+            project=project2,
+            organization=project1.organization,
+            threshold=100,
+            metric=TransactionMetric.DURATION.value,
+        )
+
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "apdex()",
+                },
+            )
+        assert response.status_code == 200, response.content
+
+        assert [attrs for time, attrs in response.data["data"]] == [
+            [{"count": 0.2}],
+            [{"count": 0}],
+        ]
+
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": ["user_count", "apdex()"],
+                },
+                format="json",
+            )
+
+        assert response.status_code == 200, response.content
+        response.data["user_count"]["order"] == 0
+        assert [attrs for time, attrs in response.data["user_count"]["data"]] == [
+            [{"count": 5}],
+            [{"count": 0}],
+        ]
+        response.data["apdex()"]["order"] == 1
+        assert [attrs for time, attrs in response.data["apdex()"]["data"]] == [
+            [{"count": 0.2}],
+            [{"count": 0}],
+        ]
+
     def test_aggregate_function_count(self):
         with self.feature("organizations:discover-basic"):
             response = self.client.get(
@@ -240,7 +353,7 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             for minute in range(count):
                 self.store_event(
                     data={
-                        "event_id": six.text_type(uuid.uuid1()),
+                        "event_id": str(uuid.uuid1()),
                         "message": "very bad",
                         "timestamp": iso_format(
                             self.day_ago + timedelta(hours=hour, minutes=minute)
@@ -251,25 +364,26 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
                     project_id=project.id,
                 )
 
-        with self.feature("organizations:discover-basic"):
-            response = self.client.get(
-                self.url,
-                format="json",
-                data={
-                    "start": iso_format(self.day_ago),
-                    "end": iso_format(self.day_ago + timedelta(hours=6)),
-                    "interval": "1h",
-                    "yAxis": "epm()",
-                    "project": project.id,
-                },
-            )
-        assert response.status_code == 200, response.content
-        data = response.data["data"]
-        assert len(data) == 6
+        for axis in ["epm()", "tpm()"]:
+            with self.feature("organizations:discover-basic"):
+                response = self.client.get(
+                    self.url,
+                    format="json",
+                    data={
+                        "start": iso_format(self.day_ago),
+                        "end": iso_format(self.day_ago + timedelta(hours=6)),
+                        "interval": "1h",
+                        "yAxis": axis,
+                        "project": project.id,
+                    },
+                )
+            assert response.status_code == 200, response.content
+            data = response.data["data"]
+            assert len(data) == 6
 
-        rows = data[0:6]
-        for test in zip(event_counts, rows):
-            assert test[1][1][0]["count"] == test[0] / (3600.0 / 60.0)
+            rows = data[0:6]
+            for test in zip(event_counts, rows):
+                assert test[1][1][0]["count"] == test[0] / (3600.0 / 60.0)
 
     def test_throughput_epm_day_rollup(self):
         project = self.create_project()
@@ -279,7 +393,7 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             for minute in range(count):
                 self.store_event(
                     data={
-                        "event_id": six.text_type(uuid.uuid1()),
+                        "event_id": str(uuid.uuid1()),
                         "message": "very bad",
                         "timestamp": iso_format(
                             self.day_ago + timedelta(hours=hour, minutes=minute)
@@ -290,23 +404,24 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
                     project_id=project.id,
                 )
 
-        with self.feature("organizations:discover-basic"):
-            response = self.client.get(
-                self.url,
-                format="json",
-                data={
-                    "start": iso_format(self.day_ago),
-                    "end": iso_format(self.day_ago + timedelta(hours=24)),
-                    "interval": "24h",
-                    "yAxis": "epm()",
-                    "project": project.id,
-                },
-            )
-        assert response.status_code == 200, response.content
-        data = response.data["data"]
-        assert len(data) == 2
+        for axis in ["epm()", "tpm()"]:
+            with self.feature("organizations:discover-basic"):
+                response = self.client.get(
+                    self.url,
+                    format="json",
+                    data={
+                        "start": iso_format(self.day_ago),
+                        "end": iso_format(self.day_ago + timedelta(hours=24)),
+                        "interval": "24h",
+                        "yAxis": axis,
+                        "project": project.id,
+                    },
+                )
+            assert response.status_code == 200, response.content
+            data = response.data["data"]
+            assert len(data) == 2
 
-        assert data[0][1][0]["count"] == sum(event_counts) / (86400.0 / 60.0)
+            assert data[0][1][0]["count"] == sum(event_counts) / (86400.0 / 60.0)
 
     def test_throughput_eps_minute_rollup(self):
         project = self.create_project()
@@ -316,7 +431,7 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             for second in range(count):
                 self.store_event(
                     data={
-                        "event_id": six.text_type(uuid.uuid1()),
+                        "event_id": str(uuid.uuid1()),
                         "message": "very bad",
                         "timestamp": iso_format(
                             self.day_ago + timedelta(minutes=minute, seconds=second)
@@ -327,25 +442,26 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
                     project_id=project.id,
                 )
 
-        with self.feature("organizations:discover-basic"):
-            response = self.client.get(
-                self.url,
-                format="json",
-                data={
-                    "start": iso_format(self.day_ago),
-                    "end": iso_format(self.day_ago + timedelta(minutes=6)),
-                    "interval": "1m",
-                    "yAxis": "eps()",
-                    "project": project.id,
-                },
-            )
-        assert response.status_code == 200, response.content
-        data = response.data["data"]
-        assert len(data) == 6
+        for axis in ["eps()", "tps()"]:
+            with self.feature("organizations:discover-basic"):
+                response = self.client.get(
+                    self.url,
+                    format="json",
+                    data={
+                        "start": iso_format(self.day_ago),
+                        "end": iso_format(self.day_ago + timedelta(minutes=6)),
+                        "interval": "1m",
+                        "yAxis": axis,
+                        "project": project.id,
+                    },
+                )
+            assert response.status_code == 200, response.content
+            data = response.data["data"]
+            assert len(data) == 6
 
-        rows = data[0:6]
-        for test in zip(event_counts, rows):
-            assert test[1][1][0]["count"] == test[0] / 60.0
+            rows = data[0:6]
+            for test in zip(event_counts, rows):
+                assert test[1][1][0]["count"] == test[0] / 60.0
 
     def test_throughput_eps_no_rollup(self):
         project = self.create_project()
@@ -355,7 +471,7 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             for second in range(count):
                 self.store_event(
                     data={
-                        "event_id": six.text_type(uuid.uuid1()),
+                        "event_id": str(uuid.uuid1()),
                         "message": "very bad",
                         "timestamp": iso_format(
                             self.day_ago + timedelta(minutes=minute, seconds=second)
@@ -504,6 +620,51 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             [{"count": 2}],
         ]
 
+    def test_equation_yaxis(self):
+        with self.feature(["organizations:discover-arithmetic", "organizations:discover-basic"]):
+            response = self.client.get(
+                self.url,
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": ["equation|count() / 100"],
+                },
+                format="json",
+            )
+
+        assert response.status_code == 200, response.content
+        assert len(response.data["data"]) == 2
+        assert [attrs for time, attrs in response.data["data"]] == [
+            [{"count": 0.01}],
+            [{"count": 0.02}],
+        ]
+
+    def test_equation_multi_yaxis(self):
+        with self.feature(["organizations:discover-arithmetic", "organizations:discover-basic"]):
+            response = self.client.get(
+                self.url,
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": ["equation|count() / 100", "equation|count() * 100"],
+                },
+                format="json",
+            )
+
+        assert response.status_code == 200, response.content
+        assert response.data["equation|count() / 100"]["order"] == 0
+        assert [attrs for time, attrs in response.data["equation|count() / 100"]["data"]] == [
+            [{"count": 0.01}],
+            [{"count": 0.02}],
+        ]
+        assert response.data["equation|count() * 100"]["order"] == 1
+        assert [attrs for time, attrs in response.data["equation|count() * 100"]["data"]] == [
+            [{"count": 100}],
+            [{"count": 200}],
+        ]
+
     def test_large_interval_no_drop_values(self):
         self.store_event(
             data={
@@ -563,6 +724,21 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
             )
         assert response.status_code == 400
 
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "end": iso_format(before_now()),
+                    "start": iso_format(before_now(hours=24)),
+                    "query": "",
+                    "interval": "0d",
+                    "yAxis": "count()",
+                },
+            )
+        assert response.status_code == 400
+        assert "zero duration" in response.data["detail"]
+
     def test_out_of_retention(self):
         with self.options({"system.event-retention-days": 10}):
             with self.feature("organizations:discover-basic"):
@@ -616,7 +792,7 @@ class OrganizationEventsStatsEndpointTest(APITestCase, SnubaTestCase):
 
 class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
     def setUp(self):
-        super(OrganizationEventsStatsTopNEvents, self).setUp()
+        super().setUp()
         self.login_as(user=self.user)
 
         self.day_ago = before_now(days=1).replace(hour=10, minute=0, second=0, microsecond=0)
@@ -696,7 +872,7 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
         for index, event_data in enumerate(self.event_data):
             data = event_data["data"].copy()
             for i in range(event_data["count"]):
-                data["event_id"] = "{}{}".format(index, i) * 16
+                data["event_id"] = f"{index}{i}" * 16
                 event = self.store_event(data, project_id=event_data["project"].id)
             self.events.append(event)
         self.transaction = self.events[4]
@@ -708,6 +884,56 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
             "sentry-api-0-organization-events-stats",
             kwargs={"organization_slug": self.project.organization.slug},
         )
+
+    def test_no_top_events_with_project_field(self):
+        project = self.create_project()
+        with self.feature(self.enabled_features):
+            response = self.client.get(
+                self.url,
+                data={
+                    # make sure to query the project with 0 events
+                    "project": project.id,
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "count()",
+                    "orderby": ["-count()"],
+                    "field": ["count()", "project"],
+                    "topEvents": 5,
+                },
+                format="json",
+            )
+
+        assert response.status_code == 200, response.content
+        # When there are no top events, we do not return an empty dict.
+        # Instead, we return a single zero-filled series for an empty graph.
+        data = response.data["data"]
+        assert [attrs for time, attrs in data] == [[{"count": 0}], [{"count": 0}]]
+
+    def test_no_top_events(self):
+        project = self.create_project()
+        with self.feature(self.enabled_features):
+            response = self.client.get(
+                self.url,
+                data={
+                    # make sure to query the project with 0 events
+                    "project": project.id,
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "count()",
+                    "orderby": ["-count()"],
+                    "field": ["count()", "message", "user.email"],
+                    "topEvents": 5,
+                },
+                format="json",
+            )
+
+        data = response.data["data"]
+        assert response.status_code == 200, response.content
+        # When there are no top events, we do not return an empty dict.
+        # Instead, we return a single zero-filled series for an empty graph.
+        assert [attrs for time, attrs in data] == [[{"count": 0}], [{"count": 0}]]
 
     def test_simple_top_events(self):
         with self.feature(self.enabled_features):
@@ -805,6 +1031,7 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
                     "orderby": ["-count()"],
                     "field": ["count()", "message", "issue"],
                     "topEvents": 5,
+                    "query": "!event.type:transaction",
                 },
                 format="json",
             )
@@ -814,8 +1041,8 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
         assert response.status_code == 200, response.content
         assert len(data) == 5
 
-        for index, event in enumerate(self.events[:5]):
-            message = event.message or event.transaction
+        for index, event in enumerate(self.events[:4]):
+            message = event.message
             # Because we deleted the group for event 0
             if index == 0 or event.group is None:
                 issue = "unknown"
@@ -854,7 +1081,7 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
         assert [attrs for time, attrs in results["data"]] == [[{"count": 3}], [{"count": 0}]]
 
     def test_top_events_with_functions_on_different_transactions(self):
-        """ Transaction2 has less events, but takes longer so order should be self.transaction then transaction2 """
+        """Transaction2 has less events, but takes longer so order should be self.transaction then transaction2"""
         transaction_data = load_data("transaction")
         transaction_data["start_timestamp"] = iso_format(self.day_ago + timedelta(minutes=2))
         transaction_data["timestamp"] = iso_format(self.day_ago + timedelta(minutes=6))
@@ -1016,6 +1243,36 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
                 attrs for time, attrs in results["data"]
             ]
 
+    def test_top_events_with_error_unhandled(self):
+        self.login_as(user=self.user)
+        project = self.create_project()
+        prototype = load_data("android-ndk")
+        prototype["event_id"] = "f" * 32
+        prototype["message"] = "not handled"
+        prototype["exception"]["values"][0]["value"] = "not handled"
+        prototype["exception"]["values"][0]["mechanism"]["handled"] = False
+        prototype["timestamp"] = iso_format(self.day_ago + timedelta(minutes=2))
+        self.store_event(data=prototype, project_id=project.id)
+
+        with self.feature(self.enabled_features):
+            response = self.client.get(
+                self.url,
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "count()",
+                    "orderby": ["-count()"],
+                    "field": ["count()", "error.unhandled"],
+                    "topEvents": 5,
+                },
+                format="json",
+            )
+
+        data = response.data
+        assert response.status_code == 200, response.content
+        assert len(data) == 2
+
     def test_top_events_with_timestamp(self):
         with self.feature(self.enabled_features):
             response = self.client.get(
@@ -1131,10 +1388,11 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
             [{"count": 0}],
         ]
 
+    @pytest.mark.skip(reason="A query with group_id will not return transactions")
     def test_top_events_none_filter(self):
-        """ When a field is None in one of the top events, make sure we filter by it
+        """When a field is None in one of the top events, make sure we filter by it
 
-            In this case event[4] is a transaction and has no issue
+        In this case event[4] is a transaction and has no issue
         """
         with self.feature(self.enabled_features):
             response = self.client.get(
@@ -1168,6 +1426,7 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
                 attrs for time, attrs in results["data"]
             ]
 
+    @pytest.mark.skip(reason="Invalid query - transaction events don't have group_id field")
     def test_top_events_one_field_with_none(self):
         with self.feature(self.enabled_features):
             response = self.client.get(
@@ -1228,6 +1487,7 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
                     "orderby": ["-count()"],
                     "field": ["count()", "error.handled"],
                     "topEvents": 5,
+                    "query": "!event.type:transaction",
                 },
                 format="json",
             )
@@ -1237,7 +1497,7 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
         assert len(data) == 3
 
         results = data[""]
-        assert [attrs for time, attrs in results["data"]] == [[{"count": 22}], [{"count": 6}]]
+        assert [attrs for time, attrs in results["data"]] == [[{"count": 19}], [{"count": 6}]]
         assert results["order"] == 0
 
         results = data["1"]
@@ -1274,3 +1534,183 @@ class OrganizationEventsStatsTopNEvents(APITestCase, SnubaTestCase):
             assert [{"count": self.event_data[index]["count"]}] in [
                 attrs for time, attrs in results["data"]
             ]
+
+    def test_top_events_with_to_other(self):
+        version = "version -@'\" 1.2,3+(4)"
+        version_escaped = "version -@'\\\" 1.2,3+(4)"
+        # every symbol is replaced with a underscore to make the alias
+        version_alias = "version_______1_2_3__4_"
+
+        # add an event in the current release
+        event = self.event_data[0]
+        event_data = event["data"].copy()
+        event_data["event_id"] = uuid4().hex
+        event_data["release"] = version
+        self.store_event(event_data, project_id=event["project"].id)
+
+        with self.feature(self.enabled_features):
+            response = self.client.get(
+                self.url,
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "count()",
+                    # the double underscores around the version alias is because of a comma and quote
+                    "orderby": [f"-to_other_release__{version_alias}__others_current"],
+                    "field": [
+                        "count()",
+                        f'to_other(release,"{version_escaped}",others,current)',
+                    ],
+                    "topEvents": 2,
+                },
+                format="json",
+            )
+
+        assert response.status_code == 200, response.content
+        data = response.data
+        assert len(data) == 2
+
+        current = data["current"]
+        assert current["order"] == 1
+        assert sum(attrs[0]["count"] for _, attrs in current["data"]) == 1
+
+        others = data["others"]
+        assert others["order"] == 0
+        assert sum(attrs[0]["count"] for _, attrs in others["data"]) == sum(
+            event_data["count"] for event_data in self.event_data
+        )
+
+    def test_top_events_with_equations(self):
+        self.enabled_features["organizations:discover-arithmetic"] = True
+        with self.feature(self.enabled_features):
+            response = self.client.get(
+                self.url,
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "equation|count() / 100",
+                    "orderby": ["-count()"],
+                    "field": ["count()", "message", "user.email", "equation|count() / 100"],
+                    "topEvents": 5,
+                },
+                format="json",
+            )
+
+        data = response.data
+        assert response.status_code == 200, response.content
+        assert len(data) == 5
+
+        for index, event in enumerate(self.events[:5]):
+            message = event.message or event.transaction
+            results = data[
+                ",".join([message, self.event_data[index]["data"]["user"].get("email", "None")])
+            ]
+            assert results["order"] == index
+            assert [{"count": self.event_data[index]["count"] / 100}] in [
+                attrs for time, attrs in results["data"]
+            ]
+
+    def test_invalid_interval(self):
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "end": iso_format(before_now()),
+                    # 7,200 points for each event
+                    "start": iso_format(before_now(seconds=7200)),
+                    "field": ["count()", "issue"],
+                    "query": "",
+                    "interval": "1s",
+                    "yAxis": "count()",
+                },
+            )
+        assert response.status_code == 200
+
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "end": iso_format(before_now()),
+                    "start": iso_format(before_now(seconds=7200)),
+                    "field": ["count()", "issue"],
+                    "query": "",
+                    "interval": "1s",
+                    "yAxis": "count()",
+                    # 7,200 points for each event * 2, should error
+                    "topEvents": 2,
+                },
+            )
+        assert response.status_code == 400
+
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "end": iso_format(before_now()),
+                    # 1999 points * 5 events should just be enough to not error
+                    "start": iso_format(before_now(seconds=1999)),
+                    "field": ["count()", "issue"],
+                    "query": "",
+                    "interval": "1s",
+                    "yAxis": "count()",
+                    "topEvents": 5,
+                },
+            )
+        assert response.status_code == 200
+
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "end": iso_format(before_now()),
+                    "start": iso_format(before_now(hours=24)),
+                    "field": ["count()", "issue"],
+                    "query": "",
+                    "interval": "0d",
+                    "yAxis": "count()",
+                },
+            )
+        assert response.status_code == 400
+        assert "zero duration" in response.data["detail"]
+
+    def test_top_events_timestamp_fields(self):
+        with self.feature("organizations:discover-basic"):
+            response = self.client.get(
+                self.url,
+                format="json",
+                data={
+                    "start": iso_format(self.day_ago),
+                    "end": iso_format(self.day_ago + timedelta(hours=2)),
+                    "interval": "1h",
+                    "yAxis": "count()",
+                    "orderby": ["-count()"],
+                    "field": ["count()", "timestamp", "timestamp.to_hour", "timestamp.to_day"],
+                    "topEvents": 5,
+                },
+            )
+        assert response.status_code == 200
+        data = response.data
+        assert len(data) == 3
+
+        # these are the timestamps corresponding to the events stored
+        timestamps = [
+            self.day_ago + timedelta(minutes=2),
+            self.day_ago + timedelta(hours=1, minutes=2),
+            self.day_ago + timedelta(minutes=4),
+        ]
+        timestamp_hours = [timestamp.replace(minute=0, second=0) for timestamp in timestamps]
+        timestamp_days = [timestamp.replace(hour=0, minute=0, second=0) for timestamp in timestamps]
+
+        for ts, ts_hr, ts_day in zip(timestamps, timestamp_hours, timestamp_days):
+            key = f"{iso_format(ts)}+00:00,{iso_format(ts_day)}+00:00,{iso_format(ts_hr)}+00:00"
+            count = sum(
+                e["count"] for e in self.event_data if e["data"]["timestamp"] == iso_format(ts)
+            )
+            results = data[key]
+            assert [{"count": count}] in [attrs for time, attrs in results["data"]]

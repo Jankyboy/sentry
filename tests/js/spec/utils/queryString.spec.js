@@ -1,7 +1,7 @@
 import utils from 'app/utils/queryString';
 
-describe('addQueryParamsToExistingUrl', function() {
-  it('adds new query params to existing query params', function() {
+describe('addQueryParamsToExistingUrl', function () {
+  it('adds new query params to existing query params', function () {
     const url = 'https://example.com?value=3';
     const newParams = {
       id: 4,
@@ -11,7 +11,7 @@ describe('addQueryParamsToExistingUrl', function() {
     );
   });
 
-  it('adds new query params without existing query params', function() {
+  it('adds new query params without existing query params', function () {
     const url = 'https://example.com';
     const newParams = {
       id: 4,
@@ -21,7 +21,7 @@ describe('addQueryParamsToExistingUrl', function() {
     );
   });
 
-  it('returns empty string no url is passed', function() {
+  it('returns empty string no url is passed', function () {
     let url;
     const newParams = {
       id: 4,
@@ -30,38 +30,38 @@ describe('addQueryParamsToExistingUrl', function() {
   });
 });
 
-describe('appendTagCondition', function() {
-  it('adds simple values', function() {
+describe('appendTagCondition', function () {
+  it('adds simple values', function () {
     const result = utils.appendTagCondition('error+text', 'color', 'red');
     expect(result).toEqual('error+text color:red');
   });
 
-  it('handles array current value', function() {
+  it('handles array current value', function () {
     const result = utils.appendTagCondition(['', 'thing'], 'color', 'red');
     expect(result).toEqual('thing color:red');
   });
 
-  it('handles empty string current value', function() {
+  it('handles empty string current value', function () {
     const result = utils.appendTagCondition('', 'color', 'red');
     expect(result).toEqual('color:red');
   });
 
-  it('handles null current value', function() {
+  it('handles null current value', function () {
     const result = utils.appendTagCondition(null, 'color', 'red');
     expect(result).toEqual('color:red');
   });
 
-  it('wraps values with spaces', function() {
+  it('wraps values with spaces', function () {
     const result = utils.appendTagCondition(null, 'color', 'purple red');
     expect(result).toEqual('color:"purple red"');
   });
 
-  it('wraps values with colon', function() {
+  it('wraps values with colon', function () {
     const result = utils.appendTagCondition(null, 'color', 'id:red');
     expect(result).toEqual('color:"id:red"');
   });
 
-  it('handles user tag values', function() {
+  it('handles user tag values', function () {
     let result = utils.appendTagCondition('', 'user', 'something');
     expect(result).toEqual('user:something');
 
@@ -76,34 +76,66 @@ describe('appendTagCondition', function() {
   });
 });
 
-describe('decodeScalar()', function() {
-  it('unwraps array values', function() {
+describe('decodeScalar()', function () {
+  it('unwraps array values', function () {
     expect(utils.decodeScalar(['one', 'two'])).toEqual('one');
   });
 
-  it('handles strings', function() {
+  it('handles strings', function () {
     expect(utils.decodeScalar('one')).toEqual('one');
   });
 
-  it('handles falsey values', function() {
+  it('handles falsey values', function () {
     expect(utils.decodeScalar(undefined)).toBeUndefined();
     expect(utils.decodeScalar(false)).toBeUndefined();
     expect(utils.decodeScalar('')).toBeUndefined();
   });
+
+  it('uses fallback values', function () {
+    expect(utils.decodeScalar('value', 'default')).toEqual('value');
+    expect(utils.decodeScalar('', 'default')).toEqual('default');
+    expect(utils.decodeScalar(null, 'default')).toEqual('default');
+    expect(utils.decodeScalar(undefined, 'default')).toEqual('default');
+    expect(utils.decodeScalar([], 'default')).toEqual('default');
+  });
 });
 
-describe('decodeList()', function() {
-  it('wraps string values', function() {
+describe('decodeList()', function () {
+  it('wraps string values', function () {
     expect(utils.decodeList('one')).toEqual(['one']);
   });
 
-  it('handles arrays', function() {
+  it('handles arrays', function () {
     expect(utils.decodeList(['one', 'two'])).toEqual(['one', 'two']);
   });
 
-  it('handles falsey values', function() {
-    expect(utils.decodeList(undefined)).toBeUndefined();
-    expect(utils.decodeList(false)).toBeUndefined();
-    expect(utils.decodeList('')).toBeUndefined();
+  it('handles falsey values', function () {
+    expect(utils.decodeList(undefined)).toEqual([]);
+    expect(utils.decodeList(false)).toEqual([]);
+    expect(utils.decodeList('')).toEqual([]);
+  });
+});
+
+describe('decodeInteger()', function () {
+  it('handles integer strings', function () {
+    expect(utils.decodeInteger('1')).toEqual(1);
+    expect(utils.decodeInteger('1.2')).toEqual(1);
+    expect(utils.decodeInteger('1.9')).toEqual(1);
+    expect(utils.decodeInteger('foo')).toEqual(undefined);
+    expect(utils.decodeInteger('foo', 2020)).toEqual(2020);
+  });
+
+  it('handles arrays', function () {
+    expect(utils.decodeInteger(['1', 'foo'])).toEqual(1);
+    expect(utils.decodeInteger(['1.2', 'foo'])).toEqual(1);
+    expect(utils.decodeInteger(['1.9', 'foo'])).toEqual(1);
+    expect(utils.decodeInteger(['foo', '1'])).toEqual(undefined);
+    expect(utils.decodeInteger(['foo'], 2020)).toEqual(2020);
+  });
+
+  it('handles falsey values', function () {
+    expect(utils.decodeInteger(undefined, 2020)).toEqual(2020);
+    expect(utils.decodeInteger(false, 2020)).toEqual(2020);
+    expect(utils.decodeInteger('', 2020)).toEqual(2020);
   });
 });

@@ -1,7 +1,3 @@
-from __future__ import absolute_import
-
-import six
-
 from django.http import HttpResponse
 
 from sentry import eventstore
@@ -39,12 +35,16 @@ class EventGroupingInfoEndpoint(ProjectEndpoint):
         except GroupingConfigNotFound:
             raise ResourceDoesNotExist(detail="Unknown grouping config")
 
-        for (key, variant) in six.iteritems(variants):
+        for (key, variant) in variants.items():
             d = variant.as_dict()
             # Since the hashes are generated on the fly and might no
             # longer match the stored ones we indicate if the hash
             # generation caused the hash to mismatch.
-            d["hashMismatch"] = d["hash"] is not None and d["hash"] not in hashes
+            d["hashMismatch"] = (
+                d["hash"] is not None
+                and d["hash"] not in hashes.hashes
+                and d["hash"] not in hashes.hierarchical_hashes
+            )
             d["key"] = key
             rv[key] = d
 

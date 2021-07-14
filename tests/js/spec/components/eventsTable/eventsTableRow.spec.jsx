@@ -1,11 +1,9 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {EventsTableRow} from 'app/components/eventsTable/eventsTableRow';
 
-describe('EventsTableRow', function() {
-  it('renders', function() {
+describe('EventsTableRow', function () {
+  it('renders', function () {
     const wrapper = mountWithTheme(
       <table>
         <tbody>

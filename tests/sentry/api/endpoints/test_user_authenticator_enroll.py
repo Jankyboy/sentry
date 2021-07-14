@@ -1,12 +1,9 @@
-from __future__ import absolute_import
-
-import io
 import os
+from urllib.parse import parse_qsl
 
-from six.moves.urllib.parse import parse_qsl
-from django.core.urlresolvers import reverse
 from django.conf import settings
 from django.db.models import F
+from django.urls import reverse
 
 from sentry.models import (
     AuditLogEntry,
@@ -14,10 +11,10 @@ from sentry.models import (
     Authenticator,
     Organization,
     OrganizationMember,
+    UserEmail,
 )
-from sentry.utils import json
-from sentry.utils.compat import mock
 from sentry.testutils import APITestCase
+from sentry.utils.compat import mock
 
 
 # TODO(joshuarli): move all fixtures to a standard path relative to gitroot,
@@ -39,7 +36,7 @@ class UserAuthenticatorEnrollTest(APITestCase):
         assert email_log.info.call_args[1]["extra"]["message_type"] == email_type
 
     @mock.patch("sentry.utils.email.logger")
-    @mock.patch("sentry.models.TotpInterface.validate_otp", return_value=True)
+    @mock.patch("sentry.auth.authenticators.TotpInterface.validate_otp", return_value=True)
     def test_totp_can_enroll(self, validate_otp, email_log):
         # XXX: Pretend an unbound function exists.
         validate_otp.__func__ = None
@@ -49,13 +46,17 @@ class UserAuthenticatorEnrollTest(APITestCase):
             kwargs={"user_id": "me", "interface_id": "totp"},
         )
 
-        with mock.patch("sentry.models.authenticator.generate_secret_key", return_value="Z" * 32):
+        with mock.patch(
+            "sentry.auth.authenticators.base.generate_secret_key", return_value="Z" * 32
+        ):
             resp = self.client.get(url)
 
         assert resp.status_code == 200
         assert resp.data["secret"] == "Z" * 32
-        with io.open(get_fixture_path("totp_qrcode.json")) as f:
-            assert resp.data["qrcode"] == json.loads(f.read())
+        assert (
+            resp.data["qrcode"]
+            == "otpauth://totp/a%40example.com?issuer=Sentry&secret=ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+        )
         assert resp.data["form"]
         assert resp.data["secret"]
 
@@ -70,7 +71,7 @@ class UserAuthenticatorEnrollTest(APITestCase):
 
         # also enrolls in recovery codes
         recovery = Authenticator.objects.get_interface(user=self.user, interface_id="recovery")
-        assert recovery.is_enrolled
+        assert recovery.is_enrolled()
 
         self._assert_security_email_sent("mfa-added", email_log)
 
@@ -81,7 +82,7 @@ class UserAuthenticatorEnrollTest(APITestCase):
         assert resp.status_code == 400
 
     @mock.patch("sentry.utils.email.logger")
-    @mock.patch("sentry.models.TotpInterface.validate_otp", return_value=False)
+    @mock.patch("sentry.auth.authenticators.TotpInterface.validate_otp", return_value=False)
     def test_invalid_otp(self, validate_otp, email_log):
         # XXX: Pretend an unbound function exists.
         validate_otp.__func__ = None
@@ -99,8 +100,8 @@ class UserAuthenticatorEnrollTest(APITestCase):
         assert email_log.call_count == 0
 
     @mock.patch("sentry.utils.email.logger")
-    @mock.patch("sentry.models.SmsInterface.validate_otp", return_value=True)
-    @mock.patch("sentry.models.SmsInterface.send_text", return_value=True)
+    @mock.patch("sentry.auth.authenticators.SmsInterface.validate_otp", return_value=True)
+    @mock.patch("sentry.auth.authenticators.SmsInterface.send_text", return_value=True)
     def test_sms_can_enroll(self, send_text, validate_otp, email_log):
         # XXX: Pretend an unbound function exists.
         validate_otp.__func__ = None
@@ -151,8 +152,59 @@ class UserAuthenticatorEnrollTest(APITestCase):
             resp = self.client.post(url, data={"secret": "secret12", "phone": "1231234", "otp": ""})
             assert resp.status_code == 400
 
+    def test_sms_no_verified_email(self):
+        user = self.create_user()
+        UserEmail.objects.filter(user=user, email=user.email).update(is_verified=False)
+
+        self.login_as(user)
+        new_options = settings.SENTRY_OPTIONS.copy()
+        new_options["sms.twilio-account"] = "twilio-account"
+
+        with self.settings(SENTRY_OPTIONS=new_options):
+            url = reverse(
+                "sentry-api-0-user-authenticator-enroll",
+                kwargs={"user_id": "me", "interface_id": "sms"},
+            )
+            resp = self.client.post(
+                url, data={"secret": "secret12", "phone": "1231234", "otp": None}
+            )
+            assert resp.status_code == 401
+            assert resp.data == {
+                "detail": {
+                    "code": "email-verification-required",
+                    "message": "Email verification required.",
+                    "extra": {"username": user.email},
+                }
+            }
+
+    @mock.patch(
+        "sentry.api.endpoints.user_authenticator_enroll.ratelimiter.is_limited", return_value=True
+    )
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
+    def test_rate_limited(self, try_enroll, is_limited):
+        new_options = settings.SENTRY_OPTIONS.copy()
+        new_options["system.url-prefix"] = "https://testserver"
+        with self.settings(SENTRY_OPTIONS=new_options):
+            url = reverse(
+                "sentry-api-0-user-authenticator-enroll",
+                kwargs={"user_id": "me", "interface_id": "u2f"},
+            )
+            resp = self.client.get(url)
+            assert resp.status_code == 200
+
+            resp = self.client.post(
+                url,
+                data={
+                    "deviceName": "device name",
+                    "challenge": "challenge",
+                    "response": "response",
+                },
+            )
+            assert resp.status_code == 429
+            assert try_enroll.call_count == 0
+
     @mock.patch("sentry.utils.email.logger")
-    @mock.patch("sentry.models.U2fInterface.try_enroll", return_value=True)
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
     def test_u2f_can_enroll(self, try_enroll, email_log):
         new_options = settings.SENTRY_OPTIONS.copy()
         new_options["system.url-prefix"] = "https://testserver"
@@ -169,7 +221,6 @@ class UserAuthenticatorEnrollTest(APITestCase):
             assert "qrcode" not in resp.data
             assert resp.data["challenge"]
 
-            #
             resp = self.client.post(
                 url,
                 data={
@@ -264,15 +315,15 @@ class AcceptOrganizationInviteTest(APITestCase):
         assert om.user is None
         assert om.email == "newuser@example.com"
 
-    @mock.patch("sentry.models.U2fInterface.try_enroll", return_value=True)
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
     def test_accept_pending_invite__u2f_enroll(self, try_enroll):
         om = self.get_om_and_init_invite()
         resp = self.setup_u2f()
 
         self.assert_invite_accepted(resp, om.id)
 
-    @mock.patch("sentry.models.SmsInterface.validate_otp", return_value=True)
-    @mock.patch("sentry.models.SmsInterface.send_text", return_value=True)
+    @mock.patch("sentry.auth.authenticators.SmsInterface.validate_otp", return_value=True)
+    @mock.patch("sentry.auth.authenticators.SmsInterface.send_text", return_value=True)
     def test_accept_pending_invite__sms_enroll(self, send_text, validate_otp):
         # XXX: Pretend an unbound function exists.
         validate_otp.__func__ = None
@@ -310,7 +361,7 @@ class AcceptOrganizationInviteTest(APITestCase):
 
         self.assert_invite_accepted(resp, om.id)
 
-    @mock.patch("sentry.models.TotpInterface.validate_otp", return_value=True)
+    @mock.patch("sentry.auth.authenticators.TotpInterface.validate_otp", return_value=True)
     def test_accept_pending_invite__totp_enroll(self, validate_otp):
         # XXX: Pretend an unbound function exists.
         validate_otp.__func__ = None
@@ -337,7 +388,7 @@ class AcceptOrganizationInviteTest(APITestCase):
         self.assert_invite_accepted(resp, om.id)
 
     @mock.patch("sentry.api.endpoints.user_authenticator_enroll.logger")
-    @mock.patch("sentry.models.U2fInterface.try_enroll", return_value=True)
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
     def test_user_already_org_member(self, try_enroll, log):
         om = self.get_om_and_init_invite()
         self.create_existing_om()
@@ -351,7 +402,7 @@ class AcceptOrganizationInviteTest(APITestCase):
         )
 
     @mock.patch("sentry.api.endpoints.user_authenticator_enroll.logger")
-    @mock.patch("sentry.models.U2fInterface.try_enroll", return_value=True)
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
     def test_org_member_does_not_exist(self, try_enroll, log):
         om = self.get_om_and_init_invite()
 
@@ -369,7 +420,7 @@ class AcceptOrganizationInviteTest(APITestCase):
         assert log.error.call_args[0][0] == "Invalid pending invite cookie"
 
     @mock.patch("sentry.api.endpoints.user_authenticator_enroll.logger")
-    @mock.patch("sentry.models.U2fInterface.try_enroll", return_value=True)
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
     def test_invalid_token(self, try_enroll, log):
         om = self.get_om_and_init_invite()
 
@@ -384,7 +435,7 @@ class AcceptOrganizationInviteTest(APITestCase):
         assert om.email == "newuser@example.com"
 
     @mock.patch("sentry.api.endpoints.user_authenticator_enroll.logger")
-    @mock.patch("sentry.models.U2fInterface.try_enroll", return_value=True)
+    @mock.patch("sentry.auth.authenticators.U2fInterface.try_enroll", return_value=True)
     def test_enroll_without_pending_invite__no_error(self, try_enroll, log):
         new_options = settings.SENTRY_OPTIONS.copy()
         new_options["system.url-prefix"] = "https://testserver"

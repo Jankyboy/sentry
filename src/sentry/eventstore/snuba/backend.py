@@ -1,10 +1,7 @@
-from __future__ import absolute_import
-
-import six
-
+import logging
 from copy import deepcopy
 from datetime import timedelta
-import logging
+
 import sentry_sdk
 
 from sentry.eventstore.base import EventStorage
@@ -18,7 +15,7 @@ EVENT_ID = Columns.EVENT_ID.value.alias
 PROJECT_ID = Columns.PROJECT_ID.value.alias
 TIMESTAMP = Columns.TIMESTAMP.value.alias
 
-DESC_ORDERING = ["-{}".format(TIMESTAMP), "-{}".format(EVENT_ID)]
+DESC_ORDERING = [f"-{TIMESTAMP}", f"-{EVENT_ID}"]
 ASC_ORDERING = [TIMESTAMP, EVENT_ID]
 DEFAULT_LIMIT = 100
 DEFAULT_OFFSET = 0
@@ -174,11 +171,12 @@ class SnubaEventStorage(EventStorage):
 
         return []
 
-    def get_event_by_id(self, project_id, event_id):
+    def get_event_by_id(self, project_id, event_id, group_id=None):
         """
         Get an event given a project ID and event ID
         Returns None if an event cannot be found
         """
+
         event_id = normalize_event_id(event_id)
 
         if not event_id:
@@ -190,8 +188,15 @@ class SnubaEventStorage(EventStorage):
         if len(event.data) == 0:
             return None
 
-        # Load group_id from Snuba if not a transaction
-        if event.get_event_type() != "transaction":
+        if group_id is not None:
+            # Set passed group_id if not a transaction
+            if event.get_event_type() == "transaction":
+                logger.warning("eventstore.passed-group-id-for-transaction")
+            else:
+                event.group_id = group_id
+
+        elif event.get_event_type() != "transaction":
+            # Load group_id from Snuba if not a transaction
             result = snuba.raw_query(
                 selected_columns=["group_id"],
                 start=event.datetime,
@@ -294,7 +299,7 @@ class SnubaEventStorage(EventStorage):
 
         row = result["data"][0]
 
-        return (six.text_type(row["project_id"]), six.text_type(row["event_id"]))
+        return (str(row["project_id"]), str(row["event_id"]))
 
     def __make_event(self, snuba_data):
         event_id = snuba_data[Columns.EVENT_ID.value.event_name]

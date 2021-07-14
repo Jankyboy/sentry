@@ -1,7 +1,7 @@
-import {tooltipFormatter, axisLabelFormatter} from 'app/utils/discover/charts';
+import {axisLabelFormatter, tooltipFormatter} from 'app/utils/discover/charts';
 
-describe('tooltipFormatter()', function() {
-  it('formats values', function() {
+describe('tooltipFormatter()', function () {
+  it('formats values', function () {
     const cases = [
       // function, input, expected
       ['count()', 0.1, '0.1'],
@@ -18,15 +18,15 @@ describe('tooltipFormatter()', function() {
   });
 });
 
-describe('axisLabelFormatter()', function() {
-  it('formats values', function() {
+describe('axisLabelFormatter()', function () {
+  it('formats values', function () {
     const cases = [
       // type, input, expected
       ['count()', 0.1, '0.1'],
       ['avg(thing)', 0.125126, '0.125'],
       ['failure_rate()', 0.66123, '66%'],
-      ['p50()', 100, '0.1s'],
-      ['p50()', 541, '0.5s'],
+      ['p50()', 100, '100ms'],
+      ['p50()', 541, '541ms'],
       ['p50()', 1200, '1s'],
       ['p50()', 60000, '1min'],
       ['p50()', 120000, '2min'],

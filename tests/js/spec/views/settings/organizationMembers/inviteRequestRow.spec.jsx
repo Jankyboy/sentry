@@ -1,7 +1,6 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
-import {selectByValue} from 'sentry-test/select';
+import {mountGlobalModal} from 'sentry-test/modal';
+import {selectByValue} from 'sentry-test/select-new';
 
 import InviteRequestRow from 'app/views/settings/organizationMembers/inviteRequestRow';
 
@@ -26,7 +25,7 @@ const roles = [
   },
 ];
 
-describe('InviteRequestRow', function() {
+describe('InviteRequestRow', function () {
   const orgId = 'org-slug';
   const inviteRequestBusy = new Map();
 
@@ -43,7 +42,7 @@ describe('InviteRequestRow', function() {
     role: 'member',
   });
 
-  it('renders request to be invited', function() {
+  it('renders request to be invited', function () {
     const wrapper = mountWithTheme(
       <InviteRequestRow
         orgId={orgId}
@@ -55,15 +54,12 @@ describe('InviteRequestRow', function() {
     );
 
     expect(wrapper.find('UserName').text()).toBe(inviteRequest.email);
-    expect(
-      wrapper
-        .find('Description')
-        .text()
-        .includes(inviteRequest.inviterName)
-    ).toBe(true);
+    expect(wrapper.find('Description').text().includes(inviteRequest.inviterName)).toBe(
+      true
+    );
   });
 
-  it('renders request to join', function() {
+  it('renders request to join', function () {
     const wrapper = mountWithTheme(
       <InviteRequestRow
         orgId={orgId}
@@ -78,7 +74,7 @@ describe('InviteRequestRow', function() {
     expect(wrapper.find('JoinRequestIndicator').exists()).toBe(true);
   });
 
-  it('can approve invite request', function() {
+  it('can approve invite request', async function () {
     const mockApprove = jest.fn();
     const mockDeny = jest.fn();
 
@@ -95,12 +91,15 @@ describe('InviteRequestRow', function() {
     );
 
     wrapper.find('button[aria-label="Approve"]').simulate('click');
-    wrapper.find('button[aria-label="Confirm"]').simulate('click');
+
+    const modal = await mountGlobalModal();
+    modal.find('button[aria-label="Confirm"]').simulate('click');
+
     expect(mockApprove).toHaveBeenCalledWith(inviteRequest);
     expect(mockDeny).not.toHaveBeenCalled();
   });
 
-  it('can deny invite request', function() {
+  it('can deny invite request', function () {
     const mockApprove = jest.fn();
 
     const mockDeny = jest.fn();
@@ -121,7 +120,7 @@ describe('InviteRequestRow', function() {
     expect(mockApprove).not.toHaveBeenCalled();
   });
 
-  it('can change role and teams', function() {
+  it('can change role and teams', function () {
     const adminInviteRequest = TestStubs.Member({
       user: null,
       inviterName: TestStubs.User().name,
@@ -149,7 +148,7 @@ describe('InviteRequestRow', function() {
     expect(mockUpdate).toHaveBeenCalledWith({teams: ['one']});
   });
 
-  it('cannot be approved when invitee role is not allowed', function() {
+  it('cannot be approved when invitee role is not allowed', function () {
     const ownerInviteRequest = TestStubs.Member({
       user: null,
       inviterName: TestStubs.User().name,

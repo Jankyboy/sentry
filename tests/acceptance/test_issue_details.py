@@ -1,22 +1,19 @@
-from __future__ import absolute_import
+from datetime import datetime, timedelta
 
 import pytz
-
-from mock import patch
-from datetime import datetime, timedelta
 from django.utils import timezone
 
 from sentry.testutils import AcceptanceTestCase, SnubaTestCase
+from sentry.utils.compat.mock import patch
 from sentry.utils.samples import load_data
 from tests.acceptance.page_objects.issue_details import IssueDetailsPage
 
-event_time = (datetime.utcnow() - timedelta(days=3)).replace(tzinfo=pytz.utc)
 now = datetime.utcnow().replace(tzinfo=pytz.utc)
 
 
 class IssueDetailsTest(AcceptanceTestCase, SnubaTestCase):
     def setUp(self):
-        super(IssueDetailsTest, self).setUp()
+        super().setUp()
         patcher = patch("django.utils.timezone.now", return_value=now)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -52,7 +49,9 @@ class IssueDetailsTest(AcceptanceTestCase, SnubaTestCase):
         return event
 
     def test_python_event(self):
-        event = self.create_sample_event(platform="python", time=event_time)
+        self.create_sample_event(platform="python")
+        self.create_sample_event(platform="python")
+        event = self.create_sample_event(platform="python")
         self.page.visit_issue(self.org.slug, event.group.id)
 
         # Wait for tag bars to load
@@ -80,6 +79,13 @@ class IssueDetailsTest(AcceptanceTestCase, SnubaTestCase):
         self.page.visit_issue(self.org.slug, event.group.id)
         self.browser.snapshot("issue details cocoa")
 
+    def test_cocoa_event_frame_line_hover(self):
+        event = self.create_sample_event(platform="cocoa")
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.wait_until_not(".loading")
+        self.browser.move_to(".traceback li:nth-child(2)")
+        self.browser.snapshot("issue details cocoa frame line hover")
+
     def test_unity_event(self):
         event = self.create_sample_event(default="unity", platform="csharp")
         self.page.visit_issue(self.org.slug, event.group.id)
@@ -105,7 +111,7 @@ class IssueDetailsTest(AcceptanceTestCase, SnubaTestCase):
         self.page.visit_issue(self.org.slug, event.group.id)
         self.browser.snapshot("issue details javascript - event details")
 
-        self.browser.find_element_by_xpath("//button//span[contains(text(), 'curl')]").click()
+        self.browser.click('[aria-label="curl"]')
         self.browser.snapshot("issue details javascript - event details - curl command")
 
     def test_rust_event(self):
@@ -166,3 +172,47 @@ class IssueDetailsTest(AcceptanceTestCase, SnubaTestCase):
         self.page.ignore_issue()
 
         self.browser.snapshot("issue details ignored")
+
+    def test_exception_and_no_threads_event(self):
+        event = self.create_sample_event(platform="exceptions-and-no-threads")
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.snapshot("issue details exceptions and no threads")
+
+    def test_exception_with_stack_trace_and_crashed_thread_without_stack_trace_event(self):
+        event = self.create_sample_event(
+            platform="exception-with-stack-trace-and-crashed-thread-without-stack-trace"
+        )
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.snapshot(
+            "issue details exception with stack trace and crashed thread without stack trace"
+        )
+
+    def test_exception_without_stack_trace_and_crashed_thread_with_stack_trace_event(self):
+        event = self.create_sample_event(
+            platform="exception-without-stack-trace-and-crashed-thread-with-stack-trace"
+        )
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.snapshot(
+            "issue details exception without stack trace and crashed thread with stack trace"
+        )
+
+    def test_exception_with_stack_trace_and_crashed_thread_with_stack_trace_event(self):
+        event = self.create_sample_event(
+            platform="exception-with-stack-trace-and-crashed-thread-with-stack-trace"
+        )
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.snapshot(
+            "issue details exception with stack trace and crashed thread with stack trace"
+        )
+
+    def test_python_invalid_json_error(self):
+        event = self.create_sample_event(default="python-invalid-json-error", platform="native")
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.snapshot("issue details invalid json error exception")
+
+    def test_exception_with_address_instruction(self):
+        event = self.create_sample_event(
+            default="exception-with-address-instruction", platform="cocoa"
+        )
+        self.page.visit_issue(self.org.slug, event.group.id)
+        self.browser.snapshot("issue details exception with address instruction")

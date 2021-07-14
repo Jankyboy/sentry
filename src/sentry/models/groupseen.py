@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -12,7 +10,7 @@ class GroupSeen(Model):
     Track when a group is last seen by a user.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project")
     group = FlexibleForeignKey("sentry.Group")

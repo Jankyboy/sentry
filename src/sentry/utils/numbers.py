@@ -1,4 +1,4 @@
-from __future__ import absolute_import
+from typing import List, Optional
 
 BASE36_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 BASE32_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -67,11 +67,32 @@ DEFAULT_UNITS = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
 def format_bytes(number, units=DEFAULT_UNITS, decimal_places=2):
     block = 1024.0
     if number < block:
-        return "{} {}".format(number, units[0])
+        return f"{number} {units[0]}"
 
     u = 0
     max_unit = len(units) - 1
     while number >= block and u < max_unit:
         number /= block
         u += 1
-    return (u"{:.%df} {}" % (decimal_places,)).format(number, units[u])
+    return ("{:.%df} {}" % (decimal_places,)).format(number, units[u])
+
+
+def format_grouped_length(length: int, steps: Optional[List[int]] = None) -> str:
+    if steps is None:
+        steps = [10, 100]
+
+    if length == 0:
+        return "0"
+
+    if length == 1:
+        return "1"
+
+    for step in steps:
+        if length < step:
+            return f"<{step}"
+
+    return f">{steps[-1]}"
+
+
+def validate_bigint(value):
+    return isinstance(value, int) and value >= 0 and value.bit_length() <= 63

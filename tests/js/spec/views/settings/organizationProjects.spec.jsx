@@ -1,11 +1,9 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
 import OrganizationProjectsContainer from 'app/views/settings/organizationProjects';
 
-describe('OrganizationProjects', function() {
+describe('OrganizationProjects', function () {
   let org;
   let project;
   let projectsGetMock;
@@ -13,7 +11,7 @@ describe('OrganizationProjects', function() {
   let projectsPutMock;
   const routerContext = TestStubs.routerContext();
 
-  beforeEach(function() {
+  beforeEach(function () {
     project = TestStubs.Project();
     org = TestStubs.Organization();
 
@@ -33,18 +31,18 @@ describe('OrganizationProjects', function() {
     });
   });
 
-  afterEach(function() {
+  afterEach(function () {
     Client.clearMockResponses();
   });
 
-  it('should render the projects in the store', function() {
+  it('should render the projects in the store', function () {
     const wrapper = mountWithTheme(
       <OrganizationProjectsContainer params={{orgId: org.slug}} location={{query: {}}} />,
       routerContext
     );
     expect(wrapper).toSnapshot();
 
-    expect(wrapper.find('.project-name').text()).toBe('project-slug');
+    expect(wrapper.find('ProjectBadge').text()).toBe('project-slug');
 
     expect(projectsGetMock).toHaveBeenCalledTimes(1);
 
@@ -57,7 +55,7 @@ describe('OrganizationProjects', function() {
     expect(projectsPutMock).toHaveBeenCalledTimes(1);
   });
 
-  it('should search organization projects', async function() {
+  it('should search organization projects', async function () {
     const searchMock = MockApiClient.addMockResponse({
       url: `/organizations/${org.slug}/projects/`,
       body: [],
@@ -81,7 +79,7 @@ describe('OrganizationProjects', function() {
       })
     );
 
-    wrapper.find('PanelHeader form').simulate('submit');
+    wrapper.find('SearchWrapper form').simulate('submit');
     expect(routerContext.context.router.push).toHaveBeenCalledTimes(1);
   });
 });

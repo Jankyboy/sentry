@@ -2,21 +2,18 @@
 These settings act as the default (base) settings for the Sentry-provided
 web-server
 """
-from __future__ import absolute_import, print_function
 
 import logging
 import os.path
-import six
+from collections import OrderedDict, namedtuple
 from datetime import timedelta
 
-from collections import OrderedDict, namedtuple
+import sentry_relay
 from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
 
-from sentry.utils.integrationdocs import load_doc
 from sentry.utils.geo import rust_geoip
-
-import sentry_relay
+from sentry.utils.integrationdocs import load_doc
 
 
 def get_all_languages():
@@ -26,7 +23,7 @@ def get_all_languages():
             continue
         if "_" in path:
             pre, post = path.split("_", 1)
-            path = u"{}-{}".format(pre, post.lower())
+            path = f"{pre}-{post.lower()}"
         results.append(path)
     return results
 
@@ -34,7 +31,7 @@ def get_all_languages():
 MODULE_ROOT = os.path.dirname(__import__("sentry").__file__)
 DATA_ROOT = os.path.join(MODULE_ROOT, "data")
 
-BAD_RELEASE_CHARS = "\n\f\t/"
+BAD_RELEASE_CHARS = "\r\n\f\x0c\t/\\"
 MAX_VERSION_LENGTH = 200
 MAX_COMMIT_LENGTH = 64
 COMMIT_RANGE_DELIMITER = ".."
@@ -57,14 +54,6 @@ STATUS_UNRESOLVED = 0
 STATUS_RESOLVED = 1
 STATUS_IGNORED = 2
 
-STATUS_CHOICES = {
-    "resolved": STATUS_RESOLVED,
-    "unresolved": STATUS_UNRESOLVED,
-    "ignored": STATUS_IGNORED,
-    # TODO(dcramer): remove in 9.0
-    "muted": STATUS_IGNORED,
-}
-
 # Normalize counts to the 15 minute marker. This value MUST be less than 60. A
 # value of 0 would store counts for every minute, and is the lowest level of
 # accuracy provided.
@@ -85,7 +74,7 @@ SENTRY_APP_SLUG_MAX_LENGTH = 64
 MAX_ROLLUP_POINTS = 10000
 
 
-# Team slugs which may not be used. Generally these are top level URL patterns
+# Organization slugs which may not be used. Generally these are top level URL patterns
 # which we don't want to worry about conflicts on.
 RESERVED_ORGANIZATION_SLUGS = frozenset(
     (
@@ -153,6 +142,11 @@ RESERVED_ORGANIZATION_SLUGS = frozenset(
         "sentry-apps",
         "resources",
         "integration-platform",
+        "trust",
+        "legal",
+        "community",
+        "referrals",
+        "demo",
     )
 )
 
@@ -188,7 +182,7 @@ LOG_LEVELS = {
 }
 DEFAULT_LOG_LEVEL = "error"
 DEFAULT_LOGGER_NAME = ""
-LOG_LEVELS_MAP = {v: k for k, v in six.iteritems(LOG_LEVELS)}
+LOG_LEVELS_MAP = {v: k for k, v in LOG_LEVELS.items()}
 
 # Default alerting threshold values
 DEFAULT_ALERT_PROJECT_THRESHOLD = (500, 25)  # 500%, 25 events
@@ -215,8 +209,9 @@ TAG_LABELS = {
 
 PROTECTED_TAG_KEYS = frozenset(["environment", "release", "sentry:release"])
 
-# TODO(dcramer): once this is more flushed out we want this to be extendable
-SENTRY_RULES = (
+# Don't use this variable directly. If you want a list of rules that are registered in
+# the system, access them via the `rules` registry in sentry/rules/__init__.py
+_SENTRY_RULES = (
     "sentry.mail.actions.NotifyEmailAction",
     "sentry.rules.actions.notify_event.NotifyEventAction",
     "sentry.rules.actions.notify_event_service.NotifyEventServiceAction",
@@ -227,6 +222,7 @@ SENTRY_RULES = (
     "sentry.rules.conditions.tagged_event.TaggedEventCondition",
     "sentry.rules.conditions.event_frequency.EventFrequencyCondition",
     "sentry.rules.conditions.event_frequency.EventUniqueUserFrequencyCondition",
+    "sentry.rules.conditions.event_frequency.EventFrequencyPercentCondition",
     "sentry.rules.conditions.event_attribute.EventAttributeCondition",
     "sentry.rules.conditions.level.LevelCondition",
     "sentry.rules.filters.age_comparison.AgeComparisonFilter",
@@ -244,6 +240,13 @@ MIGRATED_CONDITIONS = frozenset(
         "sentry.rules.conditions.tagged_event.TaggedEventCondition",
         "sentry.rules.conditions.event_attribute.EventAttributeCondition",
         "sentry.rules.conditions.level.LevelCondition",
+    ]
+)
+
+TICKET_ACTIONS = frozenset(
+    [
+        "sentry.integrations.jira.notify_action.JiraCreateTicketAction",
+        "sentry.integrations.vsts.notify_action.AzureDevopsCreateTicketAction",
     ]
 )
 
@@ -271,8 +274,11 @@ KNOWN_DIF_FORMATS = {
     "application/x-elf-binary": "elf",
     "application/x-dosexec": "pe",
     "application/x-ms-pdb": "pdb",
+    "application/wasm": "wasm",
     "text/x-proguard+plain": "proguard",
     "application/x-sentry-bundle+zip": "sourcebundle",
+    "application/x-bcsymbolmap": "bcsymbolmap",
+    "application/x-debugid-map": "uuidmap",
 }
 
 NATIVE_UNKNOWN_STRING = "<unknown>"
@@ -382,7 +388,7 @@ def get_integration_id_for_event(platform, sdk_name, integrations):
                 return PLATFORM_INTEGRATION_TO_INTEGRATION_ID[platform][integration]
 
             # try <platform>-<integration>, for example "java-log4j"
-            integration_id = "%s-%s" % (platform, integration)
+            integration_id = f"{platform}-{integration}"
             if integration_id in INTEGRATION_ID_TO_PLATFORM_DATA:
                 return integration_id
 
@@ -396,7 +402,7 @@ def get_integration_id_for_event(platform, sdk_name, integrations):
         return platform
 
 
-class ObjectStatus(object):
+class ObjectStatus:
     VISIBLE = 0
     HIDDEN = 1
     PENDING_DELETION = 2
@@ -408,27 +414,30 @@ class ObjectStatus(object):
     @classmethod
     def as_choices(cls):
         return (
-            (cls.ACTIVE, u"active"),
-            (cls.DISABLED, u"disabled"),
-            (cls.PENDING_DELETION, u"pending_deletion"),
-            (cls.DELETION_IN_PROGRESS, u"deletion_in_progress"),
+            (cls.ACTIVE, "active"),
+            (cls.DISABLED, "disabled"),
+            (cls.PENDING_DELETION, "pending_deletion"),
+            (cls.DELETION_IN_PROGRESS, "deletion_in_progress"),
         )
 
 
-class SentryAppStatus(object):
+class SentryAppStatus:
     UNPUBLISHED = 0
     PUBLISHED = 1
     INTERNAL = 2
+    PUBLISH_REQUEST_INPROGRESS = 3
     UNPUBLISHED_STR = "unpublished"
     PUBLISHED_STR = "published"
     INTERNAL_STR = "internal"
+    PUBLISH_REQUEST_INPROGRESS_STR = "publish_request_inprogress"
 
     @classmethod
     def as_choices(cls):
         return (
-            (cls.UNPUBLISHED, six.text_type(cls.UNPUBLISHED_STR)),
-            (cls.PUBLISHED, six.text_type(cls.PUBLISHED_STR)),
-            (cls.INTERNAL, six.text_type(cls.INTERNAL_STR)),
+            (cls.UNPUBLISHED, str(cls.UNPUBLISHED_STR)),
+            (cls.PUBLISHED, str(cls.PUBLISHED_STR)),
+            (cls.INTERNAL, str(cls.INTERNAL_STR)),
+            (cls.PUBLISH_REQUEST_INPROGRESS, str(cls.PUBLISH_REQUEST_INPROGRESS_STR)),
         )
 
     @classmethod
@@ -439,9 +448,11 @@ class SentryAppStatus(object):
             return cls.PUBLISHED_STR
         elif status == cls.INTERNAL:
             return cls.INTERNAL_STR
+        elif status == cls.PUBLISH_REQUEST_INPROGRESS:
+            return cls.PUBLISH_REQUEST_INPROGRESS_STR
 
 
-class SentryAppInstallationStatus(object):
+class SentryAppInstallationStatus:
     PENDING = 0
     INSTALLED = 1
     PENDING_STR = "pending"
@@ -450,8 +461,8 @@ class SentryAppInstallationStatus(object):
     @classmethod
     def as_choices(cls):
         return (
-            (cls.PENDING, six.text_type(cls.PENDING_STR)),
-            (cls.INSTALLED, six.text_type(cls.INSTALLED_STR)),
+            (cls.PENDING, str(cls.PENDING_STR)),
+            (cls.INSTALLED, str(cls.INSTALLED_STR)),
         )
 
     @classmethod
@@ -462,7 +473,7 @@ class SentryAppInstallationStatus(object):
             return cls.INSTALLED_STR
 
 
-class ExportQueryType(object):
+class ExportQueryType:
     ISSUES_BY_TAG = 0
     DISCOVER = 1
     ISSUES_BY_TAG_STR = "Issues-by-Tag"
@@ -527,6 +538,7 @@ REQUIRE_SCRUB_DEFAULTS_DEFAULT = False
 SENSITIVE_FIELDS_DEFAULT = None
 SAFE_FIELDS_DEFAULT = None
 ATTACHMENTS_ROLE_DEFAULT = settings.SENTRY_DEFAULT_ROLE
+DEBUG_FILES_ROLE_DEFAULT = "admin"
 EVENTS_ADMIN_ROLE_DEFAULT = settings.SENTRY_DEFAULT_ROLE
 REQUIRE_SCRUB_IP_ADDRESS_DEFAULT = False
 SCRAPE_JAVASCRIPT_DEFAULT = True
@@ -536,6 +548,7 @@ APDEX_THRESHOLD_DEFAULT = 300
 
 # `sentry:events_member_admin` - controls whether the 'member' role gets the event:admin scope
 EVENTS_MEMBER_ADMIN_DEFAULT = True
+ALERTS_MEMBER_WRITE_DEFAULT = True
 
 # Defined at https://github.com/getsentry/relay/blob/master/relay-common/src/constants.rs
 DataCategory = sentry_relay.DataCategory

@@ -1,20 +1,18 @@
-from __future__ import absolute_import
-
 import datetime
-from sentry.utils.compat import mock
-import responses
-import pytest
 
+import pytest
+import responses
 from exam import fixture
 
-from sentry.models import Integration, Repository, PullRequest
+from sentry.integrations.github.repository import GitHubRepositoryProvider
+from sentry.models import Integration, PullRequest, Repository
+from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.testutils import PluginTestCase
 from sentry.testutils.asserts import assert_commit_shape
 from sentry.utils import json
+from sentry.utils.compat import mock
 
-from sentry.shared_integrations.exceptions import IntegrationError
-from sentry.integrations.github.repository import GitHubRepositoryProvider
-from .testutils import COMPARE_COMMITS_EXAMPLE, GET_LAST_COMMITS_EXAMPLE, GET_COMMIT_EXAMPLE
+from .testutils import COMPARE_COMMITS_EXAMPLE, GET_COMMIT_EXAMPLE, GET_LAST_COMMITS_EXAMPLE
 
 
 def stub_installation_token():
@@ -28,12 +26,12 @@ def stub_installation_token():
 
 class GitHubAppsProviderTest(PluginTestCase):
     def setUp(self):
-        super(GitHubAppsProviderTest, self).setUp()
+        super().setUp()
         self.organization = self.create_organization()
         self.integration = Integration.objects.create(provider="github", external_id="654321")
 
     def tearDown(self):
-        super(GitHubAppsProviderTest, self).tearDown()
+        super().tearDown()
         responses.reset()
 
     @fixture
@@ -70,7 +68,7 @@ class GitHubAppsProviderTest(PluginTestCase):
             "url": "https://github.com/getsentry/example-repo",
         }
 
-    @mock.patch("sentry.integrations.github.client.get_jwt", return_value="jwt_token_1")
+    @mock.patch("sentry.integrations.github.client.get_jwt", return_value=b"jwt_token_1")
     @responses.activate
     def test_compare_commits_no_start(self, get_jwt):
         stub_installation_token()
@@ -99,7 +97,7 @@ class GitHubAppsProviderTest(PluginTestCase):
         with pytest.raises(IntegrationError):
             self.provider.compare_commits(self.repository, None, "abcdef")
 
-    @mock.patch("sentry.integrations.github.client.get_jwt", return_value="jwt_token_1")
+    @mock.patch("sentry.integrations.github.client.get_jwt", return_value=b"jwt_token_1")
     @responses.activate
     def test_compare_commits(self, get_jwt):
         stub_installation_token()
@@ -117,7 +115,7 @@ class GitHubAppsProviderTest(PluginTestCase):
         for commit in result:
             assert_commit_shape(commit)
 
-    @mock.patch("sentry.integrations.github.client.get_jwt", return_value="jwt_token_1")
+    @mock.patch("sentry.integrations.github.client.get_jwt", return_value=b"jwt_token_1")
     @responses.activate
     def test_compare_commits_patchset_handling(self, get_jwt):
         stub_installation_token()
@@ -140,7 +138,7 @@ class GitHubAppsProviderTest(PluginTestCase):
         assert patchset[3] == {"path": "old_name.txt", "type": "D"}
         assert patchset[4] == {"path": "renamed.txt", "type": "A"}
 
-    @mock.patch("sentry.integrations.github.client.get_jwt", return_value="jwt_token_1")
+    @mock.patch("sentry.integrations.github.client.get_jwt", return_value=b"jwt_token_1")
     @responses.activate
     def test_patchset_caching(self, get_jwt):
         stub_installation_token()
@@ -170,7 +168,7 @@ class GitHubAppsProviderTest(PluginTestCase):
         with pytest.raises(IntegrationError):
             self.provider.compare_commits(self.repository, "xyz123", "abcdef")
 
-    @mock.patch("sentry.integrations.github.client.get_jwt", return_value="jwt_token_1")
+    @mock.patch("sentry.integrations.github.client.get_jwt", return_value=b"jwt_token_1")
     @responses.activate
     def test_compare_commits_force_refresh(self, get_jwt):
         stub_installation_token()
@@ -210,17 +208,17 @@ class GitHubAppsProviderTest(PluginTestCase):
         # compare_commits gives 400, token was refreshed, and compare_commits gives 200
         assert (
             responses.calls[0].response.url
-            == u"https://api.github.com/repos/getsentry/example-repo/compare/xyz123...abcdef"
+            == "https://api.github.com/repos/getsentry/example-repo/compare/xyz123...abcdef"
         )
         assert responses.calls[0].response.status_code == 404
         assert (
             responses.calls[1].response.url
-            == u"https://api.github.com/app/installations/654321/access_tokens"
+            == "https://api.github.com/app/installations/654321/access_tokens"
         )
         assert responses.calls[1].response.status_code == 200
         assert (
             responses.calls[2].response.url
-            == u"https://api.github.com/repos/getsentry/example-repo/compare/xyz123...abcdef"
+            == "https://api.github.com/repos/getsentry/example-repo/compare/xyz123...abcdef"
         )
         assert responses.calls[2].response.status_code == 200
 

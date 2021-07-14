@@ -1,15 +1,13 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import EventsTable from 'app/components/eventsTable/eventsTable';
 
-describe('EventsTable', function() {
-  beforeEach(function() {});
+describe('EventsTable', function () {
+  beforeEach(function () {});
 
-  afterEach(function() {});
+  afterEach(function () {});
 
-  it('renders', function() {
+  it('renders', function () {
     const wrapper = mountWithTheme(
       <EventsTable
         tagList={[]}

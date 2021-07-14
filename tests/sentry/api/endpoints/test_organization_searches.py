@@ -1,60 +1,10 @@
-from __future__ import absolute_import
-
 from django.utils import timezone
 from exam import fixture
 
 from sentry.api.serializers import serialize
-from sentry.models import SavedSearch
+from sentry.models.savedsearch import SavedSearch, SortOptions
 from sentry.models.search_common import SearchType
-from sentry.models.savedsearch import DEFAULT_SAVED_SEARCHES
 from sentry.testutils import APITestCase
-
-
-class OrganizationSearchesListTest(APITestCase):
-    endpoint = "sentry-api-0-organization-searches"
-
-    @fixture
-    def user(self):
-        return self.create_user("test@test.com")
-
-    def test_simple(self):
-        self.login_as(user=self.user)
-        team = self.create_team(members=[self.user])
-        project1 = self.create_project(teams=[team], name="foo")
-        project2 = self.create_project(teams=[team], name="bar")
-
-        # Depending on test we run migrations in Django 1.8. This causes
-        # extra rows to be created, so remove them to keep this test working
-        SavedSearch.objects.filter(is_global=True).delete()
-
-        SavedSearch.objects.create(
-            project=project1, name="bar", query=DEFAULT_SAVED_SEARCHES[0]["query"]
-        )
-        included = [
-            SavedSearch.objects.create(
-                name="Global Query",
-                query=DEFAULT_SAVED_SEARCHES[0]["query"],
-                is_global=True,
-                date_added=timezone.now(),
-            ),
-            SavedSearch.objects.create(
-                project=project1, name="foo", query="some test", date_added=timezone.now()
-            ),
-            SavedSearch.objects.create(
-                project=project1,
-                name="wat",
-                query="is:unassigned is:unresolved",
-                date_added=timezone.now(),
-            ),
-            SavedSearch.objects.create(
-                project=project2, name="foo", query="some test", date_added=timezone.now()
-            ),
-        ]
-
-        included.sort(key=lambda search: (search.name, search.id))
-        response = self.get_valid_response(self.organization.slug)
-        response.data.sort(key=lambda search: (search["name"], search["projectId"]))
-        assert response.data == serialize(included)
 
 
 class OrgLevelOrganizationSearchesListTest(APITestCase):
@@ -65,8 +15,7 @@ class OrgLevelOrganizationSearchesListTest(APITestCase):
         return self.create_user("test@test.com")
 
     def get_response(self, *args, **params):
-        params["use_org_level"] = "1"
-        return super(OrgLevelOrganizationSearchesListTest, self).get_response(*args, **params)
+        return super().get_response(*args, **params)
 
     def create_base_data(self):
         # Depending on test we run migrations in Django 1.8. This causes
@@ -78,6 +27,7 @@ class OrgLevelOrganizationSearchesListTest(APITestCase):
             project=self.create_project(teams=[team], name="foo"),
             name="foo",
             query="some test",
+            sort=SortOptions.DATE,
             date_added=timezone.now(),
         )
         SavedSearch.objects.create(
@@ -85,12 +35,14 @@ class OrgLevelOrganizationSearchesListTest(APITestCase):
             owner=self.create_user(),
             name="foo",
             query="some other user's query",
+            sort=SortOptions.DATE,
             date_added=timezone.now(),
         )
         included = [
             SavedSearch.objects.create(
                 name="Global Query",
-                query=DEFAULT_SAVED_SEARCHES[0]["query"],
+                query="is:unresolved",
+                sort=SortOptions.DATE,
                 is_global=True,
                 date_added=timezone.now(),
             ),
@@ -98,12 +50,14 @@ class OrgLevelOrganizationSearchesListTest(APITestCase):
                 organization=self.organization,
                 name="foo",
                 query="some test",
+                sort=SortOptions.DATE,
                 date_added=timezone.now(),
             ),
             SavedSearch.objects.create(
                 organization=self.organization,
                 name="wat",
                 query="is:unassigned is:unresolved",
+                sort=SortOptions.NEW,
                 date_added=timezone.now(),
             ),
         ]
@@ -126,6 +80,7 @@ class OrgLevelOrganizationSearchesListTest(APITestCase):
             owner=self.user,
             name="My Pinned Query",
             query="pinned junk",
+            sort=SortOptions.NEW,
             date_added=timezone.now(),
         )
         included.append(pinned_query)

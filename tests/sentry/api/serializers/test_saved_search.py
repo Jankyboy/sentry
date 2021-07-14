@@ -1,12 +1,5 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
-import six
-
 from sentry.api.serializers import serialize
 from sentry.models import SavedSearch
-from sentry.models.savedsearch import DEFAULT_SAVED_SEARCHES
 from sentry.testutils import TestCase
 
 
@@ -17,8 +10,8 @@ class SavedSearchSerializerTest(TestCase):
         )
         result = serialize(search)
 
-        assert result["id"] == six.text_type(search.id)
-        assert result["projectId"] == six.text_type(search.project_id)
+        assert result["id"] == str(search.id)
+        assert result["projectId"] == str(search.project_id)
         assert result["type"] == search.type
         assert result["name"] == search.name
         assert result["query"] == search.query
@@ -30,13 +23,10 @@ class SavedSearchSerializerTest(TestCase):
         assert not result["isPinned"]
 
     def test_global(self):
-        default_saved_search = DEFAULT_SAVED_SEARCHES[0]
-        search = SavedSearch(
-            name=default_saved_search["name"], query=default_saved_search["query"], is_global=True
-        )
+        search = SavedSearch(name="Unresolved Issues", query="is:unresolved", is_global=True)
         result = serialize(search)
 
-        assert result["id"] == six.text_type(search.id)
+        assert result["id"] == str(search.id)
         assert result["projectId"] is None
         assert result["type"] == search.type
         assert result["name"] == search.name
@@ -54,7 +44,7 @@ class SavedSearchSerializerTest(TestCase):
         )
         result = serialize(search)
 
-        assert result["id"] == six.text_type(search.id)
+        assert result["id"] == str(search.id)
         assert result["projectId"] is None
         assert result["type"] == search.type
         assert result["name"] == search.name
@@ -72,7 +62,7 @@ class SavedSearchSerializerTest(TestCase):
         )
         result = serialize(search)
 
-        assert result["id"] == six.text_type(search.id)
+        assert result["id"] == str(search.id)
         assert result["projectId"] is None
         assert result["type"] == search.type
         assert result["name"] == search.name

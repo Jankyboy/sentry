@@ -1,6 +1,4 @@
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from exam import fixture
 
 from sentry.testutils import TestCase
@@ -40,4 +38,4 @@ class HomeTest(TestCase):
         with self.feature("organizations:create"):
             resp = self.client.get(self.path)
 
-        self.assertRedirects(resp, u"/organizations/{}/issues/".format(org.slug))
+        self.assertRedirects(resp, f"/organizations/{org.slug}/issues/")

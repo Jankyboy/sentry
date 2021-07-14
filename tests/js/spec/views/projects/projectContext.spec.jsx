@@ -1,6 +1,4 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {ProjectContext} from 'app/views/projects/projectContext';
 
@@ -9,7 +7,7 @@ jest.mock('app/actionCreators/modal', () => ({
   redirectToProject: jest.fn(),
 }));
 
-describe('projectContext component', function() {
+describe('projectContext component', function () {
   const routes = [
     {path: '/', childRoutes: []},
     {name: 'Organizations', path: ':orgId/', childRoutes: []},
@@ -20,7 +18,7 @@ describe('projectContext component', function() {
 
   const project = TestStubs.Project();
   const org = TestStubs.Organization();
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     [project.slug, 'new-slug'].forEach(slug => {
       MockApiClient.addMockResponse({
@@ -36,7 +34,7 @@ describe('projectContext component', function() {
     });
   });
 
-  it('displays error on 404s', async function() {
+  it('displays error on 404s', async function () {
     const router = TestStubs.router();
 
     MockApiClient.addMockResponse({
@@ -58,7 +56,7 @@ describe('projectContext component', function() {
       />
     );
 
-    const wrapper = mount(projectContext);
+    const wrapper = mountWithTheme(projectContext);
 
     await tick();
     wrapper.update();
@@ -68,7 +66,7 @@ describe('projectContext component', function() {
     expect(wrapper.state('errorType')).toBe('PROJECT_NOT_FOUND');
   });
 
-  it('fetches data again if projectId changes', function() {
+  it('fetches data again if projectId changes', function () {
     const router = TestStubs.router();
     let fetchMock = MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/`,
@@ -90,7 +88,7 @@ describe('projectContext component', function() {
       />
     );
 
-    const wrapper = mount(projectContext);
+    const wrapper = mountWithTheme(projectContext);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
@@ -113,7 +111,7 @@ describe('projectContext component', function() {
     expect(fetchMock).toHaveBeenCalled();
   });
 
-  it('fetches data again if projects list changes', function() {
+  it('fetches data again if projects list changes', function () {
     const router = TestStubs.router();
     const fetchMock = MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/`,
@@ -135,7 +133,7 @@ describe('projectContext component', function() {
       />
     );
 
-    const wrapper = mount(projectContext);
+    const wrapper = mountWithTheme(projectContext);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
 

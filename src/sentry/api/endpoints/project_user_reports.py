@@ -1,32 +1,13 @@
-from __future__ import absolute_import
-
-import six
 from rest_framework import serializers
-from uuid import uuid4
 
 from sentry.api.authentication import DSNAuthentication
-from sentry.api.base import DocSection, EnvironmentMixin
+from sentry.api.base import EnvironmentMixin
 from sentry.api.bases.project import ProjectEndpoint
-from sentry.api.serializers import serialize, UserReportWithGroupSerializer
+from sentry.api.helpers.user_reports import user_reports_filter_to_unresolved
 from sentry.api.paginator import DateTimePaginator
-from sentry.models import Environment, GroupStatus, ProjectKey, UserReport
-from sentry.utils.apidocs import scenario, attach_scenarios
-from sentry.ingest.userreport import save_userreport, Conflict
-
-
-@scenario("CreateUserFeedback")
-def create_user_feedback_scenario(runner):
-    with runner.isolated_project("Plain Proxy") as project:
-        runner.request(
-            method="POST",
-            path=u"/projects/{}/{}/user-feedback/".format(runner.org.slug, project.slug),
-            data={
-                "name": "Jane Smith",
-                "email": "jane@example.com",
-                "comments": "It broke!",
-                "event_id": uuid4().hex,
-            },
-        )
+from sentry.api.serializers import UserReportWithGroupSerializer, serialize
+from sentry.ingest.userreport import Conflict, save_userreport
+from sentry.models import Environment, ProjectKey, UserReport
 
 
 class UserReportSerializer(serializers.ModelSerializer):
@@ -37,7 +18,6 @@ class UserReportSerializer(serializers.ModelSerializer):
 
 class ProjectUserReportsEndpoint(ProjectEndpoint, EnvironmentMixin):
     authentication_classes = ProjectEndpoint.authentication_classes + (DSNAuthentication,)
-    doc_section = DocSection.PROJECTS
 
     def get(self, request, project):
         """
@@ -54,20 +34,19 @@ class ProjectUserReportsEndpoint(ProjectEndpoint, EnvironmentMixin):
         if isinstance(request.auth, ProjectKey):
             return self.respond(status=401)
 
+        paginate_kwargs = {}
         try:
             environment = self._get_environment_from_request(request, project.organization_id)
         except Environment.DoesNotExist:
             queryset = UserReport.objects.none()
         else:
-            queryset = UserReport.objects.filter(
-                project=project, group__isnull=False
-            ).select_related("group")
+            queryset = UserReport.objects.filter(project_id=project.id, group_id__isnull=False)
             if environment is not None:
-                queryset = queryset.filter(environment=environment)
+                queryset = queryset.filter(environment_id=environment.id)
 
             status = request.GET.get("status", "unresolved")
             if status == "unresolved":
-                queryset = queryset.filter(group__status=GroupStatus.UNRESOLVED)
+                paginate_kwargs["post_query_filter"] = user_reports_filter_to_unresolved
             elif status:
                 return self.respond({"status": "Invalid status choice"}, status=400)
 
@@ -83,9 +62,9 @@ class ProjectUserReportsEndpoint(ProjectEndpoint, EnvironmentMixin):
                 ),
             ),
             paginator_cls=DateTimePaginator,
+            **paginate_kwargs,
         )
 
-    @attach_scenarios([create_user_feedback_scenario])
     def post(self, request, project):
         """
         Submit User Feedback
@@ -121,7 +100,10 @@ class ProjectUserReportsEndpoint(ProjectEndpoint, EnvironmentMixin):
         try:
             report_instance = save_userreport(project, report)
         except Conflict as e:
-            return self.respond({"detail": six.text_type(e)}, status=409)
+            return self.respond({"detail": str(e)}, status=409)
+
+        if isinstance(request.auth, ProjectKey):
+            return self.respond(status=200)
 
         return self.respond(
             serialize(

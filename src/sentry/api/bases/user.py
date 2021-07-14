@@ -1,11 +1,9 @@
-from __future__ import absolute_import
-
 from sentry.api.base import Endpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.permissions import SentryPermission
-from sentry.models import Organization, OrganizationStatus, User
 from sentry.auth.superuser import is_active_superuser
 from sentry.auth.system import is_system_auth
+from sentry.models import Organization, OrganizationStatus, User
 
 
 class UserPermission(SentryPermission):
@@ -45,26 +43,32 @@ class OrganizationUserPermission(UserPermission):
             return False
 
     def has_object_permission(self, request, view, user=None):
-        if super(OrganizationUserPermission, self).has_object_permission(request, view, user):
+        if super().has_object_permission(request, view, user):
             return True
         return self.has_org_permission(request, user)
 
 
 class UserEndpoint(Endpoint):
+    """
+    The base endpoint for APIs that deal with Users. Inherit from this class to
+    get permission checks and to automatically convert user ID "me" to the
+    currently logged in user's ID.
+    """
+
     permission_classes = (UserPermission,)
 
     def convert_args(self, request, user_id, *args, **kwargs):
-        try:
-            if user_id == "me":
-                if not request.user.is_authenticated():
-                    raise ResourceDoesNotExist
-                user_id = request.user.id
+        if user_id == "me":
+            if not request.user.is_authenticated:
+                raise ResourceDoesNotExist
+            user_id = request.user.id
 
+        try:
             user = User.objects.get(id=user_id)
-        except User.DoesNotExist:
+        except (User.DoesNotExist, ValueError):
             raise ResourceDoesNotExist
 
         self.check_object_permissions(request, user)
 
         kwargs["user"] = user
-        return (args, kwargs)
+        return args, kwargs

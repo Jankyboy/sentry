@@ -1,20 +1,27 @@
-from __future__ import absolute_import
-
-
 from rest_framework import status
 from rest_framework.response import Response
 
-from sentry.api.bases.project import ProjectEndpoint
+from sentry.api.bases.project import ProjectAlertRulePermission, ProjectEndpoint
 from sentry.api.serializers import serialize
 from sentry.api.serializers.rest_framework import RuleSerializer
 from sentry.integrations.slack import tasks
 from sentry.mediators import project_rules
-from sentry.models import AuditLogEntryEvent, Rule, RuleActivity, RuleActivityType, RuleStatus
+from sentry.models import (
+    AuditLogEntryEvent,
+    Rule,
+    RuleActivity,
+    RuleActivityType,
+    RuleStatus,
+    Team,
+    User,
+)
 from sentry.signals import alert_rule_created
 from sentry.web.decorators import transaction_start
 
 
 class ProjectRulesEndpoint(ProjectEndpoint):
+    permission_classes = (ProjectAlertRulePermission,)
+
     @transaction_start("ProjectRulesEndpoint")
     def get(self, request, project):
         """
@@ -46,6 +53,7 @@ class ProjectRulesEndpoint(ProjectEndpoint):
             {method} {path}
             {{
               "name": "My rule name",
+              "owner": "type:id",
               "conditions": [],
               "filters": [],
               "actions": [],
@@ -58,7 +66,6 @@ class ProjectRulesEndpoint(ProjectEndpoint):
 
         if serializer.is_valid():
             data = serializer.validated_data
-
             # combine filters and conditions into one conditions criteria for the rule object
             conditions = data.get("conditions", [])
             if "filters" in data:
@@ -71,9 +78,19 @@ class ProjectRulesEndpoint(ProjectEndpoint):
                 "action_match": data["actionMatch"],
                 "filter_match": data.get("filterMatch"),
                 "conditions": conditions,
-                "actions": data["actions"],
+                "actions": data.get("actions", []),
                 "frequency": data.get("frequency"),
+                "user_id": request.user.id,
             }
+            owner = data.get("owner")
+            if owner:
+                try:
+                    kwargs["owner"] = owner.resolve_to_actor().id
+                except (User.DoesNotExist, Team.DoesNotExist):
+                    return Response(
+                        "Could not resolve owner",
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
             if data.get("pending_save"):
                 client = tasks.RedisRuleStatus()
@@ -94,7 +111,12 @@ class ProjectRulesEndpoint(ProjectEndpoint):
                 data=rule.get_audit_log_data(),
             )
             alert_rule_created.send_robust(
-                user=request.user, project=project, rule=rule, rule_type="issue", sender=self
+                user=request.user,
+                project=project,
+                rule=rule,
+                rule_type="issue",
+                sender=self,
+                is_api_token=request.auth is not None,
             )
 
             return Response(serialize(rule, request.user))

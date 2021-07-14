@@ -1,9 +1,7 @@
-import React from 'react';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
-import {mount} from 'sentry-test/enzyme';
-
-import EventsRequest from 'app/components/charts/eventsRequest';
 import {doEventsRequest} from 'app/actionCreators/events';
+import EventsRequest from 'app/components/charts/eventsRequest';
 
 const COUNT_OBJ = {
   count: 123,
@@ -13,7 +11,7 @@ jest.mock('app/actionCreators/events', () => ({
   doEventsRequest: jest.fn(),
 }));
 
-describe('EventsRequest', function() {
+describe('EventsRequest', function () {
   const project = TestStubs.Project();
   const organization = TestStubs.Organization();
   const mock = jest.fn(() => null);
@@ -30,17 +28,17 @@ describe('EventsRequest', function() {
 
   let wrapper;
 
-  describe('with props changes', function() {
-    beforeAll(function() {
+  describe('with props changes', function () {
+    beforeAll(function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           data: [[new Date(), [COUNT_OBJ]]],
         })
       );
-      wrapper = mount(<EventsRequest {...DEFAULTS}>{mock}</EventsRequest>);
+      wrapper = mountWithTheme(<EventsRequest {...DEFAULTS}>{mock}</EventsRequest>);
     });
 
-    it('makes requests', async function() {
+    it('makes requests', async function () {
       expect(mock).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
@@ -69,7 +67,7 @@ describe('EventsRequest', function() {
       expect(doEventsRequest).toHaveBeenCalled();
     });
 
-    it('makes a new request if projects prop changes', async function() {
+    it('makes a new request if projects prop changes', async function () {
       doEventsRequest.mockClear();
 
       wrapper.setProps({projects: [123]});
@@ -83,7 +81,7 @@ describe('EventsRequest', function() {
       );
     });
 
-    it('makes a new request if environments prop changes', async function() {
+    it('makes a new request if environments prop changes', async function () {
       doEventsRequest.mockClear();
 
       wrapper.setProps({environments: ['dev']});
@@ -97,7 +95,7 @@ describe('EventsRequest', function() {
       );
     });
 
-    it('makes a new request if period prop changes', async function() {
+    it('makes a new request if period prop changes', async function () {
       doEventsRequest.mockClear();
 
       wrapper.setProps({period: '7d'});
@@ -112,12 +110,12 @@ describe('EventsRequest', function() {
     });
   });
 
-  describe('transforms', function() {
-    beforeEach(function() {
+  describe('transforms', function () {
+    beforeEach(function () {
       doEventsRequest.mockClear();
     });
 
-    it('expands period in query if `includePrevious`', async function() {
+    it('expands period in query if `includePrevious`', async function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           data: [
@@ -132,7 +130,7 @@ describe('EventsRequest', function() {
           ],
         })
       );
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <EventsRequest {...DEFAULTS} includePrevious>
           {mock}
         </EventsRequest>
@@ -200,14 +198,14 @@ describe('EventsRequest', function() {
       );
     });
 
-    it('aggregates counts per timestamp only when `includeTimeAggregation` prop is true', async function() {
+    it('aggregates counts per timestamp only when `includeTimeAggregation` prop is true', async function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           data: [[new Date(), [COUNT_OBJ, {...COUNT_OBJ, count: 100}]]],
         })
       );
 
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <EventsRequest {...DEFAULTS} includeTimeseries>
           {mock}
         </EventsRequest>
@@ -239,14 +237,14 @@ describe('EventsRequest', function() {
       );
     });
 
-    it('aggregates all counts per timestamp when category name identical', async function() {
+    it('aggregates all counts per timestamp when category name identical', async function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           data: [[new Date(), [COUNT_OBJ, {...COUNT_OBJ, count: 100}]]],
         })
       );
 
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <EventsRequest {...DEFAULTS} includeTimeseries>
           {mock}
         </EventsRequest>
@@ -279,12 +277,12 @@ describe('EventsRequest', function() {
     });
   });
 
-  describe('yAxis', function() {
-    beforeEach(function() {
+  describe('yAxis', function () {
+    beforeEach(function () {
       doEventsRequest.mockClear();
     });
 
-    it('supports yAxis', async function() {
+    it('supports yAxis', async function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           data: [
@@ -300,7 +298,7 @@ describe('EventsRequest', function() {
         })
       );
 
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <EventsRequest {...DEFAULTS} includePrevious yAxis="apdex()">
           {mock}
         </EventsRequest>
@@ -360,7 +358,7 @@ describe('EventsRequest', function() {
       );
     });
 
-    it('supports multiple yAxis', async function() {
+    it('supports multiple yAxis', async function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           'epm()': {
@@ -390,7 +388,7 @@ describe('EventsRequest', function() {
         })
       );
 
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <EventsRequest {...DEFAULTS} includePrevious yAxis={['apdex()', 'epm()']}>
           {mock}
         </EventsRequest>
@@ -419,12 +417,12 @@ describe('EventsRequest', function() {
     });
   });
 
-  describe('topEvents', function() {
-    beforeEach(function() {
+  describe('topEvents', function () {
+    beforeEach(function () {
       doEventsRequest.mockClear();
     });
 
-    it('supports topEvents parameter', async function() {
+    it('supports topEvents parameter', async function () {
       doEventsRequest.mockImplementation(() =>
         Promise.resolve({
           'project1,error': {
@@ -454,7 +452,7 @@ describe('EventsRequest', function() {
         })
       );
 
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <EventsRequest
           {...DEFAULTS}
           includePrevious
@@ -486,6 +484,35 @@ describe('EventsRequest', function() {
             generateExpected('project1,error'),
             generateExpected('project1,warning'),
           ],
+        })
+      );
+    });
+  });
+
+  describe('out of retention', function () {
+    beforeEach(function () {
+      doEventsRequest.mockClear();
+    });
+
+    it('does not make request', async function () {
+      wrapper = mountWithTheme(
+        <EventsRequest {...DEFAULTS} expired>
+          {mock}
+        </EventsRequest>
+      );
+      expect(doEventsRequest).not.toHaveBeenCalled();
+    });
+
+    it('errors', async function () {
+      wrapper = mountWithTheme(
+        <EventsRequest {...DEFAULTS} expired>
+          {mock}
+        </EventsRequest>
+      );
+      expect(mock).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          expired: true,
+          errored: true,
         })
       );
     });

@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 from django.db import models
 from django.db.models.signals import post_save
 from django.utils import timezone
@@ -9,7 +7,7 @@ from sentry.utils.groupreference import find_referenced_groups
 
 
 class PullRequest(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     organization_id = BoundedPositiveIntegerField(db_index=True)
     repository_id = BoundedPositiveIntegerField()
@@ -32,7 +30,7 @@ class PullRequest(Model):
     __repr__ = sane_repr("organization_id", "repository_id", "key")
 
     def find_referenced_groups(self):
-        text = u"{} {}".format(self.message, self.title)
+        text = f"{self.message} {self.title}"
         return find_referenced_groups(text, self.organization_id)
 
     @classmethod
@@ -54,7 +52,7 @@ class PullRequest(Model):
 
 
 class PullRequestCommit(Model):
-    __core__ = False
+    __include_in_export__ = False
     pull_request = FlexibleForeignKey("sentry.PullRequest")
     commit = FlexibleForeignKey("sentry.Commit")
 

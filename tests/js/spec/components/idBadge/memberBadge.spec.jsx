@@ -1,17 +1,15 @@
-import React from 'react';
-
-import {mount, shallow} from 'sentry-test/enzyme';
+import {mountWithTheme, shallow} from 'sentry-test/enzyme';
 
 import MemberBadge from 'app/components/idBadge/memberBadge';
 
-describe('MemberBadge', function() {
+describe('MemberBadge', function () {
   let member;
   beforeEach(() => {
     member = TestStubs.Member();
   });
 
-  it('renders with link when member and orgId are supplied', function() {
-    const wrapper = mount(<MemberBadge member={member} orgId="orgId" />);
+  it('renders with link when member and orgId are supplied', function () {
+    const wrapper = mountWithTheme(<MemberBadge member={member} orgId="orgId" />);
 
     expect(wrapper.find('StyledName').prop('children')).toBe('Foo Bar');
     expect(wrapper.find('StyledEmail').prop('children')).toBe('foo@example.com');
@@ -19,19 +17,21 @@ describe('MemberBadge', function() {
     expect(wrapper.find('StyledAvatar')).toHaveLength(1);
   });
 
-  it('does not use a link when useLink = false', function() {
-    const wrapper = mount(<MemberBadge member={member} useLink={false} orgId="orgId" />);
+  it('does not use a link when useLink = false', function () {
+    const wrapper = mountWithTheme(
+      <MemberBadge member={member} useLink={false} orgId="orgId" />
+    );
 
     expect(wrapper.find('StyledName Link')).toHaveLength(0);
   });
 
-  it('does not use a link when orgId = null', function() {
-    const wrapper = mount(<MemberBadge member={member} useLink />);
+  it('does not use a link when orgId = null', function () {
+    const wrapper = mountWithTheme(<MemberBadge member={member} useLink />);
 
     expect(wrapper.find('StyledName Link')).toHaveLength(0);
   });
 
-  it('can display alternate display names/emails', function() {
+  it('can display alternate display names/emails', function () {
     const wrapper = shallow(
       <MemberBadge
         member={member}
@@ -45,7 +45,7 @@ describe('MemberBadge', function() {
     expect(wrapper.find('StyledAvatar')).toHaveLength(1);
   });
 
-  it('can coalesce using username', function() {
+  it('can coalesce using username', function () {
     member.user = TestStubs.User({
       name: null,
       email: null,
@@ -59,7 +59,7 @@ describe('MemberBadge', function() {
     expect(wrapper.find('StyledAvatar')).toHaveLength(1);
   });
 
-  it('can coalesce using ipaddress', function() {
+  it('can coalesce using ipaddress', function () {
     member.user = TestStubs.User({
       name: null,
       email: null,
@@ -72,14 +72,14 @@ describe('MemberBadge', function() {
     expect(wrapper.find('StyledEmail').prop('children')).toBe(null);
   });
 
-  it('can hide email address', function() {
-    const wrapper = mount(<MemberBadge member={member} hideEmail />);
+  it('can hide email address', function () {
+    const wrapper = mountWithTheme(<MemberBadge member={member} hideEmail />);
 
     expect(wrapper.find('StyledEmail')).toHaveLength(0);
   });
 
-  it('renders when a member without a user to passed to member', function() {
-    const wrapper = mount(<MemberBadge member={{...member, user: null}} />);
+  it('renders when a member without a user to passed to member', function () {
+    const wrapper = mountWithTheme(<MemberBadge member={{...member, user: null}} />);
 
     expect(wrapper.find('StyledName').prop('children')).toBe('Sentry 1 Name');
     expect(wrapper.find('StyledAvatar')).toHaveLength(1);

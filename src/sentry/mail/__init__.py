@@ -1,8 +1,8 @@
-from __future__ import absolute_import
-
 from django.conf import settings
 
 from sentry.utils.imports import import_string
+
+from .notifications import *  # NOQA Importing this in __init__ so that @register runs.
 
 
 def load_mail_adapter():

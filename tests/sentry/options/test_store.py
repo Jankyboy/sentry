@@ -1,23 +1,20 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
 from uuid import uuid1
 
 import pytest
-from exam import before, fixture
-from sentry.utils.compat.mock import patch
+from django.conf import settings
 from django.core.cache.backends.locmem import LocMemCache
+from exam import before, fixture
 
 from sentry.models import Option
 from sentry.options.store import OptionsStore
 from sentry.testutils import TestCase
+from sentry.utils.compat.mock import patch
 
 
 class OptionsStoreTest(TestCase):
     @fixture
     def store(self):
-        c = LocMemCache("test", {})
+        c = LocMemCache("test", settings.CACHES["default"])
         c.clear()
         return OptionsStore(cache=c)
 

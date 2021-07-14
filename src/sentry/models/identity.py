@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 import logging
 
 from django.conf import settings
@@ -15,13 +13,12 @@ from sentry.db.models import (
     Model,
 )
 
-
 logger = logging.getLogger(__name__)
 
 # TODO(dcramer): pull in enum library
 
 
-class IdentityStatus(object):
+class IdentityStatus:
     UNKNOWN = 0
     VALID = 1
     INVALID = 2
@@ -38,7 +35,7 @@ class IdentityProvider(Model):
     acme-org.onelogin.com.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     type = models.CharField(max_length=64)
     config = EncryptedJsonField()
@@ -61,7 +58,7 @@ class Identity(Model):
     A verified link between a user and a third party identity.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     idp = FlexibleForeignKey("sentry.IdentityProvider")
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)
@@ -105,6 +102,26 @@ class Identity(Model):
                 "external_id": external_id,
                 "object_id": identity_model.id,
                 "user_id": user.id,
+            },
+        )
+        return identity_model
+
+    @classmethod
+    def update_external_id_and_defaults(cls, idp, external_id, user, defaults):
+        """
+        Updates the identity object for a given user and identity provider
+        with the new external id and other fields related to the identity status
+        """
+        query = Identity.objects.filter(user=user, idp=idp)
+        query.update(external_id=external_id, **defaults)
+        identity_model = query.first()
+        logger.info(
+            "updated-identity",
+            extra={
+                "external_id": external_id,
+                "idp_id": idp.id,
+                "user_id": user.id,
+                "identity_id": identity_model.id,
             },
         )
         return identity_model

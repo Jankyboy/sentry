@@ -1,24 +1,24 @@
-from __future__ import absolute_import
-
 from copy import deepcopy
 
 from rest_framework import status
 from rest_framework.response import Response
 
 from sentry import features
-from sentry.api.bases.project import ProjectEndpoint
+from sentry.api.bases.project import ProjectAlertRulePermission, ProjectEndpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.paginator import (
-    OffsetPaginator,
-    CombinedQuerysetPaginator,
     CombinedQuerysetIntermediary,
+    CombinedQuerysetPaginator,
+    OffsetPaginator,
 )
-from sentry.api.serializers import serialize, CombinedRuleSerializer
+from sentry.api.serializers import CombinedRuleSerializer, serialize
 from sentry.incidents.endpoints.serializers import AlertRuleSerializer
+from sentry.incidents.logic import get_slack_actions_with_async_lookups
 from sentry.incidents.models import AlertRule
+from sentry.integrations.slack import tasks
+from sentry.models import Rule, RuleStatus
 from sentry.signals import alert_rule_created
 from sentry.snuba.dataset import Dataset
-from sentry.models import Rule, RuleStatus
 
 
 class ProjectCombinedRuleIndexEndpoint(ProjectEndpoint):
@@ -31,12 +31,12 @@ class ProjectCombinedRuleIndexEndpoint(ProjectEndpoint):
             # Filter to only error alert rules
             alert_rules = alert_rules.filter(snuba_query__dataset=Dataset.Events.value)
 
-        alert_rule_intermediary = CombinedQuerysetIntermediary(alert_rules, "date_added")
+        alert_rule_intermediary = CombinedQuerysetIntermediary(alert_rules, ["date_added"])
         rule_intermediary = CombinedQuerysetIntermediary(
             Rule.objects.filter(
                 project=project, status__in=[RuleStatus.ACTIVE, RuleStatus.INACTIVE]
             ),
-            "date_added",
+            ["date_added"],
         )
 
         return self.paginate(
@@ -50,6 +50,8 @@ class ProjectCombinedRuleIndexEndpoint(ProjectEndpoint):
 
 
 class ProjectAlertRuleIndexEndpoint(ProjectEndpoint):
+    permission_classes = (ProjectAlertRulePermission,)
+
     def get(self, request, project):
         """
         Fetches alert rules for a project
@@ -89,20 +91,32 @@ class ProjectAlertRuleIndexEndpoint(ProjectEndpoint):
             },
             data=data,
         )
-
         if serializer.is_valid():
-            alert_rule = serializer.save()
-            referrer = request.query_params.get("referrer")
-            session_id = request.query_params.get("sessionId")
-            alert_rule_created.send_robust(
-                user=request.user,
-                project=project,
-                rule=alert_rule,
-                rule_type="metric",
-                sender=self,
-                referrer=referrer,
-                session_id=session_id,
-            )
-            return Response(serialize(alert_rule, request.user), status=status.HTTP_201_CREATED)
+            if get_slack_actions_with_async_lookups(project.organization, request.user, data):
+                # need to kick off an async job for Slack
+                client = tasks.RedisRuleStatus()
+                task_args = {
+                    "organization_id": project.organization_id,
+                    "uuid": client.uuid,
+                    "data": data,
+                    "user_id": request.user.id,
+                }
+                tasks.find_channel_id_for_alert_rule.apply_async(kwargs=task_args)
+                return Response({"uuid": client.uuid}, status=202)
+            else:
+                alert_rule = serializer.save()
+                referrer = request.query_params.get("referrer")
+                session_id = request.query_params.get("sessionId")
+                alert_rule_created.send_robust(
+                    user=request.user,
+                    project=project,
+                    rule=alert_rule,
+                    rule_type="metric",
+                    sender=self,
+                    referrer=referrer,
+                    session_id=session_id,
+                    is_api_token=request.auth is not None,
+                )
+                return Response(serialize(alert_rule, request.user), status=status.HTTP_201_CREATED)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

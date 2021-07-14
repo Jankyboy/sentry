@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from sentry.web.frontend.base import BaseView
 from sentry.web.helpers import render_to_response
 
@@ -10,6 +8,6 @@ class AuthCloseView(BaseView):
     back to the window opener and closes the window"""
 
     def handle(self, request):
-        logged_in = request.user.is_authenticated()
+        logged_in = request.user.is_authenticated
 
         return render_to_response("sentry/auth_close.html", context={"logged_in": logged_in})

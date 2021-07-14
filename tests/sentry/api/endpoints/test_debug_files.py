@@ -1,14 +1,12 @@
-from __future__ import absolute_import
-
 import zipfile
+from io import BytesIO
 from uuid import uuid4
-from six import BytesIO, text_type
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
+from sentry.models import File, ProjectDebugFile, Release, ReleaseFile
 from sentry.testutils import APITestCase
-from sentry.models import ProjectDebugFile, Release, ReleaseFile, File
 
 # This is obviously a freely generated UUID and not the checksum UUID.
 # This is permissible if users want to send different UUIDs
@@ -199,19 +197,35 @@ class DebugFilesUploadTest(APITestCase):
         assert dsym["uuid"] == "6dc7fdb0-d2fb-4c8e-9d6b-bb1aa98929b1"
         download_id = dsym["id"]
 
-        # Test download
+        # Download as a user with sufficient role
+        self.organization.update_option("sentry:debug_files_role", "admin")
+        user = self.create_user("baz@localhost")
+        self.create_member(user=user, organization=project.organization, role="owner")
+        self.login_as(user=user)
         response = self.client.get(url + "?id=" + download_id)
-
         assert response.status_code == 200, response.content
         assert (
             response.get("Content-Disposition")
             == 'attachment; filename="' + PROGUARD_UUID + '.txt"'
         )
-        assert response.get("Content-Length") == text_type(len(PROGUARD_SOURCE))
+        assert response.get("Content-Length") == str(len(PROGUARD_SOURCE))
         assert response.get("Content-Type") == "application/octet-stream"
         assert PROGUARD_SOURCE == BytesIO(b"".join(response.streaming_content)).getvalue()
 
-        # Login user with no permissions
+        # Download as a superuser
+        self.login_as(user=self.user)
+        response = self.client.get(url + "?id=" + download_id)
+        assert response.get("Content-Type") == "application/octet-stream"
+
+        # Download as a user without sufficient role
+        self.organization.update_option("sentry:debug_files_role", "owner")
+        user = self.create_user("bar@localhost")
+        self.create_member(user=user, organization=project.organization, role="member")
+        self.login_as(user=user)
+        response = self.client.get(url + "?id=" + download_id)
+        assert response.status_code == 403, response.content
+
+        # Download as a user with no permissions
         user_no_permission = self.create_user("baz@localhost", username="baz")
         self.login_as(user=user_no_permission)
         response = self.client.get(url + "?id=" + download_id)
@@ -247,7 +261,7 @@ class DebugFilesUploadTest(APITestCase):
         first_uuid = None
         last_uuid = None
         for i in range(25):
-            last_uuid = text_type(uuid4())
+            last_uuid = str(uuid4())
             if first_uuid is None:
                 first_uuid = last_uuid
             self._upload_proguard(url, last_uuid)
@@ -279,13 +293,13 @@ class DebugFilesUploadTest(APITestCase):
 
         ReleaseFile.objects.create(
             organization_id=project.organization_id,
-            release=release,
+            release_id=release.id,
             file=File.objects.create(name="application.js", type="release.file"),
             name="http://example.com/application.js",
         )
         ReleaseFile.objects.create(
             organization_id=project.organization_id,
-            release=release,
+            release_id=release.id,
             file=File.objects.create(name="application2.js", type="release.file"),
             name="http://example.com/application2.js",
         )
@@ -301,7 +315,7 @@ class DebugFilesUploadTest(APITestCase):
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 2
-        assert response.data[0]["name"] == text_type(release2.version)
+        assert response.data[0]["name"] == str(release2.version)
         assert response.data[0]["fileCount"] == 0
         assert response.data[1]["fileCount"] == 2
 
@@ -315,7 +329,7 @@ class DebugFilesUploadTest(APITestCase):
 
         ReleaseFile.objects.create(
             organization_id=project.organization_id,
-            release=release,
+            release_id=release.id,
             file=File.objects.create(name="application.js", type="release.file"),
             name="http://example.com/application.js",
         )
@@ -329,4 +343,26 @@ class DebugFilesUploadTest(APITestCase):
 
         response = self.client.delete(url + "?name=1")
         assert response.status_code == 204
-        assert not ReleaseFile.objects.filter(release=release).exists()
+        assert not ReleaseFile.objects.filter(release_id=release.id).exists()
+
+    def test_source_maps_release_archive(self):
+        project = self.create_project(name="foo")
+
+        release = Release.objects.create(organization_id=project.organization_id, version="1")
+        release.add_project(project)
+
+        self.create_release_archive(release=release.version)
+
+        url = reverse(
+            "sentry-api-0-source-maps",
+            kwargs={"organization_slug": project.organization.slug, "project_slug": project.slug},
+        )
+
+        self.login_as(user=self.user)
+
+        response = self.client.get(url)
+
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 1
+        assert response.data[0]["name"] == str(release.version)
+        assert response.data[0]["fileCount"] == 2

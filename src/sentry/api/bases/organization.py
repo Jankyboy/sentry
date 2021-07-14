@@ -1,15 +1,16 @@
-from __future__ import absolute_import
-
-from rest_framework.exceptions import PermissionDenied, ParseError
-from django.core.cache import cache
-
 import sentry_sdk
+from django.core.cache import cache
+from rest_framework.exceptions import ParseError, PermissionDenied
 
 from sentry.api.base import Endpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.helpers.environments import get_environments
 from sentry.api.permissions import SentryPermission
-from sentry.api.utils import get_date_range_from_params, InvalidParams
+from sentry.api.utils import (
+    InvalidParams,
+    get_date_range_from_params,
+    is_member_disabled_from_limit,
+)
 from sentry.auth.superuser import is_active_superuser
 from sentry.constants import ALL_ACCESS_PROJECTS
 from sentry.models import (
@@ -21,9 +22,10 @@ from sentry.models import (
     ReleaseProject,
 )
 from sentry.utils import auth
-from sentry.utils.hashlib import hash_values
-from sentry.utils.sdk import bind_organization_context, configure_scope
 from sentry.utils.compat import map
+from sentry.utils.hashlib import hash_values
+from sentry.utils.numbers import format_grouped_length
+from sentry.utils.sdk import bind_organization_context
 
 
 class NoProjects(Exception):
@@ -60,6 +62,9 @@ class OrganizationPermission(SentryPermission):
         self.determine_access(request, organization)
         allowed_scopes = set(self.scope_map.get(request.method, []))
         return any(request.access.has_scope(s) for s in allowed_scopes)
+
+    def is_member_disabled_from_limit(self, request, organization):
+        return is_member_disabled_from_limit(request, organization)
 
 
 class OrganizationAuditPermission(OrganizationPermission):
@@ -141,6 +146,15 @@ class OrganizationDataExportPermission(OrganizationPermission):
     }
 
 
+class OrganizationAlertRulePermission(OrganizationPermission):
+    scope_map = {
+        "GET": ["org:read", "org:write", "org:admin", "alert_rule:read"],
+        "POST": ["org:write", "org:admin", "alert_rule:write"],
+        "PUT": ["org:write", "org:admin", "alert_rule:write"],
+        "DELETE": ["org:write", "org:admin", "alert_rule:write"],
+    }
+
+
 class OrganizationEndpoint(Endpoint):
     permission_classes = (OrganizationPermission,)
 
@@ -202,7 +216,6 @@ class OrganizationEndpoint(Endpoint):
     ):
         qs = Project.objects.filter(organization=organization, status=ProjectStatus.VISIBLE)
         user = getattr(request, "user", None)
-
         # A project_id of -1 means 'all projects I have access to'
         # While no project_ids means 'all projects I am a member of'.
         if project_ids == ALL_ACCESS_PROJECTS:
@@ -234,7 +247,7 @@ class OrganizationEndpoint(Endpoint):
                     func = request.access.has_project_membership
                 projects = [p for p in qs if func(p)]
 
-        project_ids = set(p.id for p in projects)
+        project_ids = {p.id for p in projects}
 
         if requested_projects and project_ids != requested_projects:
             raise PermissionDenied
@@ -242,8 +255,7 @@ class OrganizationEndpoint(Endpoint):
         return projects
 
     def get_environments(self, request, organization):
-        with sentry_sdk.start_span(op="PERF: Org.get_environments"):
-            return get_environments(request, organization)
+        return get_environments(request, organization)
 
     def get_filter_params(
         self, request, organization, date_filter_optional=False, project_ids=None
@@ -270,27 +282,42 @@ class OrganizationEndpoint(Endpoint):
         try:
             start, end = get_date_range_from_params(request.GET, optional=date_filter_optional)
             if start and end:
-                with configure_scope() as scope:
-                    scope.set_tag("query.period", (end - start).total_seconds())
+                total_seconds = (end - start).total_seconds()
+                sentry_sdk.set_tag("query.period", total_seconds)
+                one_day = 86400
+                grouped_period = ">30d"
+                if total_seconds <= one_day:
+                    grouped_period = "<=1d"
+                elif total_seconds <= one_day * 7:
+                    grouped_period = "<=7d"
+                elif total_seconds <= one_day * 14:
+                    grouped_period = "<=14d"
+                elif total_seconds <= one_day * 30:
+                    grouped_period = "<=30d"
+                sentry_sdk.set_tag("query.period.grouped", grouped_period)
         except InvalidParams as e:
-            raise ParseError(detail=u"Invalid date range: {}".format(e))
+            raise ParseError(detail=f"Invalid date range: {e}")
 
-        with sentry_sdk.start_span(op="PERF: org.get_filter_params - projects"):
-            try:
-                projects = self.get_projects(request, organization, project_ids)
-            except ValueError:
-                raise ParseError(detail="Invalid project ids")
+        try:
+            projects = self.get_projects(request, organization, project_ids)
+        except ValueError:
+            raise ParseError(detail="Invalid project ids")
 
         if not projects:
             raise NoProjects
 
-        environments = self.get_environments(request, organization)
+        len_projects = len(projects)
+        sentry_sdk.set_tag("query.num_projects", len_projects)
+        sentry_sdk.set_tag("query.num_projects.grouped", format_grouped_length(len_projects))
+
         params = {
             "start": start,
             "end": end,
             "project_id": [p.id for p in projects],
             "organization_id": organization.id,
         }
+
+        environments = self.get_environments(request, organization)
         if environments:
             params["environment"] = [env.name for env in environments]
             params["environment_objects"] = environments
@@ -298,11 +325,10 @@ class OrganizationEndpoint(Endpoint):
         return params
 
     def convert_args(self, request, organization_slug, *args, **kwargs):
-        with sentry_sdk.start_span(op="PERF: org.convert_args - organization (cache)"):
-            try:
-                organization = Organization.objects.get_from_cache(slug=organization_slug)
-            except Organization.DoesNotExist:
-                raise ResourceDoesNotExist
+        try:
+            organization = Organization.objects.get_from_cache(slug=organization_slug)
+        except Organization.DoesNotExist:
+            raise ResourceDoesNotExist
 
         with sentry_sdk.start_span(
             op="check_object_permissions_on_organization", description=organization_slug
@@ -341,12 +367,11 @@ class OrganizationReleasesBaseEndpoint(OrganizationEndpoint):
             ) or request.auth.has_scope("project:write")
 
         if not (
-            has_valid_api_key
-            or (getattr(request, "user", None) and request.user.is_authenticated())
+            has_valid_api_key or (getattr(request, "user", None) and request.user.is_authenticated)
         ):
             return []
 
-        return super(OrganizationReleasesBaseEndpoint, self).get_projects(
+        return super().get_projects(
             request,
             organization,
             force_global_perms=has_valid_api_key,

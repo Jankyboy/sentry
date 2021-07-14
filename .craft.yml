@@ -1,7 +1,4 @@
-minVersion: "0.10.0"
-github:
-  owner: getsentry
-  repo: sentry
+minVersion: "0.23.1"
 releaseBranchPrefix: releases
 changelog: CHANGES
 changelogPolicy: auto
@@ -10,13 +7,21 @@ statusProvider:
   config:
     contexts:
       - 'onpremise-builder (sentryio)'
+artifactProvider:
+  name: gcs
+  config:
+    bucket: sentryio-cloudbuild-opensource
+requireNames:
+  - /^sentry-.+-py3\d?-none-any.whl$/
 targets:
-  - name: github
-# Skip publishing to PyPI until we get the 2.1.0 release for https://github.com/Grokzen/redis-py-cluster/
-#  - name: pypi
-  - name: docker
+  - id: release
+    name: docker
     source: us.gcr.io/sentryio/sentry
     target: getsentry/sentry
-
-requireNames:
-  - /^sentry-.+-py27-none-any.whl$/
+  - id: latest
+    name: docker
+    source: us.gcr.io/sentryio/sentry
+    target: getsentry/sentry
+    targetFormat: '{{{target}}}:latest'
+  - name: pypi
+  - name: github

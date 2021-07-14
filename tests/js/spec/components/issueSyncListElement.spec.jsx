@@ -1,18 +1,16 @@
-import React from 'react';
-
-import {mountWithTheme, mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import IssueSyncListElement from 'app/components/issueSyncListElement';
 
-describe('AlertLink', function() {
-  it('renders', function() {
+describe('AlertLink', function () {
+  it('renders', function () {
     const wrapper = mountWithTheme(<IssueSyncListElement integrationType="github" />);
     expect(wrapper).toSnapshot();
   });
 
-  it('can open', function() {
+  it('can open', function () {
     const onOpen = jest.fn();
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <IssueSyncListElement integrationType="github" onOpen={onOpen} />
     );
     expect(onOpen).not.toHaveBeenCalled();
@@ -20,11 +18,11 @@ describe('AlertLink', function() {
     expect(onOpen).toHaveBeenCalled();
   });
 
-  it('can close', function() {
+  it('can close', function () {
     const onClose = jest.fn();
     const onOpen = jest.fn();
 
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <IssueSyncListElement
         integrationType="github"
         externalIssueLink="github.com/issues/gh-101"

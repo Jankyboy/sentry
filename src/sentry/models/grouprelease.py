@@ -1,21 +1,22 @@
-from __future__ import absolute_import
-
 from datetime import timedelta
+
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
+from sentry.db.models import BoundedBigIntegerField, BoundedPositiveIntegerField, Model, sane_repr
 from sentry.utils.cache import cache
 from sentry.utils.hashlib import md5_text
-from sentry.db.models import BoundedPositiveIntegerField, Model, sane_repr
 
 
 class GroupRelease(Model):
-    __core__ = False
+    __include_in_export__ = False
 
+    # TODO: Should be BoundedBigIntegerField
     project_id = BoundedPositiveIntegerField(db_index=True)
-    group_id = BoundedPositiveIntegerField()
+    group_id = BoundedBigIntegerField()
+    # TODO: Should be BoundedBigIntegerField
     release_id = BoundedPositiveIntegerField(db_index=True)
-    environment = models.CharField(max_length=64, default=u"")
+    environment = models.CharField(max_length=64, default="")
     first_seen = models.DateTimeField(default=timezone.now)
     last_seen = models.DateTimeField(default=timezone.now, db_index=True)
 
@@ -23,13 +24,17 @@ class GroupRelease(Model):
         app_label = "sentry"
         db_table = "sentry_grouprelease"
         unique_together = (("group_id", "release_id", "environment"),)
+        index_together = (
+            ("group_id", "first_seen"),
+            ("group_id", "last_seen"),
+        )
 
     __repr__ = sane_repr("group_id", "release_id")
 
     @classmethod
     def get_cache_key(cls, group_id, release_id, environment):
-        return u"grouprelease:1:{}:{}".format(
-            group_id, md5_text(u"{}:{}".format(release_id, environment)).hexdigest()
+        return "grouprelease:1:{}:{}".format(
+            group_id, md5_text(f"{release_id}:{environment}").hexdigest()
         )
 
     @classmethod

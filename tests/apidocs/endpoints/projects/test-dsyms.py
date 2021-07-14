@@ -1,21 +1,20 @@
-# -*- coding: utf-8 -*-
+import zipfile
+from io import BytesIO
 
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test.client import RequestFactory
+from django.urls import reverse
 
 from tests.apidocs.util import APIDocsTestCase
 
 
 class ProjectDsymsDocs(APIDocsTestCase):
     def setUp(self):
-        organization = self.create_organization()
-
         self.url = reverse(
             "sentry-api-0-dsym-files",
-            kwargs={"organization_slug": organization.slug, "project_slug": self.project.slug},
+            kwargs={"organization_slug": self.organization.slug, "project_slug": self.project.slug},
         )
+        self.create_dif_file(project=self.project)
 
         self.login_as(user=self.user)
 
@@ -26,12 +25,28 @@ class ProjectDsymsDocs(APIDocsTestCase):
         self.validate_schema(request, response)
 
     def test_post(self):
+        PROGUARD_UUID = "6dc7fdb0-d2fb-4c8e-9d6b-bb1aa98929b1"
+        PROGUARD_SOURCE = b"""\
+        org.slf4j.helpers.Util$ClassContextSecurityManager -> org.a.b.g$a:
+        65:65:void <init>() -> <init>
+        67:67:java.lang.Class[] getClassContext() -> getClassContext
+        65:65:void <init>(org.slf4j.helpers.Util$1) -> <init>
+        """
+        out = BytesIO()
+        f = zipfile.ZipFile(out, "w")
+        f.writestr("proguard/%s.txt" % PROGUARD_UUID, PROGUARD_SOURCE)
+        f.close()
+        data = {
+            "file": SimpleUploadedFile(
+                "symbols.zip", out.getvalue(), content_type="application/zip"
+            ),
+        }
 
-        dif = self.create_dif_file(
-            debug_id="dfb8e43a-f242-3d73-a453-aeb6a777ef75", features=["debug", "unwind"]
+        response = self.client.post(
+            self.url,
+            data,
+            format="multipart",
         )
-        data = {"file": dif.file}
-        response = self.client.post(self.url, data, content_type="multipart/form-data")
         request = RequestFactory().post(self.url, data)
 
         self.validate_schema(request, response)

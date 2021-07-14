@@ -1,7 +1,4 @@
-from __future__ import absolute_import, print_function
-
 import logging
-import six
 
 from django.http import HttpResponse
 from django.utils import timezone
@@ -9,6 +6,7 @@ from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic.base import View
 
+from sentry.mediators import GrantTypes
 from sentry.models import ApiApplication, ApiApplicationStatus, ApiGrant, ApiToken
 from sentry.utils import json
 
@@ -19,7 +17,7 @@ class OAuthTokenView(View):
     @csrf_exempt
     @never_cache
     def dispatch(self, request, *args, **kwargs):
-        return super(OAuthTokenView, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     # Note: the reason parameter is for internal use only
     def error(self, request, name, reason=None, status=400):
@@ -44,7 +42,7 @@ class OAuthTokenView(View):
     def post(self, request):
         grant_type = request.POST.get("grant_type")
 
-        if grant_type == "authorization_code":
+        if grant_type == GrantTypes.AUTHORIZATION:
             client_id = request.POST.get("client_id")
             redirect_uri = request.POST.get("redirect_uri")
             code = request.POST.get("code")
@@ -116,7 +114,7 @@ class OAuthTokenView(View):
                     "token_type": "bearer",
                     "scope": " ".join(token.get_scopes()),  # NOQA
                     "user": {
-                        "id": six.text_type(token.user.id),
+                        "id": str(token.user.id),
                         # we might need these to become scope based
                         "name": token.user.name,
                         "email": token.user.email,

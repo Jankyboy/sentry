@@ -1,30 +1,20 @@
-from __future__ import absolute_import
-
-import six
-
 from django.db.models import Q
+from django.db.models.query import EmptyQuerySet
+from rest_framework.exceptions import AuthenticationFailed
 
-from sentry.api.base import DocSection, Endpoint
+from sentry.api.base import Endpoint
 from sentry.api.bases.project import ProjectPermission
 from sentry.api.paginator import DateTimePaginator
-from sentry.api.serializers import serialize, ProjectWithOrganizationSerializer
+from sentry.api.serializers import ProjectWithOrganizationSerializer, serialize
 from sentry.auth.superuser import is_active_superuser
 from sentry.db.models.query import in_iexact
 from sentry.models import Project, ProjectPlatform, ProjectStatus, SentryAppInstallationToken
 from sentry.search.utils import tokenize_query
-from sentry.utils.apidocs import scenario, attach_scenarios
-
-
-@scenario("ListYourProjects")
-def list_your_projects_scenario(runner):
-    runner.request(method="GET", path="/projects/")
 
 
 class ProjectIndexEndpoint(Endpoint):
-    doc_section = DocSection.PROJECTS
     permission_classes = (ProjectPermission,)
 
-    @attach_scenarios([list_your_projects_scenario])
     def get(self, request):
         """
         List your Projects
@@ -45,7 +35,7 @@ class ProjectIndexEndpoint(Endpoint):
         elif status:
             queryset = queryset.none()
 
-        if request.auth and not request.user.is_authenticated():
+        if request.auth and not request.user.is_authenticated:
             if hasattr(request.auth, "project"):
                 queryset = queryset.filter(id=request.auth.project_id)
             elif request.auth.organization is not None:
@@ -55,13 +45,15 @@ class ProjectIndexEndpoint(Endpoint):
         elif not (is_active_superuser(request) and request.GET.get("show") == "all"):
             if request.user.is_sentry_app:
                 queryset = SentryAppInstallationToken.get_projects(request.auth)
+                if isinstance(queryset, EmptyQuerySet):
+                    raise AuthenticationFailed("Token not found")
             else:
                 queryset = queryset.filter(teams__organizationmember__user=request.user)
 
         query = request.GET.get("query")
         if query:
             tokens = tokenize_query(query)
-            for key, value in six.iteritems(tokens):
+            for key, value in tokens.items():
                 if key == "query":
                     value = " ".join(value)
                     queryset = queryset.filter(Q(name__icontains=value) | Q(slug__icontains=value))

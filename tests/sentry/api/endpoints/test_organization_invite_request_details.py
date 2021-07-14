@@ -1,18 +1,16 @@
-from __future__ import absolute_import
-
 from exam import fixture
-from sentry.utils.compat.mock import patch
 
 from sentry.models import (
     AuditLogEntry,
     AuditLogEntryEvent,
+    InviteStatus,
     OrganizationMember,
     OrganizationMemberTeam,
     OrganizationOption,
-    InviteStatus,
 )
 from sentry.testutils import APITestCase
 from sentry.testutils.helpers import Feature
+from sentry.utils.compat.mock import patch
 
 
 class InviteRequestBase(APITestCase):
@@ -161,7 +159,7 @@ class OrganizationInviteRequestUpdateTest(InviteRequestBase):
         assert resp.status_code == 403
 
 
-class OrganizaitonInviteRequestApproveTest(InviteRequestBase):
+class OrganizationInviteRequestApproveTest(InviteRequestBase):
     method = "put"
 
     @patch.object(OrganizationMember, "send_invite_email")

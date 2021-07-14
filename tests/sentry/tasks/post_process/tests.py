@@ -1,23 +1,30 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
 from datetime import timedelta
+
 from django.utils import timezone
 
 from sentry.eventstore.processing import event_processing_store
-from sentry.models import Group, GroupSnooze, GroupStatus, ProjectOwnership
-from sentry.ownership.grammar import Rule, Matcher, Owner, dump_schema
-from sentry.testutils import TestCase
-from sentry.testutils.helpers import with_feature
-from sentry.testutils.helpers.datetime import iso_format, before_now
-from sentry.testutils.helpers.eventprocessing import write_event_to_cache
+from sentry.models import (
+    Group,
+    GroupInbox,
+    GroupInboxReason,
+    GroupOwner,
+    GroupOwnerType,
+    GroupSnooze,
+    GroupStatus,
+    ProjectOwnership,
+    ProjectTeam,
+)
+from sentry.ownership.grammar import Matcher, Owner, Rule, dump_schema
 from sentry.tasks.merge import merge_groups
 from sentry.tasks.post_process import post_process_group
-from sentry.utils.compat.mock import Mock, patch, ANY
+from sentry.testutils import TestCase
+from sentry.testutils.helpers import with_feature
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.testutils.helpers.eventprocessing import write_event_to_cache
+from sentry.utils.compat.mock import ANY, Mock, patch
 
 
-class EventMatcher(object):
+class EventMatcher:
     def __init__(self, expected, group=None):
         self.expected = expected
         self.expected_group = group
@@ -57,7 +64,6 @@ class PostProcessGroupTest(TestCase):
         )
         cache_key = write_event_to_cache(event)
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -77,7 +83,6 @@ class PostProcessGroupTest(TestCase):
         event = self.store_event(data={}, project_id=self.project.id)
 
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -92,7 +97,6 @@ class PostProcessGroupTest(TestCase):
         cache_key = write_event_to_cache(event)
 
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -101,49 +105,21 @@ class PostProcessGroupTest(TestCase):
         )
         assert event_processing_store.get(cache_key) is None
 
-    def test_processing_cache_cleared_with_event_param(self):
+    def test_processing_cache_cleared_with_commits(self):
+        # Regression test to guard against suspect commit calculations breaking the
+        # cache
         event = self.store_event(data={}, project_id=self.project.id)
         cache_key = write_event_to_cache(event)
 
+        self.create_commit(repo=self.create_repo())
         post_process_group(
-            event=event,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
             cache_key=cache_key,
-        )
-        assert event_processing_store.get(cache_key) is None
-
-    def test_processing_cache_does_not_error(self):
-        event = self.store_event(data={}, project_id=self.project.id)
-
-        post_process_group(
-            event=event,
-            is_new=True,
-            is_regression=False,
-            is_new_group_environment=True,
-            cache_key="not-valid",
-        )
-        assert event_processing_store.get("not-valid") is None
-
-    @patch("sentry.rules.processor.RuleProcessor")
-    @patch("sentry.tasks.post_process.check_event_already_post_processed")
-    def test_already_processed_abort(self, mock_check, mock_processor):
-        mock_check.return_value = True
-
-        event = self.store_event(data={}, project_id=self.project.id)
-
-        post_process_group(
-            event=event,
-            is_new=True,
-            is_regression=False,
-            is_new_group_environment=True,
-            cache_key=None,
             group_id=event.group_id,
         )
-
-        assert mock_check.call_count == 1
-        assert mock_processor.call_count == 0, "Should abort early"
+        assert event_processing_store.get(cache_key) is None
 
     @patch("sentry.rules.processor.RuleProcessor")
     def test_rule_processor_backwards_compat(self, mock_processor):
@@ -156,7 +132,6 @@ class PostProcessGroupTest(TestCase):
         mock_processor.return_value.apply.return_value = [(mock_callback, mock_futures)]
 
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -180,7 +155,6 @@ class PostProcessGroupTest(TestCase):
         mock_processor.return_value.apply.return_value = [(mock_callback, mock_futures)]
 
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -213,7 +187,6 @@ class PostProcessGroupTest(TestCase):
         mock_processor.return_value.apply.return_value = [(mock_callback, mock_futures)]
 
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -225,8 +198,9 @@ class PostProcessGroupTest(TestCase):
             EventMatcher(event, group=group2), True, False, True, False
         )
 
+    @patch("sentry.signals.issue_unignored.send_robust")
     @patch("sentry.rules.processor.RuleProcessor")
-    def test_invalidates_snooze(self, mock_processor):
+    def test_invalidates_snooze(self, mock_processor, send_robust):
         event = self.store_event(data={"message": "testing"}, project_id=self.project.id)
         cache_key = write_event_to_cache(event)
 
@@ -235,20 +209,20 @@ class PostProcessGroupTest(TestCase):
 
         # Check for has_reappeared=False if is_new=True
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
             cache_key=cache_key,
             group_id=event.group_id,
         )
+        assert GroupInbox.objects.filter(group=group, reason=GroupInboxReason.NEW.value).exists()
+        GroupInbox.objects.filter(group=group).delete()  # Delete so it creates the UNIGNORED entry.
 
         mock_processor.assert_called_with(EventMatcher(event), True, False, True, False)
 
         cache_key = write_event_to_cache(event)
         # Check for has_reappeared=True if is_new=False
         post_process_group(
-            event=None,
             is_new=False,
             is_regression=False,
             is_new_group_environment=True,
@@ -262,6 +236,10 @@ class PostProcessGroupTest(TestCase):
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.UNRESOLVED
+        assert GroupInbox.objects.filter(
+            group=group, reason=GroupInboxReason.UNIGNORED.value
+        ).exists()
+        assert send_robust.called
 
     @patch("sentry.rules.processor.RuleProcessor")
     def test_maintains_valid_snooze(self, mock_processor):
@@ -271,7 +249,6 @@ class PostProcessGroupTest(TestCase):
         snooze = GroupSnooze.objects.create(group=group, until=timezone.now() + timedelta(hours=1))
 
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=True,
@@ -282,162 +259,6 @@ class PostProcessGroupTest(TestCase):
         mock_processor.assert_called_with(EventMatcher(event), True, False, True, False)
 
         assert GroupSnooze.objects.filter(id=snooze.id).exists()
-
-    def make_ownership(self):
-        rule_a = Rule(Matcher("path", "src/*"), [Owner("user", self.user.email)])
-        rule_b = Rule(Matcher("path", "tests/*"), [Owner("team", self.team.name)])
-        rule_c = Rule(Matcher("path", "src/app/*"), [Owner("team", self.team.name)])
-
-        ProjectOwnership.objects.create(
-            project_id=self.project.id,
-            schema=dump_schema([rule_a, rule_b, rule_c]),
-            fallthrough=True,
-            auto_assignment=True,
-        )
-
-    def test_owner_assignment_path_precedence(self):
-        self.make_ownership()
-        event = self.store_event(
-            data={
-                "message": "oh no",
-                "platform": "python",
-                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
-            },
-            project_id=self.project.id,
-        )
-        cache_key = write_event_to_cache(event)
-        post_process_group(
-            event=None,
-            is_new=False,
-            is_regression=False,
-            is_new_group_environment=False,
-            cache_key=cache_key,
-            group_id=event.group_id,
-        )
-        assignee = event.group.assignee_set.first()
-        assert assignee.user is None
-        assert assignee.team == self.team
-
-    def test_owner_assignment_assign_user(self):
-        self.make_ownership()
-        event = self.store_event(
-            data={
-                "message": "oh no",
-                "platform": "python",
-                "stacktrace": {"frames": [{"filename": "src/app.py"}]},
-            },
-            project_id=self.project.id,
-        )
-        cache_key = write_event_to_cache(event)
-        post_process_group(
-            event=None,
-            is_new=False,
-            is_regression=False,
-            is_new_group_environment=False,
-            cache_key=cache_key,
-            group_id=event.group_id,
-        )
-        assignee = event.group.assignee_set.first()
-        assert assignee.user == self.user
-        assert assignee.team is None
-
-    def test_owner_assignment_ownership_no_matching_owners(self):
-        event = self.store_event(
-            data={
-                "message": "oh no",
-                "platform": "python",
-                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
-            },
-            project_id=self.project.id,
-        )
-        cache_key = write_event_to_cache(event)
-        post_process_group(
-            event=None,
-            is_new=False,
-            is_regression=False,
-            is_new_group_environment=False,
-            cache_key=cache_key,
-            group_id=event.group_id,
-        )
-        assert not event.group.assignee_set.exists()
-
-    def test_owner_assignment_existing_assignment(self):
-        self.make_ownership()
-        event = self.store_event(
-            data={
-                "message": "oh no",
-                "platform": "python",
-                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
-            },
-            project_id=self.project.id,
-        )
-        cache_key = write_event_to_cache(event)
-        event.group.assignee_set.create(team=self.team, project=self.project)
-        post_process_group(
-            event=None,
-            is_new=False,
-            is_regression=False,
-            is_new_group_environment=False,
-            cache_key=cache_key,
-            group_id=event.group_id,
-        )
-        assignee = event.group.assignee_set.first()
-        assert assignee.user is None
-        assert assignee.team == self.team
-
-    def test_owner_assignment_owner_is_gone(self):
-        self.make_ownership()
-        # Remove the team so the rule match will fail to resolve
-        self.team.delete()
-
-        event = self.store_event(
-            data={
-                "message": "oh no",
-                "platform": "python",
-                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
-            },
-            project_id=self.project.id,
-        )
-        cache_key = write_event_to_cache(event)
-        post_process_group(
-            event=None,
-            is_new=False,
-            is_regression=False,
-            is_new_group_environment=False,
-            cache_key=cache_key,
-            group_id=event.group_id,
-        )
-        assignee = event.group.assignee_set.first()
-        assert assignee is None
-
-    # TODO(mark) Remove this after October 16 2020.
-    @patch("sentry.tasks.servicehooks.process_service_hook")
-    def test_event_parameter_backwards_compat(self, mock_process_service_hook):
-        # Ensure that post_process_group still does
-        # what it should when an event parameter is used.
-        # This ensures backwards compatibility for self-hosted.
-        event = self.store_event(data={}, project_id=self.project.id)
-        cache_key = write_event_to_cache(event)
-        hook = self.create_service_hook(
-            project=self.project,
-            organization=self.project.organization,
-            actor=self.user,
-            events=["event.created"],
-        )
-
-        with self.feature("projects:servicehooks"):
-            post_process_group(
-                event=event,
-                is_new=False,
-                is_regression=False,
-                is_new_group_environment=False,
-                cache_key=cache_key,
-                group_id=event.group_id,
-            )
-
-        mock_process_service_hook.delay.assert_called_once_with(
-            servicehook_id=hook.id, event=EventMatcher(event)
-        )
 
     @patch("sentry.tasks.servicehooks.process_service_hook")
     def test_service_hook_fires_on_new_event(self, mock_process_service_hook):
@@ -452,7 +273,6 @@ class PostProcessGroupTest(TestCase):
 
         with self.feature("projects:servicehooks"):
             post_process_group(
-                event=None,
                 is_new=False,
                 is_regression=False,
                 is_new_group_environment=False,
@@ -484,7 +304,6 @@ class PostProcessGroupTest(TestCase):
 
         with self.feature("projects:servicehooks"):
             post_process_group(
-                event=None,
                 is_new=False,
                 is_regression=False,
                 is_new_group_environment=False,
@@ -515,7 +334,6 @@ class PostProcessGroupTest(TestCase):
 
         with self.feature("projects:servicehooks"):
             post_process_group(
-                event=None,
                 is_new=False,
                 is_regression=False,
                 is_new_group_environment=False,
@@ -536,7 +354,6 @@ class PostProcessGroupTest(TestCase):
 
         with self.feature("projects:servicehooks"):
             post_process_group(
-                event=None,
                 is_new=True,
                 is_regression=False,
                 is_new_group_environment=False,
@@ -552,7 +369,6 @@ class PostProcessGroupTest(TestCase):
         cache_key = write_event_to_cache(event)
         group = event.group
         post_process_group(
-            event=None,
             is_new=True,
             is_regression=False,
             is_new_group_environment=False,
@@ -585,7 +401,6 @@ class PostProcessGroupTest(TestCase):
         )
 
         post_process_group(
-            event=None,
             is_new=False,
             is_regression=False,
             is_new_group_environment=False,
@@ -611,7 +426,6 @@ class PostProcessGroupTest(TestCase):
         cache_key = write_event_to_cache(event)
 
         post_process_group(
-            event=None,
             is_new=False,
             is_regression=False,
             is_new_group_environment=False,
@@ -631,7 +445,6 @@ class PostProcessGroupTest(TestCase):
         cache_key = write_event_to_cache(event)
 
         post_process_group(
-            event=None,
             is_new=False,
             is_regression=False,
             is_new_group_environment=False,
@@ -661,7 +474,6 @@ class PostProcessGroupTest(TestCase):
         )
 
         post_process_group(
-            event=None,
             is_new=False,
             is_regression=False,
             is_new_group_environment=False,
@@ -670,3 +482,262 @@ class PostProcessGroupTest(TestCase):
         )
 
         assert not delay.called
+
+    @patch("sentry.rules.processor.RuleProcessor")
+    def test_group_inbox_regression(self, mock_processor):
+        event = self.store_event(data={"message": "testing"}, project_id=self.project.id)
+        cache_key = write_event_to_cache(event)
+
+        group = event.group
+
+        post_process_group(
+            is_new=True,
+            is_regression=True,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        # assert GroupInbox.objects.filter(group=group, reason=GroupInboxReason.NEW.value).exists()
+        # GroupInbox.objects.filter(
+        #     group=group
+        # ).delete()  # Delete so it creates the .REGRESSION entry.
+
+        mock_processor.assert_called_with(EventMatcher(event), True, True, False, False)
+
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            event=None,
+            is_new=False,
+            is_regression=True,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+
+        mock_processor.assert_called_with(EventMatcher(event), False, True, False, False)
+
+        group = Group.objects.get(id=group.id)
+        assert group.status == GroupStatus.UNRESOLVED
+        # assert GroupInbox.objects.filter(
+        #     group=group, reason=GroupInboxReason.REGRESSION.value
+        # ).exists()
+
+    def test_nodestore_stats(self):
+        event = self.store_event(data={"message": "testing"}, project_id=self.project.id)
+        cache_key = write_event_to_cache(event)
+
+        with self.options({"store.nodestore-stats-sample-rate": 1.0}), self.tasks():
+            post_process_group(
+                is_new=True,
+                is_regression=True,
+                is_new_group_environment=False,
+                cache_key=cache_key,
+                group_id=event.group_id,
+            )
+
+
+class PostProcessGroupAssignmentTest(TestCase):
+    def make_ownership(self, extra_rules=None):
+        self.user_2 = self.create_user()
+        rules = [
+            Rule(Matcher("path", "src/app/*"), [Owner("team", self.team.name)]),
+            Rule(Matcher("path", "src/*"), [Owner("user", self.user.email)]),
+            Rule(Matcher("path", "tests/*"), [Owner("user", self.user_2.email)]),
+        ]
+
+        if extra_rules:
+            rules.extend(extra_rules)
+
+        ProjectOwnership.objects.create(
+            project_id=self.project.id,
+            schema=dump_schema(rules),
+            fallthrough=True,
+            auto_assignment=True,
+        )
+
+    def test_owner_assignment_order_precedence(self):
+        self.make_ownership()
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assignee = event.group.assignee_set.first()
+        assert assignee.user == self.user
+        assert assignee.team is None
+
+        owners = list(GroupOwner.objects.filter(group=event.group))
+        assert len(owners) == 2
+        assert {(self.user.id, None), (None, self.team.id)} == {
+            (o.user_id, o.team_id) for o in owners
+        }
+
+    def test_owner_assignment_extra_groups(self):
+        extra_user = self.create_user()
+        self.create_team_membership(self.team, user=extra_user)
+        self.make_ownership(
+            [Rule(Matcher("path", "src/app/things/in/*"), [Owner("user", extra_user.email)])],
+        )
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app/things/in/a/path/example2.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assignee = event.group.assignee_set.first()
+        assert assignee.user == extra_user
+        assert assignee.team is None
+
+        owners = list(GroupOwner.objects.filter(group=event.group))
+        assert len(owners) == 2
+        assert {(extra_user.id, None), (self.user.id, None)} == {
+            (o.user_id, o.team_id) for o in owners
+        }
+
+    def test_owner_assignment_existing_owners(self):
+        extra_team = self.create_team()
+        ProjectTeam.objects.create(team=extra_team, project=self.project)
+
+        self.make_ownership(
+            [Rule(Matcher("path", "src/app/things/in/*"), [Owner("team", extra_team.slug)])],
+        )
+        GroupOwner.objects.create(
+            group=self.group,
+            project=self.project,
+            organization=self.organization,
+            user=self.user,
+            type=GroupOwnerType.OWNERSHIP_RULE.value,
+        )
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app/things/in/a/path/example2.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assignee = event.group.assignee_set.first()
+        assert assignee.user is None
+        assert assignee.team == extra_team
+
+        owners = list(GroupOwner.objects.filter(group=event.group))
+        assert {(None, extra_team.id), (self.user.id, None)} == {
+            (o.user_id, o.team_id) for o in owners
+        }
+
+    def test_owner_assignment_assign_user(self):
+        self.make_ownership()
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assignee = event.group.assignee_set.first()
+        assert assignee.user == self.user
+        assert assignee.team is None
+
+    def test_owner_assignment_ownership_no_matching_owners(self):
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assert not event.group.assignee_set.exists()
+
+    def test_owner_assignment_existing_assignment(self):
+        self.make_ownership()
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        event.group.assignee_set.create(team=self.team, project=self.project)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assignee = event.group.assignee_set.first()
+        assert assignee.user is None
+        assert assignee.team == self.team
+
+    def test_owner_assignment_owner_is_gone(self):
+        self.make_ownership()
+        # Remove the team so the rule match will fail to resolve
+        self.team.delete()
+
+        event = self.store_event(
+            data={
+                "message": "oh no",
+                "platform": "python",
+                "stacktrace": {"frames": [{"filename": "src/app/example.py"}]},
+            },
+            project_id=self.project.id,
+        )
+        cache_key = write_event_to_cache(event)
+        post_process_group(
+            is_new=False,
+            is_regression=False,
+            is_new_group_environment=False,
+            cache_key=cache_key,
+            group_id=event.group_id,
+        )
+        assignee = event.group.assignee_set.first()
+        assert assignee is None

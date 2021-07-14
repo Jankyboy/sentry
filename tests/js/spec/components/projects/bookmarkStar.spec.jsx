@@ -1,14 +1,12 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import BookmarkStar from 'app/components/projects/bookmarkStar';
 
-describe('BookmarkStar', function() {
+describe('BookmarkStar', function () {
   let wrapper, projectMock;
 
-  beforeEach(function() {
-    wrapper = mount(
+  beforeEach(function () {
+    wrapper = mountWithTheme(
       <BookmarkStar
         organization={TestStubs.Organization()}
         project={TestStubs.Project()}
@@ -23,23 +21,18 @@ describe('BookmarkStar', function() {
     });
   });
 
-  afterEach(function() {
+  afterEach(function () {
     MockApiClient.clearMockResponses();
   });
 
-  it('renders', function() {
+  it('renders', function () {
     expect(wrapper).toSnapshot();
   });
 
-  it('can star', async function() {
+  it('can star', async function () {
     const star = wrapper.find('BookmarkStar');
 
-    expect(
-      star
-        .find('Star')
-        .first()
-        .prop('isBookmarked')
-    ).toBe(false);
+    expect(star.find('Star').first().prop('isBookmarked')).toBe(false);
 
     star.simulate('click');
 
@@ -53,8 +46,8 @@ describe('BookmarkStar', function() {
     );
   });
 
-  it('can unstar', async function() {
-    wrapper = mount(
+  it('can unstar', async function () {
+    wrapper = mountWithTheme(
       <BookmarkStar
         organization={TestStubs.Organization()}
         project={TestStubs.Project({
@@ -65,12 +58,7 @@ describe('BookmarkStar', function() {
     );
     const star = wrapper.find('BookmarkStar');
 
-    expect(
-      star
-        .find('Star')
-        .first()
-        .prop('isBookmarked')
-    ).toBe(true);
+    expect(star.find('Star').first().prop('isBookmarked')).toBe(true);
 
     star.simulate('click');
 
@@ -84,8 +72,8 @@ describe('BookmarkStar', function() {
     );
   });
 
-  it('takes a manual isBookmarked prop', function() {
-    wrapper = mount(
+  it('takes a manual isBookmarked prop', function () {
+    wrapper = mountWithTheme(
       <BookmarkStar
         organization={TestStubs.Organization()}
         project={TestStubs.Project()}
@@ -96,20 +84,10 @@ describe('BookmarkStar', function() {
 
     const star = wrapper.find('BookmarkStar');
 
-    expect(
-      star
-        .find('Star')
-        .first()
-        .prop('isBookmarked')
-    ).toBe(true);
+    expect(star.find('Star').first().prop('isBookmarked')).toBe(true);
 
     star.simulate('click');
 
-    expect(
-      star
-        .find('Star')
-        .first()
-        .prop('isBookmarked')
-    ).toBe(true);
+    expect(star.find('Star').first().prop('isBookmarked')).toBe(true);
   });
 });

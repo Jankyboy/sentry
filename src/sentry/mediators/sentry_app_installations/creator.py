@@ -1,18 +1,14 @@
-from __future__ import absolute_import
-
-import six
-
 from sentry import analytics
 from sentry.constants import SentryAppInstallationStatus
 from sentry.mediators import Mediator, Param, service_hooks
-from sentry.models import AuditLogEntryEvent, ApiGrant, SentryApp, SentryAppInstallation
-from sentry.utils.cache import memoize
+from sentry.models import ApiGrant, AuditLogEntryEvent, SentryApp, SentryAppInstallation
 from sentry.tasks.sentry_apps import installation_webhook
+from sentry.utils.cache import memoize
 
 
 class Creator(Mediator):
     organization = Param("sentry.models.Organization")
-    slug = Param(six.string_types)
+    slug = Param((str,))
     user = Param("sentry.models.User")
     request = Param("rest_framework.request.Request", required=False)
     notify = Param(bool, default=True)
@@ -21,7 +17,6 @@ class Creator(Mediator):
         self._create_api_grant()
         self._create_install()
         self._create_service_hooks()
-        self._notify_service()
         self.install.is_new = True
         return self.install
 
@@ -54,7 +49,7 @@ class Creator(Mediator):
                 url=self.sentry_app.webhook_url,
             )
 
-    def _notify_service(self):
+    def post_commit(self):
         if self.notify:
             installation_webhook.delay(self.install.id, self.user.id)
 

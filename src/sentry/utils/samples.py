@@ -1,21 +1,26 @@
-from __future__ import absolute_import
-
 import os.path
 import random
-import pytz
-import six
-
+import time
 from datetime import datetime, timedelta
-from django.utils import timezone
+from uuid import uuid4
+
+import pytz
 
 from sentry.constants import DATA_ROOT, INTEGRATION_ID_TO_PLATFORM_DATA
 from sentry.event_manager import EventManager
 from sentry.interfaces.user import User as UserInterface
 from sentry.utils import json
-from sentry.utils.dates import to_timestamp
 from sentry.utils.canonical import CanonicalKeyDict
+from sentry.utils.dates import to_timestamp
 
 epoch = datetime.utcfromtimestamp(0)
+
+
+def random_normal(mu, sigma, minimum, maximum=None):
+    random_value = max(random.normalvariate(mu, sigma), minimum)
+    if maximum is not None:
+        random_value = min(random_value, maximum)
+    return random_value
 
 
 def milliseconds_ago(now, milliseconds):
@@ -32,10 +37,10 @@ def random_ip():
 
     return ".".join(
         (
-            six.text_type(first),
-            six.text_type(random.randrange(1, 256)),
-            six.text_type(random.randrange(1, 256)),
-            six.text_type(random.randrange(1, 256)),
+            str(first),
+            str(random.randrange(1, 256)),
+            str(random.randrange(1, 256)),
+            str(random.randrange(1, 256)),
         )
     )
 
@@ -88,7 +93,7 @@ def name_for_username(username):
 def generate_user(username=None, email=None, ip_address=None, id=None):
     if username is None and email is None:
         username = random_username()
-        email = u"{}@example.com".format(username)
+        email = f"{username}@example.com"
     return UserInterface.to_python(
         {
             "id": id,
@@ -101,7 +106,16 @@ def generate_user(username=None, email=None, ip_address=None, id=None):
     ).to_json()
 
 
-def load_data(platform, default=None, sample_name=None, timestamp=None, start_timestamp=None):
+def load_data(
+    platform,
+    default=None,
+    sample_name=None,
+    timestamp=None,
+    start_timestamp=None,
+    trace=None,
+    span_id=None,
+    spans=None,
+):
     # NOTE: Before editing this data, make sure you understand the context
     # in which its being used. It is NOT only used for local development and
     # has production consequences.
@@ -118,7 +132,7 @@ def load_data(platform, default=None, sample_name=None, timestamp=None, start_ti
         language = platform_data["language"]
 
     samples_root = os.path.join(DATA_ROOT, "samples")
-    all_samples = set(f for f in os.listdir(samples_root) if f.endswith(".json"))
+    all_samples = {f for f in os.listdir(samples_root) if f.endswith(".json")}
 
     for platform in (platform, language, default):
         if not platform:
@@ -126,7 +140,7 @@ def load_data(platform, default=None, sample_name=None, timestamp=None, start_ti
 
         # Verify by checking if the file is within our folder explicitly
         # avoids being able to have a name that invokes traversing directories.
-        json_path = u"{}.json".format(platform)
+        json_path = f"{platform}.json"
 
         if json_path not in all_samples:
             continue
@@ -153,17 +167,32 @@ def load_data(platform, default=None, sample_name=None, timestamp=None, start_ti
 
     # Generate a timestamp in the present.
     if timestamp is None:
-        timestamp = timezone.now()
-    else:
-        timestamp = timestamp.replace(tzinfo=pytz.utc)
+        timestamp = datetime.utcnow() - timedelta(minutes=1)
+        timestamp = timestamp - timedelta(microseconds=timestamp.microsecond % 1000)
+    timestamp = timestamp.replace(tzinfo=pytz.utc)
     data.setdefault("timestamp", to_timestamp(timestamp))
 
     if data.get("type") == "transaction":
         if start_timestamp is None:
-            start_timestamp = timestamp - timedelta(seconds=2)
+            start_timestamp = timestamp - timedelta(seconds=3)
         else:
             start_timestamp = start_timestamp.replace(tzinfo=pytz.utc)
         data["start_timestamp"] = to_timestamp(start_timestamp)
+
+        if trace is None:
+            trace = uuid4().hex
+        if span_id is None:
+            span_id = uuid4().hex[:16]
+
+        for tag in data["tags"]:
+            if tag[0] == "trace":
+                tag[1] = trace
+            elif tag[0] == "trace.span":
+                tag[1] = span_id
+        data["contexts"]["trace"]["trace_id"] = trace
+        data["contexts"]["trace"]["span_id"] = span_id
+        if spans:
+            data["spans"] = spans
 
         for span in data.get("spans", []):
             # Use data to generate span timestamps consistently and based
@@ -171,14 +200,32 @@ def load_data(platform, default=None, sample_name=None, timestamp=None, start_ti
             duration = span.get("data", {}).get("duration", 10.0)
             offset = span.get("data", {}).get("offset", 0)
 
+            # Span doesn't have a parent, make it the transaction
+            if span.get("parent_span_id") is None:
+                span["parent_span_id"] = span_id
+            if span.get("span_id") is None:
+                span["span_id"] = uuid4().hex[:16]
+
             span_start = data["start_timestamp"] + offset
+            span["trace_id"] = trace
             span.setdefault("start_timestamp", span_start)
             span.setdefault("timestamp", span_start + duration)
+
+        measurements = data.get("measurements")
+
+        if measurements:
+            measurement_markers = {}
+            for key, entry in measurements.items():
+                if key in ["fp", "fcp", "lcp", "fid"]:
+                    measurement_markers[f"mark.{key}"] = {
+                        "value": round(data["start_timestamp"] + entry["value"] / 1000, 3)
+                    }
+            measurements.update(measurement_markers)
 
     data["platform"] = platform
     # XXX: Message is a legacy alias for logentry. Do not overwrite if set.
     if "message" not in data:
-        data["message"] = "This is an example %s exception" % (sample_name or platform,)
+        data["message"] = f"This is an example {sample_name or platform} exception"
     data.setdefault(
         "user",
         generate_user(ip_address="127.0.0.1", username="sentry", id=1, email="sentry@example.com"),
@@ -216,17 +263,115 @@ def load_data(platform, default=None, sample_name=None, timestamp=None, start_ti
     return data
 
 
-def create_sample_event(project, platform=None, default=None, raw=True, sample_name=None, **kwargs):
+def create_sample_event(
+    project,
+    platform=None,
+    default=None,
+    raw=True,
+    sample_name=None,
+    timestamp=None,
+    start_timestamp=None,
+    trace=None,
+    span_id=None,
+    spans=None,
+    **kwargs,
+):
     if not platform and not default:
         return
 
-    data = load_data(platform, default, sample_name)
+    data = load_data(
+        platform,
+        default,
+        sample_name,
+        timestamp,
+        start_timestamp,
+        trace,
+        span_id,
+        spans,
+    )
 
     if not data:
         return
+    if "parent_span_id" in kwargs:
+        data["contexts"]["trace"]["parent_span_id"] = kwargs.pop("parent_span_id")
 
     data.update(kwargs)
+    return create_sample_event_basic(data, project.id, raw=raw)
 
+
+def create_sample_event_basic(data, project_id, raw=True):
     manager = EventManager(data)
     manager.normalize()
-    return manager.save(project.id, raw=raw)
+    return manager.save(project_id, raw=raw)
+
+
+def create_trace(slow, start_timestamp, timestamp, user, trace_id, parent_span_id, data):
+    """A recursive function that creates the events of a trace"""
+    frontend = data.get("frontend")
+    current_span_id = uuid4().hex[:16]
+    spans = []
+    new_start = start_timestamp + timedelta(milliseconds=random_normal(50, 25, 10))
+    new_end = timestamp - timedelta(milliseconds=random_normal(50, 25, 10))
+    for child in data["children"]:
+        span_id = uuid4().hex[:16]
+        spans.append(
+            {
+                "same_process_as_parent": True,
+                "op": "http",
+                "description": f"GET {child['transaction']}",
+                "data": {
+                    "duration": random_normal((new_end - new_start).total_seconds(), 0.25, 0.01),
+                    "offset": 0.02,
+                },
+                "span_id": span_id,
+                "trace_id": trace_id,
+            }
+        )
+        create_trace(
+            slow,
+            start_timestamp + timedelta(milliseconds=random_normal(50, 25, 10)),
+            timestamp - timedelta(milliseconds=random_normal(50, 25, 10)),
+            user,
+            trace_id,
+            span_id,
+            child,
+        )
+    for _ in range(data.get("errors", 0)):
+        create_sample_event(
+            project=data["project"],
+            platform="javascript" if frontend else "python",
+            user=user,
+            transaction=data["transaction"],
+            contexts={
+                "trace": {
+                    "type": "trace",
+                    "trace_id": trace_id,
+                    "span_id": random.choice(spans + [{"span_id": current_span_id}])["span_id"],
+                }
+            },
+        )
+    create_sample_event(
+        project=data["project"],
+        platform="javascript-transaction" if frontend else "transaction",
+        transaction=data["transaction"],
+        event_id=uuid4().hex,
+        user=user,
+        timestamp=timestamp,
+        start_timestamp=start_timestamp,
+        measurements={
+            "fp": {"value": random_normal(1250 - 50, 200, 500)},
+            "fcp": {"value": random_normal(1250 - 50, 200, 500)},
+            "lcp": {"value": random_normal(2800 - 50, 400, 2000)},
+            "fid": {"value": random_normal(5 - 0.125, 2, 1)},
+        }
+        if frontend
+        else {},
+        # Root
+        parent_span_id=parent_span_id,
+        span_id=current_span_id,
+        trace=trace_id,
+        spans=spans,
+    )
+    # try to give clickhouse some breathing room
+    if slow:
+        time.sleep(0.05)

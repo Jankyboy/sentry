@@ -1,12 +1,9 @@
-from __future__ import absolute_import, unicode_literals
-
-import io
 import os
+import sys
 
-import six
 from django.conf import settings
-from django.db.migrations.loader import MigrationLoader
 from django.core.management.commands import makemigrations
+from django.db.migrations.loader import MigrationLoader
 
 template = """Django migrations lock file. This helps us avoid migration conflicts on master.
 If you have a conflict in this file, it means that someone has committed a migration
@@ -19,6 +16,26 @@ will then be regenerated, and you should be able to merge without conflicts.
 """
 
 
+# We check that the latest migration is the one stored in the lockfile
+def validate(migrations_filepath, latest_migration_by_app):
+    infile = {}
+    with open(migrations_filepath, encoding="utf-8") as file:
+        for line in file:
+            try:
+                app_label, name = line.split(": ")
+                infile[app_label] = name.strip()
+            except ValueError:
+                pass
+
+    for app_label, name in sorted(latest_migration_by_app.items()):
+        if infile[app_label] != name:
+            print(  # noqa: B314
+                f"ERROR: The latest migration does not match the one in the lockfile -> `{app_label}` app: {name} vs {infile[app_label]}"
+            )
+            # makemigrations.Command --check exits with 1 if a migration needs to be generated
+            sys.exit(2)
+
+
 class Command(makemigrations.Command):
     """
     Generates a lockfile so that Git will detect merge conflicts if there's a migration
@@ -26,17 +43,17 @@ class Command(makemigrations.Command):
     """
 
     def handle(self, *app_labels, **options):
-        if not options["name"]:
+        if not options["name"] and not options.get("check_changes"):
             self.stderr.write(
                 "Please name your migrations using `-n <migration_name>`. "
                 "For example, `-n backfill_my_new_table`"
             )
             return
-        super(Command, self).handle(*app_labels, **options)
+        super().handle(*app_labels, **options)
         loader = MigrationLoader(None, ignore_no_migrations=True)
 
         latest_migration_by_app = {}
-        for migration in six.itervalues(loader.disk_migrations):
+        for migration in loader.disk_migrations.values():
             name = migration.name
             app_label = migration.app_label
             if (
@@ -48,12 +65,16 @@ class Command(makemigrations.Command):
                 latest_migration_by_app.get(app_label, ""), name
             )
 
-        result = "\n".join(
-            "{}: {}".format(app_label, name)
-            for app_label, name in sorted(latest_migration_by_app.items())
+        migrations_filepath = os.path.join(
+            settings.MIGRATIONS_LOCKFILE_PATH, "migrations_lockfile.txt"
         )
+        if options.get("check_changes"):
+            validate(migrations_filepath, latest_migration_by_app)
+        else:
+            result = "\n".join(
+                f"{app_label}: {name}"
+                for app_label, name in sorted(latest_migration_by_app.items())
+            )
 
-        with io.open(
-            os.path.join(settings.MIGRATIONS_LOCKFILE_PATH, "migrations_lockfile.txt"), "w"
-        ) as f:
-            f.write(template % result)
+            with open(migrations_filepath, "w") as f:
+                f.write(template % result)

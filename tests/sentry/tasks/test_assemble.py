@@ -1,24 +1,22 @@
-from __future__ import absolute_import
-
-import os
 import io
+import os
 from hashlib import sha1
 
 from django.core.files.base import ContentFile
 
-from six.moves import xrange
-
-from sentry.testutils import TestCase
+from sentry.models import FileBlob, FileBlobOwner, ReleaseFile
+from sentry.models.debugfile import ProjectDebugFile
+from sentry.models.releasefile import read_artifact_index
 from sentry.tasks.assemble import (
+    AssembleTask,
+    ChunkFileState,
     assemble_artifacts,
     assemble_dif,
     assemble_file,
     get_assemble_status,
-    AssembleTask,
-    ChunkFileState,
 )
-from sentry.models import FileBlob, FileBlobOwner, ReleaseFile
-from sentry.models.debugfile import ProjectDebugFile
+from sentry.testutils import TestCase
+from sentry.utils.compat.mock import patch
 
 
 class BaseAssembleTest(TestCase):
@@ -32,13 +30,13 @@ class BaseAssembleTest(TestCase):
 
 class AssembleDifTest(BaseAssembleTest):
     def test_wrong_dif(self):
-        content1 = "foo".encode("utf-8")
+        content1 = b"foo"
         fileobj1 = ContentFile(content1)
 
-        content2 = "bar".encode("utf-8")
+        content2 = b"bar"
         fileobj2 = ContentFile(content2)
 
-        content3 = "baz".encode("utf-8")
+        content3 = b"baz"
         fileobj3 = ContentFile(content3)
 
         total_checksum = sha1(content2 + content1 + content3).hexdigest()
@@ -73,7 +71,7 @@ class AssembleDifTest(BaseAssembleTest):
         assert status == ChunkFileState.OK
 
         dif = ProjectDebugFile.objects.filter(
-            project=self.project, file__checksum=total_checksum
+            project_id=self.project.id, checksum=total_checksum
         ).get()
 
         assert dif.file.headers == {"Content-Type": "text/x-breakpad"}
@@ -81,7 +79,7 @@ class AssembleDifTest(BaseAssembleTest):
     def test_assemble_from_files(self):
         files = []
         file_checksum = sha1()
-        for _ in xrange(8):
+        for _ in range(8):
             blob = os.urandom(1024 * 1024 * 8)
             hash = sha1(blob).hexdigest()
             file_checksum.update(blob)
@@ -95,7 +93,7 @@ class AssembleDifTest(BaseAssembleTest):
             blob = FileBlob.objects.get(checksum=checksum)
             ref_bytes = reference.getvalue()
             assert blob.getfile().read(len(ref_bytes)) == ref_bytes
-            FileBlobOwner.objects.filter(blob=blob, organization=self.organization).get()
+            FileBlobOwner.objects.filter(blob=blob, organization_id=self.organization.id).get()
 
         rv = assemble_file(
             AssembleTask.DIF,
@@ -132,7 +130,7 @@ class AssembleDifTest(BaseAssembleTest):
         file_checksum = sha1()
         blob = os.urandom(1024 * 1024 * 8)
         hash = sha1(blob).hexdigest()
-        for _ in xrange(8):
+        for _ in range(8):
             file_checksum.update(blob)
             files.append((io.BytesIO(blob), hash))
 
@@ -144,7 +142,7 @@ class AssembleDifTest(BaseAssembleTest):
             blob = FileBlob.objects.get(checksum=checksum)
             ref_bytes = reference.getvalue()
             assert blob.getfile().read(len(ref_bytes)) == ref_bytes
-            FileBlobOwner.objects.filter(blob=blob, organization=self.organization).get()
+            FileBlobOwner.objects.filter(blob=blob, organization_id=self.organization.id).get()
 
         rv = assemble_file(
             AssembleTask.DIF,
@@ -177,7 +175,7 @@ class AssembleDifTest(BaseAssembleTest):
         assert status == ChunkFileState.OK
 
         dif = ProjectDebugFile.objects.filter(
-            project=self.project, file__checksum=total_checksum
+            project_id=self.project.id, checksum=total_checksum
         ).get()
 
         assert dif.file.headers == {"Content-Type": "text/x-breakpad"}
@@ -186,33 +184,57 @@ class AssembleDifTest(BaseAssembleTest):
 
 class AssembleArtifactsTest(BaseAssembleTest):
     def setUp(self):
-        super(AssembleArtifactsTest, self).setUp()
-        self.release = self.create_release(version="my-unique-release.1")
+        super().setUp()
 
     def test_artifacts(self):
         bundle_file = self.create_artifact_bundle()
         blob1 = FileBlob.from_file(ContentFile(bundle_file))
         total_checksum = sha1(bundle_file).hexdigest()
 
-        assemble_artifacts(
-            org_id=self.organization.id,
-            version=self.release.version,
-            checksum=total_checksum,
-            chunks=[blob1.checksum],
-        )
+        for min_files in (10, 1):
+            with self.options(
+                {
+                    "processing.release-archive-min-files": min_files,
+                }
+            ):
 
-        status, details = get_assemble_status(
-            AssembleTask.ARTIFACTS, self.organization.id, total_checksum
-        )
-        assert status == ChunkFileState.OK
-        assert details is None
+                ReleaseFile.objects.filter(release_id=self.release.id).delete()
 
-        release_file = ReleaseFile.objects.get(
-            organization=self.organization, release=self.release, name="~/index.js", dist=None
-        )
+                assert self.release.count_artifacts() == 0
 
-        assert release_file
-        assert release_file.file.headers == {"Sourcemap": "index.js.map"}
+                assemble_artifacts(
+                    org_id=self.organization.id,
+                    version=self.release.version,
+                    checksum=total_checksum,
+                    chunks=[blob1.checksum],
+                )
+
+                assert self.release.count_artifacts() == 2
+
+                status, details = get_assemble_status(
+                    AssembleTask.ARTIFACTS, self.organization.id, total_checksum
+                )
+                assert status == ChunkFileState.OK
+                assert details is None
+
+                if min_files == 1:
+                    # An archive was saved
+                    index = read_artifact_index(self.release, dist=None)
+                    archive_ident = index["files"]["~/index.js"]["archive_ident"]
+                    releasefile = ReleaseFile.objects.get(
+                        release_id=self.release.id, ident=archive_ident
+                    )
+                    # Artifact is the same as original bundle
+                    assert releasefile.file.size == len(bundle_file)
+                else:
+                    # Individual files were saved
+                    release_file = ReleaseFile.objects.get(
+                        organization_id=self.organization.id,
+                        release_id=self.release.id,
+                        name="~/index.js",
+                        dist_id=None,
+                    )
+                    assert release_file.file.headers == {"Sourcemap": "index.js.map"}
 
     def test_artifacts_invalid_org(self):
         bundle_file = self.create_artifact_bundle(org="invalid")
@@ -264,3 +286,28 @@ class AssembleArtifactsTest(BaseAssembleTest):
             AssembleTask.ARTIFACTS, self.organization.id, total_checksum
         )
         assert status == ChunkFileState.ERROR
+
+    @patch("sentry.tasks.assemble.update_artifact_index", side_effect=RuntimeError("foo"))
+    def test_failing_update(self, _):
+        bundle_file = self.create_artifact_bundle()
+        blob1 = FileBlob.from_file(ContentFile(bundle_file))
+        total_checksum = sha1(bundle_file).hexdigest()
+
+        with self.options(
+            {
+                "processing.save-release-archives": True,
+                "processing.release-archive-min-files": 1,
+            }
+        ):
+            assemble_artifacts(
+                org_id=self.organization.id,
+                version=self.release.version,
+                checksum=total_checksum,
+                chunks=[blob1.checksum],
+            )
+
+            # Status is still OK:
+            status, details = get_assemble_status(
+                AssembleTask.ARTIFACTS, self.organization.id, total_checksum
+            )
+            assert status == ChunkFileState.OK

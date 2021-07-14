@@ -1,23 +1,20 @@
-from __future__ import absolute_import
-
-import six
 import uuid
 
 from django.db import models
 from django.utils import timezone
 
 from sentry.constants import SentryAppInstallationStatus
-from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, ParanoidModel, Model
-from sentry.models import Project, DefaultFieldsModel
+from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey, Model, ParanoidModel
+from sentry.models import DefaultFieldsModel, Project
 
 
 def default_uuid():
-    return six.text_type(uuid.uuid4())
+    return str(uuid.uuid4())
 
 
 # connects a sentry app installation to an organization and a provider
 class SentryAppInstallationForProvider(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     sentry_app_installation = FlexibleForeignKey("sentry.SentryAppInstallation")
     organization = FlexibleForeignKey("sentry.Organization")
@@ -45,7 +42,7 @@ class SentryAppInstallationForProvider(DefaultFieldsModel):
 
 
 class SentryAppInstallationToken(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     api_token = FlexibleForeignKey("sentry.ApiToken")
     sentry_app_installation = FlexibleForeignKey("sentry.SentryAppInstallation")
@@ -73,7 +70,7 @@ class SentryAppInstallationToken(Model):
                 api_token=token
             )
         except cls.DoesNotExist:
-            return False
+            return Project.objects.none()
 
         return Project.objects.filter(
             organization_id=install_token.sentry_app_installation.organization_id
@@ -81,7 +78,7 @@ class SentryAppInstallationToken(Model):
 
 
 class SentryAppInstallation(ParanoidModel):
-    __core__ = True
+    __include_in_export__ = True
 
     sentry_app = FlexibleForeignKey("sentry.SentryApp", related_name="installations")
 
@@ -101,7 +98,7 @@ class SentryAppInstallation(ParanoidModel):
         related_name="sentry_app_installation",
     )
 
-    # Only use this token for public integrtions since each install has only token at a time
+    # Only use this token for public integrations since each install has only token at a time
     # An installation gets an access token once the Grant has been exchanged,
     # and is updated when the token gets refreshed.
     #
@@ -135,7 +132,7 @@ class SentryAppInstallation(ParanoidModel):
 
     def save(self, *args, **kwargs):
         self.date_updated = timezone.now()
-        return super(SentryAppInstallation, self).save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
     @classmethod
     def get_installed_for_org(cls, organization_id):

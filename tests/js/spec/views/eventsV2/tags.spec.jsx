@@ -1,19 +1,17 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
 
 import {Client} from 'app/api';
-import {Tags} from 'app/views/eventsV2/tags';
 import EventView from 'app/utils/discover/eventView';
+import {Tags} from 'app/views/eventsV2/tags';
 
-describe('Tags', function() {
+describe('Tags', function () {
   function generateUrl(key, value) {
     return `/endpoint/${key}/${value}`;
   }
 
   const org = TestStubs.Organization();
-  beforeEach(function() {
+  beforeEach(function () {
     Client.addMockResponse({
       url: `/organizations/${org.slug}/events-facets/`,
       body: [
@@ -33,11 +31,11 @@ describe('Tags', function() {
     });
   });
 
-  afterEach(function() {
+  afterEach(function () {
     Client.clearMockResponses();
   });
 
-  it('renders', async function() {
+  it('renders', async function () {
     const api = new Client();
 
     const view = new EventView({
@@ -46,7 +44,7 @@ describe('Tags', function() {
       query: 'event.type:csp',
     });
 
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <Tags
         eventView={view}
         api={api}
@@ -69,7 +67,7 @@ describe('Tags', function() {
     expect(wrapper.find('StyledPlaceholder')).toHaveLength(0);
   });
 
-  it('creates URLs with generateUrl', async function() {
+  it('creates URLs with generateUrl', async function () {
     const api = new Client();
 
     const view = new EventView({
@@ -85,7 +83,7 @@ describe('Tags', function() {
       },
     });
 
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <Tags
         eventView={view}
         api={api}

@@ -1,49 +1,62 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ExternalIssueForm from 'app/components/group/externalIssueForm';
 
 jest.mock('lodash/debounce', () => {
   const debounceMap = new Map();
-  const mockDebounce = (fn, timeout) => (...args) => {
-    if (debounceMap.has(fn)) {
-      clearTimeout(debounceMap.get(fn));
-    }
-    debounceMap.set(
-      fn,
-      setTimeout(() => {
-        fn.apply(fn, args);
-        debounceMap.delete(fn);
-      }, timeout)
-    );
-  };
+  const mockDebounce =
+    (fn, timeout) =>
+    (...args) => {
+      if (debounceMap.has(fn)) {
+        clearTimeout(debounceMap.get(fn));
+      }
+      debounceMap.set(
+        fn,
+        setTimeout(() => {
+          fn.apply(fn, args);
+          debounceMap.delete(fn);
+        }, timeout)
+      );
+    };
   return mockDebounce;
 });
 
 describe('ExternalIssueForm', () => {
-  let group, integration, handleSubmitSuccess, wrapper, formConfig;
+  let group, integration, onChange, wrapper, formConfig;
   beforeEach(() => {
     MockApiClient.clearMockResponses();
     group = TestStubs.Group();
     integration = TestStubs.GitHubIntegration({externalIssues: []});
-    handleSubmitSuccess = jest.fn();
+    onChange = jest.fn();
   });
 
   afterEach(() => {
     jest.useRealTimers();
   });
 
-  const generateWrapper = (action = 'create') =>
-    mountWithTheme(
+  const generateWrapper = (action = 'create') => {
+    MockApiClient.addMockResponse(
+      {
+        url: `/groups/${group.id}/integrations/${integration.id}/`,
+        body: formConfig,
+      },
+      {
+        predicate: (_, options) => options?.query?.action === 'create',
+      }
+    );
+    const component = mountWithTheme(
       <ExternalIssueForm
+        Body={p => p.children}
+        Header={p => p.children}
         group={group}
         integration={integration}
-        onSubmitSuccess={handleSubmitSuccess}
-        action={action}
+        onChange={onChange}
       />,
       TestStubs.routerContext()
     );
+    component.instance().handleClick(action);
+    return component;
+  };
 
   describe('create', () => {
     // TODO: expand tests
@@ -52,7 +65,7 @@ describe('ExternalIssueForm', () => {
         createIssueConfig: [],
       };
       MockApiClient.addMockResponse({
-        url: `/groups/${group.id}/integrations/${integration.id}/?action=create`,
+        url: `/groups/${group.id}/integrations/${integration.id}/`,
         body: formConfig,
       });
     });
@@ -106,13 +119,11 @@ describe('ExternalIssueForm', () => {
           canAdd: true,
           aspects: {
             disable_dialog: {
-              body:
-                'Before deleting this integration, you must uninstall this integration from GitHub. After uninstalling, your integration will be disabled at which point you can choose to delete this integration.',
+              body: 'Before deleting this integration, you must uninstall this integration from GitHub. After uninstalling, your integration will be disabled at which point you can choose to delete this integration.',
               actionText: 'Visit GitHub',
             },
             removal_dialog: {
-              body:
-                'Deleting this integration will delete all associated repositories and commit data. This action cannot be undone. Are you sure you want to delete your integration?',
+              body: 'Deleting this integration will delete all associated repositories and commit data. This action cannot be undone. Are you sure you want to delete your integration?',
               actionText: 'Delete',
             },
           },
@@ -123,10 +134,15 @@ describe('ExternalIssueForm', () => {
         },
         id: '5',
       };
-      getFormConfigRequest = MockApiClient.addMockResponse({
-        url: `/groups/${group.id}/integrations/${integration.id}/?action=link`,
-        body: formConfig,
-      });
+      getFormConfigRequest = MockApiClient.addMockResponse(
+        {
+          url: `/groups/${group.id}/integrations/${integration.id}/`,
+          body: formConfig,
+        },
+        {
+          predicate: (_, options) => options?.query?.action === 'link',
+        }
+      );
     });
     it('renders', () => {
       wrapper = generateWrapper('link');
@@ -185,7 +201,7 @@ describe('ExternalIssueForm', () => {
 
       it('debounced function returns a promise with the options returned by fetch', async () => {
         const output = await wrapper.instance().getOptions(externalIssueField, 'd');
-        expect(output.options).toEqual(mockSuccessResponse);
+        expect(output).toEqual(mockSuccessResponse);
       });
     });
   });

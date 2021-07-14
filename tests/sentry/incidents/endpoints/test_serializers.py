@@ -1,23 +1,23 @@
-from __future__ import absolute_import
-
-import six
+import responses
 from exam import fixture
 from rest_framework import serializers
 
 from sentry.auth.access import from_user
 from sentry.incidents.endpoints.serializers import (
-    action_target_type_to_string,
     AlertRuleSerializer,
-    AlertRuleTriggerSerializer,
     AlertRuleTriggerActionSerializer,
-    string_to_action_type,
+    AlertRuleTriggerSerializer,
+    action_target_type_to_string,
     string_to_action_target_type,
+    string_to_action_type,
 )
-from sentry.incidents.logic import create_alert_rule_trigger
+from sentry.incidents.logic import ChannelLookupTimeoutError, create_alert_rule_trigger
 from sentry.incidents.models import AlertRule, AlertRuleThresholdType, AlertRuleTriggerAction
-from sentry.models import Integration, Environment
-from sentry.snuba.models import QueryDatasets
+from sentry.models import ACTOR_TYPES, Environment, Integration
+from sentry.snuba.models import QueryDatasets, SnubaQueryEventType
 from sentry.testutils import TestCase
+from sentry.utils import json
+from sentry.utils.compat.mock import patch
 
 
 class TestAlertRuleSerializer(TestCase):
@@ -25,6 +25,7 @@ class TestAlertRuleSerializer(TestCase):
     def valid_params(self):
         return {
             "name": "hello",
+            "owner": self.user.id,
             "time_window": 10,
             "dataset": QueryDatasets.EVENTS.value,
             "query": "level:error",
@@ -50,12 +51,14 @@ class TestAlertRuleSerializer(TestCase):
                     ],
                 },
             ],
+            "event_types": [SnubaQueryEventType.EventType.DEFAULT.name.lower()],
         }
 
     @fixture
     def valid_transaction_params(self):
         params = self.valid_params.copy()
         params["dataset"] = QueryDatasets.TRANSACTIONS.value
+        params["event_types"] = [SnubaQueryEventType.EventType.TRANSACTION.name.lower()]
         return params
 
     @fixture
@@ -67,7 +70,7 @@ class TestAlertRuleSerializer(TestCase):
         return {"organization": self.organization, "access": self.access}
 
     def Any(self, cls):
-        class Any(object):
+        class Any:
             def __eq__(self, other):
                 return isinstance(other, cls)
 
@@ -79,6 +82,14 @@ class TestAlertRuleSerializer(TestCase):
         serializer = AlertRuleSerializer(context=self.context, data=base_params)
         assert not serializer.is_valid()
         assert serializer.errors == errors
+
+    def setup_slack_integration(self):
+        self.integration = Integration.objects.create(
+            external_id="1",
+            provider="slack",
+            metadata={"access_token": "xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"},
+        )
+        self.integration.add_organization(self.organization, self.user)
 
     def test_validation_no_params(self):
         serializer = AlertRuleSerializer(context=self.context, data={})
@@ -153,6 +164,15 @@ class TestAlertRuleSerializer(TestCase):
         alert_rule = serializer.save()
         assert alert_rule.snuba_query.aggregate == aggregate
 
+        aggregate = "sum(measurements.fp)"
+        base_params = self.valid_transaction_params.copy()
+        base_params["name"] = "measurement test"
+        base_params["aggregate"] = aggregate
+        serializer = AlertRuleSerializer(context=self.context, data=base_params)
+        assert serializer.is_valid(), serializer.errors
+        alert_rule = serializer.save()
+        assert alert_rule.snuba_query.aggregate == aggregate
+
     def test_alert_rule_resolved_invalid(self):
         self.run_fail_validation_test(
             {"resolve_threshold": 500},
@@ -174,6 +194,12 @@ class TestAlertRuleSerializer(TestCase):
         alert_rule = serializer.save()
         assert alert_rule.snuba_query.dataset == QueryDatasets.TRANSACTIONS.value
         assert alert_rule.snuba_query.aggregate == "count()"
+
+    def test_query_project(self):
+        self.run_fail_validation_test(
+            {"query": f"project:{self.project.slug}"},
+            {"query": ["Project is an invalid search term"]},
+        )
 
     def test_decimal(self):
         params = self.valid_transaction_params.copy()
@@ -320,7 +346,7 @@ class TestAlertRuleSerializer(TestCase):
                     AlertRuleTriggerAction.TargetType.SPECIFIC
                 ],
                 "targetIdentifier": "123",
-                "integration": six.text_type(integration.id),
+                "integration": str(integration.id),
             }
         )
         serializer = AlertRuleSerializer(context=self.context, data=base_params)
@@ -372,6 +398,133 @@ class TestAlertRuleSerializer(TestCase):
             {"thresholdType": "a"}, {"thresholdType": ["A valid integer is required."]}
         )
         self.run_fail_validation_test({"thresholdType": 50}, {"thresholdType": invalid_values})
+
+    @patch(
+        "sentry.integrations.slack.utils.get_channel_id_with_timeout",
+        return_value=("#", None, True),
+    )
+    def test_channel_timeout(self, mock_get_channel_id):
+        self.setup_slack_integration()
+        trigger = {
+            "label": "critical",
+            "alertThreshold": 200,
+            "actions": [
+                {
+                    "type": "slack",
+                    "targetIdentifier": "my-channel",
+                    "targetType": "specific",
+                    "integration": self.integration.id,
+                }
+            ],
+        }
+        base_params = self.valid_params.copy()
+        base_params.update({"triggers": [trigger]})
+        serializer = AlertRuleSerializer(context=self.context, data=base_params)
+        # error is raised during save
+        assert serializer.is_valid()
+        with self.assertRaises(ChannelLookupTimeoutError) as err:
+            serializer.save()
+        assert (
+            str(err.exception)
+            == "Could not find channel my-channel. We have timed out trying to look for it."
+        )
+
+    @patch(
+        "sentry.integrations.slack.utils.get_channel_id_with_timeout",
+        return_value=("#", None, True),
+    )
+    def test_invalid_team_with_channel_timeout(self, mock_get_channel_id):
+        self.setup_slack_integration()
+        other_org = self.create_organization()
+        new_team = self.create_team(organization=other_org)
+        trigger = {
+            "label": "critical",
+            "alertThreshold": 200,
+            "actions": [
+                {
+                    "type": "slack",
+                    "targetIdentifier": "my-channel",
+                    "targetType": "specific",
+                    "integration": self.integration.id,
+                },
+                {"type": "email", "targetType": "team", "targetIdentifier": new_team.id},
+            ],
+        }
+        base_params = self.valid_params.copy()
+        base_params.update({"triggers": [trigger]})
+        serializer = AlertRuleSerializer(context=self.context, data=base_params)
+        # error is raised during save
+        assert serializer.is_valid()
+        with self.assertRaises(serializers.ValidationError) as err:
+            serializer.save()
+        assert err.exception.detail == {"nonFieldErrors": ["Team does not exist"]}
+        mock_get_channel_id.assert_called_with(self.integration, "my-channel", 10)
+
+    def test_event_types(self):
+        invalid_values = [
+            "Invalid event_type, valid values are %s"
+            % [item.name.lower() for item in SnubaQueryEventType.EventType]
+        ]
+        self.run_fail_validation_test({"event_types": ["a"]}, {"eventTypes": invalid_values})
+        self.run_fail_validation_test({"event_types": [1]}, {"eventTypes": invalid_values})
+        self.run_fail_validation_test(
+            {"event_types": ["transaction"]},
+            {
+                "nonFieldErrors": [
+                    "Invalid event types for this dataset. Valid event types are ['default', 'error']"
+                ]
+            },
+        )
+        params = self.valid_params.copy()
+        serializer = AlertRuleSerializer(context=self.context, data=params, partial=True)
+        assert serializer.is_valid()
+        alert_rule = serializer.save()
+        assert set(alert_rule.snuba_query.event_types) == {SnubaQueryEventType.EventType.DEFAULT}
+        params["event_types"] = [SnubaQueryEventType.EventType.ERROR.name.lower()]
+        serializer = AlertRuleSerializer(
+            context=self.context, instance=alert_rule, data=params, partial=True
+        )
+        assert serializer.is_valid()
+        alert_rule = serializer.save()
+        assert set(alert_rule.snuba_query.event_types) == {SnubaQueryEventType.EventType.ERROR}
+
+    def test_unsupported_query(self):
+        self.run_fail_validation_test(
+            {"name": "Aun1qu3n4m3", "query": "release:latest"},
+            {"query": ["Unsupported Query: We do not currently support the release:latest query"]},
+        )
+
+    def test_owner_validation(self):
+        self.run_fail_validation_test(
+            {"owner": f"meow:{self.user.id}"},
+            {
+                "owner": [
+                    "Could not parse owner. Format should be `type:id` where type is `team` or `user`."
+                ]
+            },
+        )
+        self.run_fail_validation_test(
+            {"owner": "user:1234567"},
+            {"owner": ["Could not resolve owner to existing team or user."]},
+        )
+        self.run_fail_validation_test(
+            {"owner": "team:1234567"},
+            {"owner": ["Could not resolve owner to existing team or user."]},
+        )
+        base_params = self.valid_params.copy()
+        base_params.update({"owner": f"team:{self.team.id}"})
+        serializer = AlertRuleSerializer(context=self.context, data=base_params)
+        assert serializer.is_valid(), serializer.errors
+        alert_rule = serializer.save()
+        assert alert_rule.owner == self.team.actor
+        assert alert_rule.owner.type == ACTOR_TYPES["team"]
+
+        base_params.update({"name": "another_test", "owner": f"user:{self.user.id}"})
+        serializer = AlertRuleSerializer(context=self.context, data=base_params)
+        assert serializer.is_valid(), serializer.errors
+        alert_rule = serializer.save()
+        assert alert_rule.owner == self.user.actor
+        assert alert_rule.owner.type == ACTOR_TYPES["user"]
 
 
 class TestAlertRuleTriggerSerializer(TestCase):
@@ -501,7 +654,7 @@ class TestAlertRuleTriggerActionSerializer(TestCase):
         self.run_fail_validation_test(
             {
                 "target_type": action_target_type_to_string[AlertRuleTriggerAction.TargetType.USER],
-                "target_identifier": six.text_type(other_user.id),
+                "target_identifier": str(other_user.id),
             },
             {"nonFieldErrors": ["User does not belong to this organization"]},
         )
@@ -546,10 +699,141 @@ class TestAlertRuleTriggerActionSerializer(TestCase):
                     AlertRuleTriggerAction.TargetType.SPECIFIC
                 ],
                 "targetIdentifier": "123",
-                "integration": six.text_type(integration.id),
+                "integration": str(integration.id),
             }
         )
         serializer = AlertRuleTriggerActionSerializer(context=self.context, data=base_params)
         assert serializer.is_valid()
         with self.assertRaises(serializers.ValidationError):
             serializer.save()
+
+    @responses.activate
+    def test_valid_slack_channel_id(self):
+        """
+        Test that when a valid Slack channel ID is provided, we look up the channel name and validate it against the targetIdentifier.
+        """
+        integration = Integration.objects.create(
+            external_id="1",
+            provider="slack",
+            metadata={"access_token": "xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"},
+        )
+        integration.add_organization(self.organization, self.user)
+
+        base_params = self.valid_params.copy()
+        base_params.update(
+            {
+                "type": AlertRuleTriggerAction.get_registered_type(
+                    AlertRuleTriggerAction.Type.SLACK
+                ).slug,
+                "targetType": action_target_type_to_string[
+                    AlertRuleTriggerAction.TargetType.SPECIFIC
+                ],
+                "targetIdentifier": "merp",
+                "integration": str(integration.id),
+            }
+        )
+        context = self.context.copy()
+        context.update({"input_channel_id": "CSVK0921"})
+        responses.add(
+            method=responses.GET,
+            url="https://slack.com/api/conversations.info",
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": "true", "channel": {"name": "merp", "id": "CSVK0921"}}),
+        )
+        serializer = AlertRuleTriggerActionSerializer(context=context, data=base_params)
+        assert serializer.is_valid()
+
+        serializer.save()
+
+        # # Make sure the action was created.
+        alert_rule_trigger_actions = list(
+            AlertRuleTriggerAction.objects.filter(integration=integration)
+        )
+        assert len(alert_rule_trigger_actions) == 1
+
+    @responses.activate
+    def test_invalid_slack_channel_id(self):
+        """
+        Test that an invalid Slack channel ID is detected and blocks the action from being saved.
+        """
+        integration = Integration.objects.create(
+            external_id="1",
+            provider="slack",
+            metadata={"access_token": "xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"},
+        )
+        integration.add_organization(self.organization, self.user)
+
+        base_params = self.valid_params.copy()
+        base_params.update(
+            {
+                "type": AlertRuleTriggerAction.get_registered_type(
+                    AlertRuleTriggerAction.Type.SLACK
+                ).slug,
+                "targetType": action_target_type_to_string[
+                    AlertRuleTriggerAction.TargetType.SPECIFIC
+                ],
+                "targetIdentifier": "merp",
+                "integration": str(integration.id),
+            }
+        )
+        context = self.context.copy()
+        context.update({"input_channel_id": "M40W931"})
+        responses.add(
+            method=responses.GET,
+            url="https://slack.com/api/conversations.info",
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": False, "error": "channel_not_found"}),
+        )
+        serializer = AlertRuleTriggerActionSerializer(context=context, data=base_params)
+        assert not serializer.is_valid()
+
+        # # Make sure the action was not created.
+        alert_rule_trigger_actions = list(
+            AlertRuleTriggerAction.objects.filter(integration=integration)
+        )
+        assert len(alert_rule_trigger_actions) == 0
+
+    @responses.activate
+    def test_invalid_slack_channel_name(self):
+        """
+        Test that an invalid Slack channel name is detected and blocks the action from being saved.
+        """
+        integration = Integration.objects.create(
+            external_id="1",
+            provider="slack",
+            metadata={"access_token": "xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"},
+        )
+        integration.add_organization(self.organization, self.user)
+
+        base_params = self.valid_params.copy()
+        base_params.update(
+            {
+                "type": AlertRuleTriggerAction.get_registered_type(
+                    AlertRuleTriggerAction.Type.SLACK
+                ).slug,
+                "targetType": action_target_type_to_string[
+                    AlertRuleTriggerAction.TargetType.SPECIFIC
+                ],
+                "targetIdentifier": "123",
+                "integration": str(integration.id),
+            }
+        )
+        context = self.context.copy()
+        context.update({"input_channel_id": "CSVK0921"})
+        responses.add(
+            method=responses.GET,
+            url="https://slack.com/api/conversations.info",
+            status=200,
+            content_type="application/json",
+            body=json.dumps({"ok": "true", "channel": {"name": "merp", "id": "CSVK0921"}}),
+        )
+        serializer = AlertRuleTriggerActionSerializer(context=context, data=base_params)
+        assert not serializer.is_valid()
+
+        # # Make sure the action was not created.
+        alert_rule_trigger_actions = list(
+            AlertRuleTriggerAction.objects.filter(integration=integration)
+        )
+        assert len(alert_rule_trigger_actions) == 0

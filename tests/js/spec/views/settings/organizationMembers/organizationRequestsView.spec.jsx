@@ -1,11 +1,10 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
-import {selectByValue} from 'sentry-test/select';
+import {mountGlobalModal} from 'sentry-test/modal';
+import {selectByValue} from 'sentry-test/select-new';
 
 import {trackAnalyticsEvent} from 'app/utils/analytics';
-import OrganizationRequestsView from 'app/views/settings/organizationMembers/organizationRequestsView';
 import OrganizationMembersWrapper from 'app/views/settings/organizationMembers/organizationMembersWrapper';
+import OrganizationRequestsView from 'app/views/settings/organizationMembers/organizationRequestsView';
 
 jest.mock('app/utils/analytics', () => ({
   trackAnalyticsEvent: jest.fn(),
@@ -32,7 +31,7 @@ const roles = [
   },
 ];
 
-describe('OrganizationRequestsView', function() {
+describe('OrganizationRequestsView', function () {
   const organization = TestStubs.Organization({
     access: ['member:admin', 'org:admin', 'member:write'],
     status: {
@@ -64,7 +63,7 @@ describe('OrganizationRequestsView', function() {
     teams: [],
   });
 
-  beforeEach(function() {
+  beforeEach(function () {
     trackAnalyticsEvent.mockClear();
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
@@ -88,7 +87,7 @@ describe('OrganizationRequestsView', function() {
     });
   });
 
-  it('renders empty', function() {
+  it('renders empty', function () {
     const wrapper = mountWithTheme(
       <OrganizationMembersWrapper organization={organization} {...defaultProps}>
         <OrganizationRequestsView organization={organization} {...defaultProps} />
@@ -100,7 +99,7 @@ describe('OrganizationRequestsView', function() {
     expect(wrapper.find('InviteRequestRow').exists()).toBe(false);
   });
 
-  it('can approve access request and remove', async function() {
+  it('can approve access request and remove', async function () {
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/access-requests/',
       method: 'GET',
@@ -141,7 +140,7 @@ describe('OrganizationRequestsView', function() {
     expect(trackAnalyticsEvent).not.toHaveBeenCalled();
   });
 
-  it('can deny access request and remove', async function() {
+  it('can deny access request and remove', async function () {
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/access-requests/',
       method: 'GET',
@@ -182,7 +181,7 @@ describe('OrganizationRequestsView', function() {
     expect(trackAnalyticsEvent).not.toHaveBeenCalled();
   });
 
-  it('does not render invite requests without access', function() {
+  it('does not render invite requests without access', function () {
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/invite-requests/',
       method: 'GET',
@@ -215,7 +214,7 @@ describe('OrganizationRequestsView', function() {
     expect(trackAnalyticsEvent).not.toHaveBeenCalled();
   });
 
-  it('can approve invite request and update', async function() {
+  it('can approve invite request and update', async function () {
     const org = TestStubs.Organization({
       access: ['member:admin', 'org:admin', 'member:write'],
       status: {
@@ -243,15 +242,14 @@ describe('OrganizationRequestsView', function() {
     expect(wrapper.find('StyledBadge[text="1"]').exists()).toBe(true);
     expect(wrapper.find('InviteRequestRow').exists()).toBe(true);
 
-    expect(
-      wrapper
-        .find('PanelHeader')
-        .text()
-        .includes('Pending Invite Requests')
-    ).toBe(true);
+    expect(wrapper.find('PanelHeader').text().includes('Pending Invite Requests')).toBe(
+      true
+    );
 
     wrapper.find('button[aria-label="Approve"]').simulate('click');
-    wrapper.find('button[aria-label="Confirm"]').simulate('click');
+
+    const modal = await mountGlobalModal();
+    modal.find('button[aria-label="Confirm"]').simulate('click');
 
     await tick();
     wrapper.update();
@@ -269,7 +267,7 @@ describe('OrganizationRequestsView', function() {
     });
   });
 
-  it('can deny invite request and remove', async function() {
+  it('can deny invite request and remove', async function () {
     const org = TestStubs.Organization({
       access: ['member:admin', 'org:admin', 'member:write'],
       status: {
@@ -297,12 +295,9 @@ describe('OrganizationRequestsView', function() {
     expect(wrapper.find('StyledBadge[text="1"]').exists()).toBe(true);
     expect(wrapper.find('InviteRequestRow').exists()).toBe(true);
 
-    expect(
-      wrapper
-        .find('PanelHeader')
-        .text()
-        .includes('Pending Invite Requests')
-    ).toBe(true);
+    expect(wrapper.find('PanelHeader').text().includes('Pending Invite Requests')).toBe(
+      true
+    );
 
     wrapper.find('button[aria-label="Deny"]').simulate('click');
 
@@ -322,7 +317,7 @@ describe('OrganizationRequestsView', function() {
     });
   });
 
-  it('can update invite requests', async function() {
+  it('can update invite requests', async function () {
     const org = TestStubs.Organization({
       access: ['member:admin', 'org:admin', 'member:write'],
       status: {
@@ -350,7 +345,8 @@ describe('OrganizationRequestsView', function() {
     selectByValue(wrapper, 'admin', {name: 'role', control: true});
 
     wrapper.find('button[aria-label="Approve"]').simulate('click');
-    wrapper.find('button[aria-label="Confirm"]').simulate('click');
+    const modal = await mountGlobalModal();
+    modal.find('button[aria-label="Confirm"]').simulate('click');
 
     await tick();
     wrapper.update();

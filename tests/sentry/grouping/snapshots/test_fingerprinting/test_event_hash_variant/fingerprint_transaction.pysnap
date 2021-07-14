@@ -1,11 +1,13 @@
 ---
-created: '2020-08-19T12:18:26.331595Z'
+created: '2020-12-08T17:25:05.003284Z'
 creator: sentry
 source: tests/sentry/grouping/test_fingerprinting.py
 ---
 config:
   rules:
-  - fingerprint:
+  - attributes:
+      title: DatabaseUnavailable ({{ transaction }})
+    fingerprint:
     - database-unavailable
     - '{{ transaction }}'
     matchers:
@@ -17,6 +19,7 @@ config:
 fingerprint:
 - database-unavailable
 - '{{ transaction }}'
+title: DatabaseUnavailable (my-transaction)
 variants:
   app:
     component:
@@ -25,6 +28,8 @@ variants:
       hint: custom fingerprint takes precedence
     type: component
   custom-fingerprint:
+    matched_rule: type:"DatabaseUnavailable" module:"io.sentry.example.*" -> "database-unavailable{{
+      transaction }}" title="DatabaseUnavailable ({{ transaction }})"
     type: custom-fingerprint
     values:
     - database-unavailable

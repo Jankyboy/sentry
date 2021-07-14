@@ -1,17 +1,15 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import PullRequestLink from 'app/components/pullRequestLink';
 
-describe('PullRequestLink', function() {
-  it('renders no url on missing externalUrl', function() {
+describe('PullRequestLink', function () {
+  it('renders no url on missing externalUrl', function () {
     const repository = TestStubs.Repository({provider: null});
     const pullRequest = TestStubs.PullRequest({
       repository,
       externalUrl: null,
     });
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <PullRequestLink repository={repository} pullRequest={pullRequest} />
     );
 
@@ -19,14 +17,14 @@ describe('PullRequestLink', function() {
     expect(wrapper.find('span').text()).toEqual('example/repo-name #3: Fix first issue');
   });
 
-  it('renders github links for integrations:github repositories', function() {
+  it('renders github links for integrations:github repositories', function () {
     const repository = TestStubs.Repository({
       provider: {
         id: 'integrations:github',
       },
     });
     const pullRequest = TestStubs.PullRequest({repository});
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <PullRequestLink repository={repository} pullRequest={pullRequest} />
     );
 
@@ -38,14 +36,14 @@ describe('PullRequestLink', function() {
     expect(link.text().trim()).toEqual('example/repo-name #3: Fix first issue');
   });
 
-  it('renders github links for github repositories', function() {
+  it('renders github links for github repositories', function () {
     const repository = TestStubs.Repository({
       provider: {
         id: 'github',
       },
     });
     const pullRequest = TestStubs.PullRequest({repository});
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <PullRequestLink repository={repository} pullRequest={pullRequest} />
     );
 
@@ -57,14 +55,14 @@ describe('PullRequestLink', function() {
     expect(link.text().trim()).toEqual('example/repo-name #3: Fix first issue');
   });
 
-  it('renders gitlab links for integrations:gitlab repositories', function() {
+  it('renders gitlab links for integrations:gitlab repositories', function () {
     const repository = TestStubs.Repository({
       provider: {
         id: 'integrations:gitlab',
       },
     });
     const pullRequest = TestStubs.PullRequest({repository});
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <PullRequestLink repository={repository} pullRequest={pullRequest} />
     );
 
@@ -76,14 +74,14 @@ describe('PullRequestLink', function() {
     expect(link.text().trim()).toEqual('example/repo-name #3: Fix first issue');
   });
 
-  it('renders github links for gitlab repositories', function() {
+  it('renders github links for gitlab repositories', function () {
     const repository = TestStubs.Repository({
       provider: {
         id: 'gitlab',
       },
     });
     const pullRequest = TestStubs.PullRequest({repository});
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <PullRequestLink repository={repository} pullRequest={pullRequest} />
     );
 

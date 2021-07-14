@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 from django.db import models
 from django.utils import timezone
 
@@ -17,7 +15,7 @@ def schedule_jobs(jobs):
 
 
 class ScheduledJob(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     name = models.CharField(max_length=128)
     payload = JSONField()

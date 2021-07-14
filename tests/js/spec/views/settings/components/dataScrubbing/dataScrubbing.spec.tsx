@@ -1,15 +1,13 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
-import DataScrubbing from 'app/views/settings/components/dataScrubbing';
-import {ProjectId} from 'app/views/settings/components/dataScrubbing/types';
 import {addSuccessMessage} from 'app/actionCreators/indicator';
 import {openModal} from 'app/actionCreators/modal';
+import DataScrubbing from 'app/views/settings/components/dataScrubbing';
+import {ProjectId} from 'app/views/settings/components/dataScrubbing/types';
 
 jest.mock('app/actionCreators/modal');
 
-// @ts-ignore
+// @ts-expect-error
 const relayPiiConfig = TestStubs.DataScrubbingRelayPiiConfig();
 const stringRelayPiiConfig = JSON.stringify(relayPiiConfig);
 const organizationSlug = 'sentry';
@@ -19,7 +17,7 @@ const additionalContext = 'These rules can be configured for each project.';
 jest.mock('app/actionCreators/indicator');
 
 function getOrganization(piiConfig?: string) {
-  // @ts-ignore
+  // @ts-expect-error
   return TestStubs.Organization(
     piiConfig ? {id: '123', relayPiiConfig: piiConfig} : {id: '123'}
   );
@@ -46,6 +44,7 @@ function renderComponent({
       />
     );
   }
+
   return mountWithTheme(
     <DataScrubbing
       additionalContext={additionalContext}
@@ -68,7 +67,7 @@ describe('Data Scrubbing', () => {
       // PanelHeader
       expect(wrapper.find('PanelHeader').text()).toEqual('Advanced Data Scrubbing');
 
-      //PanelAlert
+      // PanelAlert
       const panelAlert = wrapper.find('PanelAlert');
       expect(panelAlert.text()).toEqual(
         `${additionalContext} The new rules will only apply to upcoming events.  For more details, see full documentation on data scrubbing.`
@@ -77,10 +76,10 @@ describe('Data Scrubbing', () => {
       const readDocsLink = panelAlert.find('a');
       expect(readDocsLink.text()).toEqual('full documentation on data scrubbing');
       expect(readDocsLink.prop('href')).toEqual(
-        'https://docs.sentry.io/data-management/advanced-datascrubbing/'
+        'https://docs.sentry.io/product/data-management-settings/scrubbing/advanced-datascrubbing/'
       );
 
-      //PanelBody
+      // PanelBody
       const panelBody = wrapper.find('PanelBody');
       expect(panelBody).toHaveLength(1);
       expect(panelBody.find('ListItem')).toHaveLength(3);
@@ -100,13 +99,13 @@ describe('Data Scrubbing', () => {
     it('render disabled', () => {
       const wrapper = renderComponent({disabled: true, endpoint});
 
-      //PanelBody
+      // PanelBody
       const panelBody = wrapper.find('PanelBody');
       expect(panelBody).toHaveLength(1);
       expect(panelBody.find('List').prop('isDisabled')).toEqual(true);
 
       // PanelAction
-      const actionButtons = wrapper.find('PanelAction').find('Button');
+      const actionButtons = wrapper.find('PanelAction').find('BaseButton');
       expect(actionButtons).toHaveLength(2);
       expect(actionButtons.at(0).prop('disabled')).toEqual(false);
       expect(actionButtons.at(1).prop('disabled')).toEqual(true);
@@ -127,7 +126,7 @@ describe('Data Scrubbing', () => {
       // PanelHeader
       expect(wrapper.find('PanelHeader').text()).toEqual('Advanced Data Scrubbing');
 
-      //PanelAlert
+      // PanelAlert
       const panelAlert = wrapper.find('PanelAlert');
       expect(panelAlert.text()).toEqual(
         `${additionalContext} The new rules will only apply to upcoming events.  For more details, see full documentation on data scrubbing.`
@@ -136,10 +135,10 @@ describe('Data Scrubbing', () => {
       const readDocsLink = panelAlert.find('a');
       expect(readDocsLink.text()).toEqual('full documentation on data scrubbing');
       expect(readDocsLink.prop('href')).toEqual(
-        'https://docs.sentry.io/data-management/advanced-datascrubbing/'
+        'https://docs.sentry.io/product/data-management-settings/scrubbing/advanced-datascrubbing/'
       );
 
-      //PanelBody
+      // PanelBody
       const panelBody = wrapper.find('PanelBody');
       expect(panelBody).toHaveLength(1);
       expect(panelBody.find('ListItem')).toHaveLength(3);
@@ -162,13 +161,13 @@ describe('Data Scrubbing', () => {
     it('render disabled', () => {
       const wrapper = renderComponent({disabled: true, endpoint});
 
-      //PanelBody
+      // PanelBody
       const panelBody = wrapper.find('PanelBody');
       expect(panelBody).toHaveLength(1);
       expect(panelBody.find('List').prop('isDisabled')).toEqual(true);
 
       // PanelAction
-      const actionButtons = wrapper.find('PanelAction').find('Button');
+      const actionButtons = wrapper.find('PanelAction').find('BaseButton');
       expect(actionButtons).toHaveLength(2);
       expect(actionButtons.at(0).prop('disabled')).toEqual(false);
       expect(actionButtons.at(1).prop('disabled')).toEqual(true);
@@ -192,7 +191,7 @@ describe('Data Scrubbing', () => {
     });
 
     it('Delete rule successfully', async () => {
-      // @ts-ignore
+      // @ts-expect-error
       const mockDelete = MockApiClient.addMockResponse({
         url: endpoint,
         method: 'PUT',
@@ -208,15 +207,12 @@ describe('Data Scrubbing', () => {
       });
 
       const listItems = wrapper.find('ListItem');
-      const deleteButton = listItems
-        .at(0)
-        .find('[aria-label="Delete Rule"]')
-        .hostNodes();
+      const deleteButton = listItems.at(0).find('[aria-label="Delete Rule"]').hostNodes();
 
       deleteButton.simulate('click');
       expect(mockDelete).toHaveBeenCalled();
 
-      // @ts-ignore
+      // @ts-expect-error
       await tick();
       wrapper.update();
 

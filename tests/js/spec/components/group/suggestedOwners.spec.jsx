@@ -1,13 +1,11 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
-import SuggestedOwners from 'app/components/group/suggestedOwners/suggestedOwners';
-import MemberListStore from 'app/stores/memberListStore';
-import CommitterStore from 'app/stores/committerStore';
 import {Client} from 'app/api';
+import SuggestedOwners from 'app/components/group/suggestedOwners/suggestedOwners';
+import CommitterStore from 'app/stores/committerStore';
+import MemberListStore from 'app/stores/memberListStore';
 
-describe('SuggestedOwners', function() {
+describe('SuggestedOwners', function () {
   const user = TestStubs.User();
   const organization = TestStubs.Organization();
   const project = TestStubs.Project();
@@ -22,16 +20,16 @@ describe('SuggestedOwners', function() {
 
   const endpoint = `/projects/${organization.slug}/${project.slug}/events/${event.id}`;
 
-  beforeEach(function() {
+  beforeEach(function () {
     MemberListStore.loadInitialData([user, TestStubs.CommitAuthor()]);
   });
 
-  afterEach(function() {
+  afterEach(function () {
     Client.clearMockResponses();
     CommitterStore.reset();
   });
 
-  it('Renders suggested owners', async function() {
+  it('Renders suggested owners', async function () {
     Client.addMockResponse({
       url: `${endpoint}/committers/`,
       body: {
@@ -79,7 +77,7 @@ describe('SuggestedOwners', function() {
     ).toBe(true);
   });
 
-  it('does not call committers endpoint if `group.firstRelease` does not exist', async function() {
+  it('does not call committers endpoint if `group.firstRelease` does not exist', async function () {
     const committers = Client.addMockResponse({
       url: `${endpoint}/committers/`,
       body: {
@@ -114,7 +112,7 @@ describe('SuggestedOwners', function() {
     expect(wrapper.find('ActorAvatar')).toHaveLength(1);
   });
 
-  it('Merges owner matching rules and having suspect commits', async function() {
+  it('Merges owner matching rules and having suspect commits', async function () {
     const author = TestStubs.CommitAuthor();
 
     Client.addMockResponse({

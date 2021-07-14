@@ -1,11 +1,9 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import * as OrgActions from 'app/actionCreators/organizations';
 import AccountSettingsLayout from 'app/views/settings/account/accountSettingsLayout';
 
-describe('AccountSettingsLayout', function() {
+describe('AccountSettingsLayout', function () {
   let wrapper;
   let spy;
   let api;
@@ -16,7 +14,7 @@ describe('AccountSettingsLayout', function() {
     slug: 'org-index',
   };
 
-  beforeEach(function() {
+  beforeEach(function () {
     spy = jest.spyOn(OrgActions, 'fetchOrganizationDetails');
     api = MockApiClient.addMockResponse({
       url: `/organizations/${organization.slug}/`,
@@ -27,7 +25,7 @@ describe('AccountSettingsLayout', function() {
     );
   });
 
-  it('fetches org details for SidebarDropdown', function() {
+  it('fetches org details for SidebarDropdown', function () {
     // org from index endpoint, no `access` info
     wrapper.setProps({organization});
     wrapper.update();
@@ -39,7 +37,7 @@ describe('AccountSettingsLayout', function() {
     expect(api).toHaveBeenCalledTimes(1);
   });
 
-  it('does not fetch org details for SidebarDropdown', function() {
+  it('does not fetch org details for SidebarDropdown', function () {
     // org already has details
     wrapper.setProps({organization: TestStubs.Organization()});
     wrapper.update();

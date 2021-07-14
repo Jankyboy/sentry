@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import DeployBadge from 'app/components/deployBadge';
@@ -13,15 +11,15 @@ const deploy = {
   id: '6348842',
 };
 
-describe('DeployBadge', function() {
-  it('renders', function() {
+describe('DeployBadge', function () {
+  it('renders', function () {
     const wrapper = mountWithTheme(<DeployBadge deploy={deploy} />);
 
-    expect(wrapper.find('Badge').text()).toEqual('production');
-    expect(wrapper.find('Icon').length).toEqual(0);
+    expect(wrapper.find('Tag').text()).toEqual('production');
+    expect(wrapper.find('IconOpen').length).toEqual(0);
   });
 
-  it('renders with icon and link', function() {
+  it('renders with icon and link', function () {
     const projectId = 1;
 
     const wrapper = mountWithTheme(
@@ -37,7 +35,7 @@ describe('DeployBadge', function() {
       pathname: '/organizations/sentry/issues/',
       query: {project: projectId, environment: 'production', query: 'release:1.2.3'},
     });
-    expect(wrapper.find('Badge').text()).toEqual('production');
-    expect(wrapper.find('Icon').length).toEqual(1);
+    expect(wrapper.find('Tag').text()).toEqual('production');
+    expect(wrapper.find('IconOpen').length).toEqual(1);
   });
 });

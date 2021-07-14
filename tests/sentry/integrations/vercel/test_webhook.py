@@ -1,15 +1,14 @@
-from __future__ import absolute_import
-
 import hashlib
 import hmac
+
 import responses
 
 from sentry import VERSION
 from sentry.models import (
     Integration,
     OrganizationIntegration,
-    SentryAppInstallationForProvider,
     SentryAppInstallation,
+    SentryAppInstallationForProvider,
     SentryAppInstallationToken,
 )
 from sentry.testutils import APITestCase
@@ -17,24 +16,25 @@ from sentry.testutils.helpers import override_options
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
 
-from .testutils import EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE, DEPLOYMENT_WEBHOOK_NO_COMMITS
-
-signature = "74b587857986545361e8a4253b74cd6224d34869"
-secret = "AiK52QASLJXmCXX3X9gO2Zyh"
-
-
-webhook_url = "/extensions/vercel/webhook/"
+from .testutils import (
+    DEPLOYMENT_WEBHOOK_NO_COMMITS,
+    EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
+    SECRET,
+    SIGNATURE,
+)
 
 
 class SignatureVercelTest(APITestCase):
+    webhook_url = "/extensions/vercel/webhook/"
+
     def test_get(self):
-        response = self.client.get(webhook_url)
+        response = self.client.get(self.webhook_url)
         assert response.status_code == 405
 
     def test_invalid_signature(self):
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
                 HTTP_X_ZEIT_SIGNATURE="xxxinvalidsignaturexxx",
@@ -44,8 +44,11 @@ class SignatureVercelTest(APITestCase):
 
 
 class VercelReleasesTest(APITestCase):
+    webhook_url = "/extensions/vercel/webhook/"
+    header = "ZEIT"
+
     def setUp(self):
-        super(VercelReleasesTest, self).setUp()
+        super().setUp()
         self.project = self.create_project(organization=self.organization)
         self.integration = Integration.objects.create(
             provider="vercel",
@@ -64,7 +67,9 @@ class VercelReleasesTest(APITestCase):
         )
 
         self.sentry_app = self.create_internal_integration(
-            webhook_url=None, name="Vercel Internal Integration", organization=self.organization,
+            webhook_url=None,
+            name="Vercel Internal Integration",
+            organization=self.organization,
         )
         sentry_app_installation = SentryAppInstallation.objects.get(sentry_app=self.sentry_app)
         self.installation_for_provider = SentryAppInstallationForProvider.objects.create(
@@ -72,6 +77,9 @@ class VercelReleasesTest(APITestCase):
             provider="vercel",
             sentry_app_installation=sentry_app_installation,
         )
+
+    def tearDown(self):
+        responses.reset()
 
     @responses.activate
     def test_create_release(self):
@@ -81,12 +89,12 @@ class VercelReleasesTest(APITestCase):
             json={},
         )
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert response.status_code == 201
@@ -109,7 +117,7 @@ class VercelReleasesTest(APITestCase):
                     }
                 ],
             }
-            assert release_request.headers["User-Agent"] == u"sentry_vercel/{}".format(VERSION)
+            assert release_request.headers["User-Agent"] == f"sentry_vercel/{VERSION}"
 
     @responses.activate
     def test_no_match(self):
@@ -122,12 +130,12 @@ class VercelReleasesTest(APITestCase):
         self.org_integration.config = {}
         self.org_integration.save()
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 0
@@ -142,12 +150,12 @@ class VercelReleasesTest(APITestCase):
         )
         self.integration.delete()
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 0
@@ -163,12 +171,12 @@ class VercelReleasesTest(APITestCase):
         )
         self.project.delete()
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 0
@@ -184,12 +192,12 @@ class VercelReleasesTest(APITestCase):
         )
         self.installation_for_provider.delete()
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 0
@@ -206,12 +214,12 @@ class VercelReleasesTest(APITestCase):
 
         SentryAppInstallationToken.objects.filter().delete()
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 0
@@ -227,12 +235,12 @@ class VercelReleasesTest(APITestCase):
             status=400,
         )
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 1
@@ -252,12 +260,12 @@ class VercelReleasesTest(APITestCase):
             callback=request_callback,
         )
 
-        with override_options({"vercel.client-secret": secret}):
+        with override_options({"vercel.client-secret": SECRET}):
             response = self.client.post(
-                path=webhook_url,
+                path=self.webhook_url,
                 data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
                 content_type="application/json",
-                HTTP_X_ZEIT_SIGNATURE=signature,
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
             )
 
             assert len(responses.calls) == 2
@@ -267,18 +275,45 @@ class VercelReleasesTest(APITestCase):
     @responses.activate
     def test_manual_vercel_deploy(self):
         local_signature = hmac.new(
-            key="vercel-client-secret".encode("utf-8"),
+            key=b"vercel-client-secret",
             msg=DEPLOYMENT_WEBHOOK_NO_COMMITS.encode("utf-8"),
             digestmod=hashlib.sha1,
         ).hexdigest()
 
         response = self.client.post(
-            path=webhook_url,
+            path=self.webhook_url,
             data=DEPLOYMENT_WEBHOOK_NO_COMMITS,
             content_type="application/json",
-            HTTP_X_ZEIT_SIGNATURE=local_signature,
+            **{f"HTTP_X_{self.header}_SIGNATURE": local_signature},
         )
 
         assert response.status_code == 404
         assert "No commit found" == response.data["detail"]
         assert len(responses.calls) == 0
+
+
+class VercelReleasesNewTest(VercelReleasesTest):
+    webhook_url = "/extensions/vercel/delete/"
+    header = "VERCEL"
+
+    @responses.activate
+    def test_release_already_created(self):
+        responses.add(
+            responses.POST,
+            absolute_uri("/api/0/organizations/%s/releases/" % self.organization.slug),
+            json={},
+        )
+
+        self.create_release(
+            project=self.project, version="7488658dfcf24d9b735e015992b316e2a8340d9d"
+        )
+
+        with override_options({"vercel.client-secret": SECRET}):
+            response = self.client.post(
+                path=self.webhook_url,
+                data=EXAMPLE_DEPLOYMENT_WEBHOOK_RESPONSE,
+                content_type="application/json",
+                **{f"HTTP_X_{self.header}_SIGNATURE": SIGNATURE},
+            )
+
+            assert response.status_code == 201

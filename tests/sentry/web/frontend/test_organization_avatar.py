@@ -1,7 +1,6 @@
-from __future__ import absolute_import
+from io import BytesIO
 
-from django.core.urlresolvers import reverse
-from six import BytesIO
+from django.urls import reverse
 
 from sentry.models import File, OrganizationAvatar
 from sentry.testutils import TestCase
@@ -13,7 +12,7 @@ class OrganizationAvatarTest(TestCase):
         org = self.create_organization()
         photo = File.objects.create(name="test.png", type="avatar.file")
         photo.putfile(BytesIO(b"test"))
-        avatar = OrganizationAvatar.objects.create(organization=org, file=photo)
+        avatar = OrganizationAvatar.objects.create(organization=org, file_id=photo.id)
         url = reverse("sentry-organization-avatar-url", kwargs={"avatar_id": avatar.ident})
         response = self.client.get(url)
         assert response.status_code == 200

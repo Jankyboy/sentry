@@ -1,11 +1,9 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
-import {GenericField, FormState} from 'app/components/forms';
+import {FormState, GenericField} from 'app/components/forms';
 
-describe('GenericField', function() {
-  it('renders text as TextInput', function() {
+describe('GenericField', function () {
+  it('renders text as TextInput', function () {
     const wrapper = mountWithTheme(
       <GenericField
         formState={FormState.READY}
@@ -19,7 +17,7 @@ describe('GenericField', function() {
     expect(wrapper.find('TextField')).toHaveLength(1);
   });
 
-  it('renders text with choices as SelectCreatableField', function() {
+  it('renders text with choices as SelectCreatableField', function () {
     const wrapper = mountWithTheme(
       <GenericField
         formState={FormState.READY}

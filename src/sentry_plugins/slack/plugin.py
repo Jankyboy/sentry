@@ -1,21 +1,12 @@
-from __future__ import absolute_import
-
 from sentry import tagstore
+from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.integrations.slack.message_builder import LEVEL_TO_COLOR
 from sentry.plugins.bases import notify
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
-from sentry.integrations import FeatureDescription, IntegrationFeatures
-
-from .client import SlackApiClient
 from sentry_plugins.base import CorePluginMixin
 
-LEVEL_TO_COLOR = {
-    "debug": "cfd3da",
-    "info": "2788ce",
-    "warning": "f18500",
-    "error": "f43f20",
-    "fatal": "d20f2a",
-}
+from .client import SlackApiClient
 
 
 class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
@@ -133,7 +124,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
         ]
 
     def color_for_event(self, event):
-        return "#" + LEVEL_TO_COLOR.get(event.get_tag("level"), "error")
+        return LEVEL_TO_COLOR.get(event.get_tag("level"), "error")
 
     def _get_tags(self, event):
         tag_list = event.tags
@@ -148,7 +139,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
         option = self.get_option(name, project)
         if not option:
             return None
-        return set(tag.strip().lower() for tag in option.split(","))
+        return {tag.strip().lower() for tag in option.split(",")}
 
     def notify(self, notification, raise_exception=False):
         event = notification.event
@@ -188,10 +179,8 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
         if self.get_option("include_rules", project):
             rules = []
             for rule in notification.rules:
-                rule_link = "/%s/%s/settings/alerts/rules/%s/" % (
-                    group.organization.slug,
-                    project.slug,
-                    rule.id,
+                rule_link = (
+                    f"/{group.organization.slug}/{project.slug}/settings/alerts/rules/{rule.id}/"
                 )
 
                 # Make sure it's an absolute uri since we're sending this
@@ -200,7 +189,7 @@ class SlackPlugin(CorePluginMixin, notify.NotificationPlugin):
                 rules.append((rule_link, rule.label))
 
             if rules:
-                value = u", ".join(u"<{} | {}>".format(*r) for r in rules)
+                value = ", ".join("<{} | {}>".format(*r) for r in rules)
 
                 fields.append(
                     {"title": "Triggered By", "value": value.encode("utf-8"), "short": False}

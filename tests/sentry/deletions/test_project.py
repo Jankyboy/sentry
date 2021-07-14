@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from sentry.models import (
     Commit,
     CommitAuthor,
@@ -12,11 +10,11 @@ from sentry.models import (
     GroupMeta,
     GroupResolution,
     Project,
+    ProjectDebugFile,
     Release,
     ReleaseCommit,
     Repository,
     ScheduledDeletion,
-    ProjectDebugFile,
 )
 from sentry.tasks.deletion import run_deletion
 from sentry.testutils import TestCase
@@ -60,13 +58,13 @@ class DeleteProjectTest(TestCase):
             code_id="codeid",
             cpu_name="cpu",
             object_name="object",
-            project=project,
+            project_id=project.id,
         )
         file_attachment = File.objects.create(name="hello.png", type="image/png")
         EventAttachment.objects.create(
             event_id=event.event_id,
             project_id=event.project_id,
-            file=file_attachment,
+            file_id=file_attachment.id,
             type=file_attachment.type,
             name="hello.png",
         )

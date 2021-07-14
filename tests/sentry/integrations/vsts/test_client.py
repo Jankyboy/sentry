@@ -1,11 +1,12 @@
-from __future__ import absolute_import
+from time import time
+from urllib.parse import parse_qs
 
 import responses
 
-from time import time
-
 from sentry.models import Identity, IdentityProvider, Integration
 from sentry.testutils.helpers import with_feature
+from sentry.utils import json
+
 from .testutils import VstsIntegrationTestCase
 
 
@@ -35,8 +36,9 @@ class VstsApiClientTest(VstsIntegrationTestCase):
         assert responses.calls[-2].request.url == "https://app.vssps.visualstudio.com/oauth2/token"
 
         # Then we request the Projects with the new token
-        assert responses.calls[-1].request.url == u"{}_apis/projects?stateFilter=WellFormed".format(
-            self.vsts_base_url.lower()
+        assert (
+            responses.calls[-1].request.url.split("?")[0]
+            == f"{self.vsts_base_url.lower()}_apis/projects"
         )
 
         identity = Identity.objects.get(id=identity.id)
@@ -75,11 +77,40 @@ class VstsApiClientTest(VstsIntegrationTestCase):
         assert responses.calls[-2].request.url == "https://app.vssps.visualstudio.com/oauth2/token"
 
         # Then we request the Projects with the new token
-        assert responses.calls[-1].request.url == u"{}_apis/projects?stateFilter=WellFormed".format(
-            self.vsts_base_url.lower()
+        assert (
+            responses.calls[-1].request.url.split("?")[0]
+            == f"{self.vsts_base_url.lower()}_apis/projects"
         )
 
         identity = Identity.objects.get(id=identity.id)
         assert identity.scopes == ["vso.graph", "vso.serviceendpoint_manage", "vso.work_write"]
         assert identity.data["access_token"] == "new-access-token"
         assert identity.data["refresh_token"] == "new-refresh-token"
+
+    def test_project_pagination(self):
+        def request_callback(request):
+            query = parse_qs(request.url.split("?")[1])
+            # allow for 220 responses
+            if int(query["$skip"][0]) >= 200:
+                projects = [self.project_a, self.project_b] * 10
+            else:
+                projects = [self.project_a, self.project_b] * 50
+            resp_body = {"value": projects, "count": len(projects)}
+            return (200, {}, json.dumps(resp_body))
+
+        self.assert_installation()
+        responses.reset()
+
+        integration = Integration.objects.get(provider="vsts")
+        responses.add_callback(
+            responses.GET,
+            f"https://{self.vsts_account_name.lower()}.visualstudio.com/_apis/projects",
+            callback=request_callback,
+        )
+
+        projects = (
+            integration.get_installation(integration.organizations.first().id)
+            .get_client()
+            .get_projects(self.vsts_base_url)
+        )
+        assert len(projects) == 220

@@ -1,6 +1,4 @@
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.testutils import APITestCase
 from sentry.utils.dates import to_timestamp
@@ -110,4 +108,4 @@ class GetSentryAppStatsTest(SentryAppStatsTest):
             "sentry-api-0-sentry-app-stats", args=[self.published_app.slug]
         )
         response = self.client.get(url, format="json")
-        assert response.status_code == 500
+        assert response.status_code == 400

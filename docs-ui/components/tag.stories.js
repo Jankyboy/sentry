@@ -1,128 +1,107 @@
 import React from 'react';
-import {withInfo} from '@storybook/addon-info';
+import styled from '@emotion/styled';
 
-import Tooltip from 'app/components/tooltip';
 import Tag from 'app/components/tag';
+import {IconClock, IconDelete, IconFire, IconIssues, IconWarning} from 'app/icons';
+import {toTitleCase} from 'app/utils';
+import theme from 'app/utils/theme';
 
 export default {
-  title: 'Core/Badges+Tags/Tag',
+  title: 'Core/Tags/Tag',
+  component: Tag,
+  argTypes: {
+    tooltipText: {
+      type: 'string',
+    },
+    to: {
+      table: {
+        disable: true,
+      },
+    },
+    icon: {
+      table: {
+        disable: true,
+      },
+    },
+    onDismiss: {
+      table: {
+        disable: true,
+      },
+    },
+    href: {
+      table: {
+        disable: true,
+      },
+    },
+  },
 };
 
-export const Overview = withInfo({
-  text: 'An overview of all the different tags and states',
-})(() => (
-  <React.Fragment>
-    <div>
-      <Tag>default</Tag>
-    </div>
-    <div>
-      <Tag priority="error">error</Tag>
-    </div>
-    <div>
-      <Tag priority="warning">warning</Tag>
-    </div>
-    <div>
-      <Tag priority="success">success</Tag>
-    </div>
-    <div>
-      <Tooltip
-        title="This feature is in beta and may change in the future."
-        tooltipOptions={{
-          placement: 'right',
-        }}
-      >
-        <span>
-          <Tag priority="beta">beta</Tag>
-        </span>
-      </Tooltip>
-    </div>
-    <div>
-      <Tag priority="new">new</Tag>
-    </div>
-    <div>
-      <Tag priority="alpha">alpha</Tag>
-    </div>
-  </React.Fragment>
-));
+const types = Object.keys(theme.tag);
 
-export const Default = withInfo(
-  'A basic tag-like thing. If you pass no type, it will be gray'
-)(() => <Tag>Development</Tag>);
+export const Basic = () => (
+  <Wrapper>
+    {types.map(type => (
+      <Tag key={type} type={type}>
+        {toTitleCase(type)}
+      </Tag>
+    ))}
+  </Wrapper>
+);
+Basic.storyName = 'basic';
 
-Default.story = {
-  name: 'default',
-};
+export const WithIcon = ({...args}) => (
+  <div>
+    <Tag icon={<IconFire />} {...args}>
+      Error
+    </Tag>{' '}
+    <Tag icon={<IconWarning />} {...args}>
+      Error
+    </Tag>{' '}
+    <Tag icon={<IconClock />} {...args}>
+      Error
+    </Tag>{' '}
+    <Tag icon={<IconDelete />} {...args}>
+      Error
+    </Tag>{' '}
+    <Tag icon={<IconIssues />} {...args}>
+      Error
+    </Tag>
+  </div>
+);
+WithIcon.storyName = 'with icon';
 
-export const Warning = withInfo(
-  'A warning tag-like thing. Use this to signal that something is maybe not so great'
-)(() => <Tag priority="warning">Development</Tag>);
-
-Warning.story = {
-  name: 'warning',
-};
-
-export const Success = withInfo(
-  'A happy tag-like thing. Use this to signal something good'
-)(() => <Tag priority="success">Development</Tag>);
-
-Success.story = {
-  name: 'success',
-};
-
-export const Beta = withInfo(
-  'An attention grabbing thing. Use this to communicate shiny new functionality.'
-)(() => (
-  <Tooltip
-    title="This feature is in beta and may change in the future."
-    tooltipOptions={{
-      placement: 'right',
-    }}
-  >
-    <span>
-      <Tag priority="beta">beta</Tag>
-    </span>
-  </Tooltip>
-));
-
-Beta.story = {
-  name: 'beta',
-};
-
-export const New = withInfo(
-  'An attention grabbing thing. Use this to communicate shiny new functionality.'
-)(() => (
-  <Tooltip
-    title="This feature is new and may change in the future."
-    tooltipOptions={{
-      placement: 'right',
-    }}
-  >
-    <span>
-      <Tag priority="new">new</Tag>
-    </span>
-  </Tooltip>
-));
-
-New.story = {
-  name: 'new',
-};
-
-export const Small = withInfo(
-  'A small tag-like thing. Use this when space is at a premium'
-)(() => (
-  <Tag size="small" border>
-    new
+export const WithTooltip = ({type}) => (
+  <Tag type={type} tooltipText="lorem ipsum">
+    children
   </Tag>
-));
-
-Small.story = {
-  name: 'small',
+);
+WithTooltip.storyName = 'with tooltip';
+WithTooltip.args = {
+  type: 'highlight',
+};
+WithTooltip.argTypes = {
+  type: {
+    control: {
+      type: 'select',
+      options: types,
+    },
+  },
 };
 
-export const WithIcon = withInfo(
-  'A tag-like thing with an icon. Use when you need to represent something'
-)(() => <Tag icon="icon-lock">Locked</Tag>);
-
-WithIcon.story = {
-  name: 'with icon',
+export const WithDismiss = ({...args}) => <Tag {...args}>Dismissable</Tag>;
+WithDismiss.storyName = 'with dismiss';
+WithDismiss.argTypes = {
+  onDismiss: {action: 'dismissed'},
 };
+
+export const WithInternalLink = () => (
+  <Tag to="/organizations/sentry/issues/">Internal link</Tag>
+);
+WithInternalLink.storyName = 'with internal link';
+
+export const WithExternalLink = () => <Tag href="https://sentry.io/">External link</Tag>;
+WithExternalLink.storyName = 'with external link';
+
+const Wrapper = styled('div')`
+  display: grid;
+`;

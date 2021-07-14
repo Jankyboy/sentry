@@ -1,25 +1,29 @@
-from __future__ import absolute_import
-
-import six
-import uuid
-import itertools
 import hmac
+import itertools
+import uuid
+from hashlib import sha256
 
 from django.db import models
-from django.utils import timezone
+from django.db.models import QuerySet
 from django.template.defaultfilters import slugify
-from hashlib import sha256
-from sentry.utils import metrics
-from sentry.constants import SentryAppStatus, SENTRY_APP_SLUG_MAX_LENGTH
-from sentry.models.apiscopes import HasApiScopes
+from django.utils import timezone
+
+from sentry.constants import (
+    SENTRY_APP_SLUG_MAX_LENGTH,
+    SentryAppInstallationStatus,
+    SentryAppStatus,
+)
 from sentry.db.models import (
     ArrayField,
     BoundedPositiveIntegerField,
     EncryptedJsonField,
     FlexibleForeignKey,
+    ParanoidManager,
     ParanoidModel,
 )
+from sentry.models.apiscopes import HasApiScopes
 from sentry.models.sentryappinstallation import SentryAppInstallation
+from sentry.utils import metrics
 
 # When a developer selects to receive "<Resource> Webhooks" it really means
 # listening to a list of specific events. This is a mapping of what those
@@ -54,14 +58,14 @@ UUID_CHARS_IN_SLUG = 6
 
 
 def default_uuid():
-    return six.text_type(uuid.uuid4())
+    return str(uuid.uuid4())
 
 
 def generate_slug(name, is_internal=False):
     slug = slugify(name)
     # for internal, add some uuid to make it unique
     if is_internal:
-        slug = u"{}-{}".format(slug, default_uuid()[:UUID_CHARS_IN_SLUG])
+        slug = f"{slug}-{default_uuid()[:UUID_CHARS_IN_SLUG]}"
 
     return slug
 
@@ -74,8 +78,18 @@ def track_response_code(status, integration_slug, webhook_event):
     )
 
 
+class SentryAppManager(ParanoidManager):
+    def get_alertable_sentry_apps(self, organization_id: int) -> QuerySet:
+        return self.filter(
+            installations__organization_id=organization_id,
+            is_alertable=True,
+            installations__status=SentryAppInstallationStatus.INSTALLED,
+            installations__date_deleted=None,
+        ).distinct()
+
+
 class SentryApp(ParanoidModel, HasApiScopes):
-    __core__ = True
+    __include_in_export__ = True
 
     application = models.OneToOneField(
         "sentry.ApiApplication", null=True, on_delete=models.SET_NULL, related_name="sentry_app"
@@ -119,6 +133,13 @@ class SentryApp(ParanoidModel, HasApiScopes):
     date_updated = models.DateTimeField(default=timezone.now)
     date_published = models.DateTimeField(null=True, blank=True)
 
+    creator_user = FlexibleForeignKey(
+        "sentry.User", null=True, on_delete=models.SET_NULL, db_constraint=False
+    )
+    creator_label = models.TextField(null=True)
+
+    objects = SentryAppManager()
+
     class Meta:
         app_label = "sentry"
         db_table = "sentry_sentryapp"
@@ -154,6 +175,10 @@ class SentryApp(ParanoidModel, HasApiScopes):
         return self.status == SentryAppStatus.INTERNAL
 
     @property
+    def is_publish_request_inprogress(self):
+        return self.status == SentryAppStatus.PUBLISH_REQUEST_INPROGRESS
+
+    @property
     def slug_for_metrics(self):
         if self.is_internal:
             return "internal"
@@ -163,11 +188,12 @@ class SentryApp(ParanoidModel, HasApiScopes):
 
     def save(self, *args, **kwargs):
         self.date_updated = timezone.now()
-        return super(SentryApp, self).save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
     def is_installed_on(self, organization):
         return SentryAppInstallation.objects.filter(
-            organization=organization, sentry_app=self,
+            organization=organization,
+            sentry_app=self,
         ).exists()
 
     def build_signature(self, body):
@@ -177,5 +203,5 @@ class SentryApp(ParanoidModel, HasApiScopes):
         ).hexdigest()
 
     def show_auth_info(self, access):
-        encoded_scopes = set({u"%s" % scope for scope in list(access.scopes)})
+        encoded_scopes = set({"%s" % scope for scope in list(access.scopes)})
         return set(self.scope_list).issubset(encoded_scopes)

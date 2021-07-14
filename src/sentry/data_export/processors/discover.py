@@ -1,10 +1,8 @@
-from __future__ import absolute_import
-
 import logging
 
-from sentry.api.event_search import get_function_alias
 from sentry.api.utils import get_date_range_from_params
 from sentry.models import Environment, Group, Project
+from sentry.search.events.fields import get_function_alias
 from sentry.snuba import discover
 from sentry.utils.compat import map
 
@@ -13,7 +11,7 @@ from ..base import ExportError
 logger = logging.getLogger(__name__)
 
 
-class DiscoverProcessor(object):
+class DiscoverProcessor:
     """
     Processor for exports of discover data based on a provided query
     """
@@ -32,9 +30,20 @@ class DiscoverProcessor(object):
         # an empty list DOES NOT work
         if self.environments:
             self.params["environment"] = self.environments
-        self.header_fields = map(lambda x: get_function_alias(x), discover_query["field"])
+
+        equations = discover_query.get("equations", [])
+        self.header_fields = (
+            map(lambda x: get_function_alias(x), discover_query["field"]) + equations
+        )
+        self.equation_aliases = {
+            f"equation[{index}]": equation for index, equation in enumerate(equations)
+        }
         self.data_fn = self.get_data_fn(
-            fields=discover_query["field"], query=discover_query["query"], params=self.params
+            fields=discover_query["field"],
+            equations=equations,
+            query=discover_query["query"],
+            params=self.params,
+            sort=discover_query.get("sort"),
         )
 
     @staticmethod
@@ -66,16 +75,19 @@ class DiscoverProcessor(object):
         return environment_names
 
     @staticmethod
-    def get_data_fn(fields, query, params):
+    def get_data_fn(fields, equations, query, params, sort):
         def data_fn(offset, limit):
             return discover.query(
                 selected_columns=fields,
+                equations=equations,
                 query=query,
                 params=params,
                 offset=offset,
+                orderby=sort,
                 limit=limit,
                 referrer="data_export.tasks.discover",
                 auto_fields=True,
+                auto_aggregations=True,
                 use_aggregate_conditions=True,
             )
 
@@ -85,8 +97,9 @@ class DiscoverProcessor(object):
         # Find issue short_id if present
         # (originally in `/api/bases/organization_events.py`)
         new_result_list = result_list[:]
+
         if "issue" in self.header_fields:
-            issue_ids = set(result["issue.id"] for result in new_result_list)
+            issue_ids = {result["issue.id"] for result in new_result_list}
             issues = {
                 i.id: i.qualified_short_id
                 for i in Group.objects.filter(
@@ -98,4 +111,11 @@ class DiscoverProcessor(object):
             for result in new_result_list:
                 if "issue.id" in result:
                     result["issue"] = issues.get(result["issue.id"], "unknown")
+
+        # Map equations back to their unaliased forms
+        if self.equation_aliases:
+            for result in new_result_list:
+                for equation_alias, equation in self.equation_aliases.items():
+                    result[equation] = result.get(equation_alias)
+
         return new_result_list

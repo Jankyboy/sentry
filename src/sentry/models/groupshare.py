@@ -1,12 +1,10 @@
-from __future__ import absolute_import
-
 from uuid import uuid4
 
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import FlexibleForeignKey, Model, BaseManager, sane_repr
+from sentry.db.models import BaseManager, FlexibleForeignKey, Model, sane_repr
 
 
 def default_uuid():
@@ -18,7 +16,7 @@ class GroupShare(Model):
     A Group that was shared publicly.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     project = FlexibleForeignKey("sentry.Project")
     group = FlexibleForeignKey("sentry.Group", unique=True)

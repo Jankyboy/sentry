@@ -1,33 +1,33 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
+import {selectByValue} from 'sentry-test/select-new';
 
 import CustomResolutionModal from 'app/components/customResolutionModal';
 
-describe('CustomResolutionModal', function() {
+describe('CustomResolutionModal', function () {
   let releasesMock;
-  beforeEach(function() {
+  beforeEach(function () {
     releasesMock = MockApiClient.addMockResponse({
       url: '/projects/org-slug/project-slug/releases/',
       body: [TestStubs.Release()],
     });
   });
 
-  it('can select a version', async function() {
+  it('can select a version', async function () {
     const onSelected = jest.fn();
     const wrapper = mountWithTheme(
       <CustomResolutionModal
-        orgId="org-slug"
-        projectId="project-slug"
-        onCanceled={() => false}
+        Header={p => p.children}
+        Body={p => p.children}
+        Footer={p => p.children}
+        orgSlug="org-slug"
+        projectSlug="project-slug"
         onSelected={onSelected}
-        show
+        closeModal={jest.fn()}
       />,
       TestStubs.routerContext()
     );
 
     expect(releasesMock).toHaveBeenCalled();
-
     await tick();
     wrapper.update();
 
@@ -38,17 +38,10 @@ describe('CustomResolutionModal', function() {
       }),
     ]);
 
-    wrapper.find('input[id="version"]').simulate('change', {target: {value: '1.2.0'}});
-
-    await tick();
-    wrapper.update();
-
-    wrapper.find('input[id="version"]').simulate('keyDown', {keyCode: 13});
-
-    expect(wrapper.find('SelectControl').prop('value')).toEqual({
-      value: 'sentry-android-shop@1.2.0',
-      label: expect.anything(),
+    selectByValue(wrapper, 'sentry-android-shop@1.2.0', {
+      selector: 'SelectAsyncControl[name="version"]',
     });
+
     wrapper.find('form').simulate('submit');
     expect(onSelected).toHaveBeenCalledWith({
       inRelease: 'sentry-android-shop@1.2.0',

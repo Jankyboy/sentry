@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 __all__ = ("Template",)
 
 from sentry.interfaces.base import Interface
@@ -34,7 +32,7 @@ class Template(Interface):
     score = 1100
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         for key in (
             "abs_path",
             "filename",
@@ -44,7 +42,8 @@ class Template(Interface):
             "post_context",
         ):
             data.setdefault(key, None)
-        return cls(**data)
+
+        return super().to_python(data, **kwargs)
 
     def to_string(self, event, is_public=False, **kwargs):
         context = get_context(
@@ -59,7 +58,7 @@ class Template(Interface):
         return "\n".join(result)
 
     def get_traceback(self, event, context):
-        result = [event.message, "", 'File "%s", line %s' % (self.filename, self.lineno), ""]
+        result = [event.message, "", f'File "{self.filename}", line {self.lineno}', ""]
         result.extend([n[1].strip("\n") if n[1] else "" for n in context])
 
         return "\n".join(result)

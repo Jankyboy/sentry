@@ -1,82 +1,36 @@
-from __future__ import absolute_import
-
 from django.db import IntegrityError, transaction
-from rest_framework import serializers
 from rest_framework.response import Response
 
-from sentry.api.base import DocSection
-from sentry.api.bases.dashboard import OrganizationDashboardEndpoint
+from sentry import features
+from sentry.api.bases.organization import OrganizationEndpoint
+from sentry.api.endpoints.organization_dashboards import OrganizationDashboardsPermission
+from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.serializers import serialize
-from sentry.api.serializers.rest_framework import (
-    get_next_dashboard_order,
-    ListField,
-    ValidationError,
-)
-from sentry.models import ObjectStatus, Widget
+from sentry.api.serializers.rest_framework import DashboardDetailsSerializer
+from sentry.models.dashboard import Dashboard, DashboardTombstone
+
+EDIT_FEATURE = "organizations:dashboards-edit"
+READ_FEATURE = "organizations:dashboards-basic"
 
 
-def remove_widgets(dashboard_widgets, widget_data):
-    """
-    Removes current widgets belonging to dashboard not in widget_data.
-    Returns remaining widgets.
-    """
-    widget_ids = [wd["id"] for wd in widget_data]
-    dashboard_widgets.exclude(id__in=widget_ids).delete()
-    return dashboard_widgets.filter(id__in=widget_ids)
+class OrganizationDashboardDetailsEndpoint(OrganizationEndpoint):
+    permission_classes = (OrganizationDashboardsPermission,)
 
+    def convert_args(self, request, organization_slug, dashboard_id, *args, **kwargs):
+        args, kwargs = super().convert_args(request, organization_slug)
 
-def reorder_widgets(dashboard_id, widget_data):
-    """
-    Reorders Widgets given the relative order desired,
-    reorders widgets in the next possible set of numbers
-    i.e if order of widgets is 1, 2, 3
-        the reordered widgets will have order 4, 5, 6
-    """
-    dashboard_widgets = Widget.objects.filter(dashboard_id=dashboard_id)
-    dashboard_widgets = list(remove_widgets(dashboard_widgets, widget_data))
+        try:
+            kwargs["dashboard"] = self._get_dashboard(request, kwargs["organization"], dashboard_id)
+        except (Dashboard.DoesNotExist, ValueError):
+            raise ResourceDoesNotExist
 
-    # dashboard_widgets and widget_data should now have the same widgets
-    widget_data.sort(key=lambda x: x["order"])
+        return (args, kwargs)
 
-    next_order = get_next_dashboard_order(dashboard_id)
-    for index, data in enumerate(widget_data):
-        for widget in dashboard_widgets:
-            if widget.id == data["id"]:
-                widget.order = next_order + index
-                widget.save()
-                break
-
-
-class WidgetSerializer(serializers.Serializer):
-    order = serializers.IntegerField(min_value=0, required=True)
-    id = serializers.IntegerField(min_value=0, required=True)
-
-
-class DashboardWithWidgetsSerializer(serializers.Serializer):
-    title = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    widgets = ListField(child=WidgetSerializer(), required=False, allow_null=True)
-
-    def validate_widgets(self, widgets):
-        if len(widgets) != len(set([w["order"] for w in widgets])):
-            raise ValidationError("Widgets must not have duplicate order values.")
-
-        widgets_count = Widget.objects.filter(
-            id__in=[w["id"] for w in widgets],
-            dashboard_id=self.context["dashboard_id"],
-            status=ObjectStatus.VISIBLE,
-        ).count()
-
-        if len(widgets) != widgets_count:
-            raise ValidationError(
-                "All widgets must exist within this dashboard prior to reordering."
-            )
-
-        return widgets
-
-
-class OrganizationDashboardDetailsEndpoint(OrganizationDashboardEndpoint):
-
-    doc_section = DocSection.ORGANIZATIONS
+    def _get_dashboard(self, request, organization, dashboard_id):
+        prebuilt = Dashboard.get_prebuilt(dashboard_id)
+        if prebuilt:
+            return prebuilt
+        return Dashboard.objects.get(id=dashboard_id, organization_id=organization.id)
 
     def get(self, request, organization, dashboard):
         """
@@ -85,11 +39,15 @@ class OrganizationDashboardDetailsEndpoint(OrganizationDashboardEndpoint):
 
         Return details on an individual organization's dashboard.
 
-        :pparam string organization_slug: the slug of the organization the
-                                          dashboard belongs to.
-        :pparam int dashboard_id: the id of the dashboard.
+        :pparam Organization organization: the organization the dashboard belongs to.
+        :pparam Dashboard dashboard: the dashboard object
         :auth: required
         """
+        if not features.has(READ_FEATURE, organization, actor=request.user):
+            return Response(status=404)
+
+        if isinstance(dashboard, dict):
+            return self.respond(dashboard)
 
         return self.respond(serialize(dashboard, request.user))
 
@@ -98,16 +56,30 @@ class OrganizationDashboardDetailsEndpoint(OrganizationDashboardEndpoint):
         Delete an Organization's Dashboard
         ```````````````````````````````````
 
-        Delete an individual organization's dashboard.
+        Delete an individual organization's dashboard, or tombstone
+        a pre-built dashboard which effectively deletes it.
 
-        :pparam string organization_slug: the slug of the organization the
-                                          dashboard belongs to.
-        :pparam int dashboard_id: the id of the dashboard.
+        :pparam Organization organization: the organization the dashboard belongs to.
+        :pparam Dashboard dashboard: the dashboard object
         :auth: required
         """
+        if not features.has(EDIT_FEATURE, organization, actor=request.user):
+            return Response(status=404)
 
-        dashboard.status = ObjectStatus.PENDING_DELETION
-        dashboard.save()
+        num_dashboards = Dashboard.objects.filter(organization=organization).count()
+        num_tombstones = DashboardTombstone.objects.filter(organization=organization).count()
+
+        if isinstance(dashboard, dict):
+            if num_dashboards > 0:
+                DashboardTombstone.objects.get_or_create(
+                    organization=organization, slug=dashboard["id"]
+                )
+            else:
+                return self.respond({"Cannot delete last Dashboard."}, status=409)
+        elif (num_dashboards > 1) or (num_tombstones == 0):
+            dashboard.delete()
+        else:
+            return self.respond({"Cannot delete last Dashboard."}, status=409)
 
         return self.respond(status=204)
 
@@ -119,30 +91,38 @@ class OrganizationDashboardDetailsEndpoint(OrganizationDashboardEndpoint):
         Edit an individual organization's dashboard as well as
         bulk edits on widgets (i.e. rearranging widget order).
 
-        :pparam string organization_slug: the slug of the organization the
-                                          dashboard belongs to.
-        :pparam int dashboard_id: the id of the dashboard.
-        :param array widgets: the array of widgets (consisting of a widget id and the order)
-                            to be updated.
+        :pparam Organization organization: the organization the dashboard belongs to.
+        :pparam Dashboard dashboard: the old dashboard object
         :auth: required
         """
-        serializer = DashboardWithWidgetsSerializer(
-            data=request.data, context={"dashboard_id": dashboard.id}
+        if not features.has(EDIT_FEATURE, organization, actor=request.user):
+            return Response(status=404)
+
+        tombstone = None
+        if isinstance(dashboard, dict):
+            tombstone = dashboard["id"]
+            dashboard = None
+
+        serializer = DashboardDetailsSerializer(
+            data=request.data,
+            instance=dashboard,
+            context={
+                "organization": organization,
+                "request": request,
+                "projects": self.get_projects(request, organization),
+            },
         )
 
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
-        data = serializer.validated_data
         try:
             with transaction.atomic():
-                title = data.get("title")
-                if title:
-                    dashboard.update(title=data["title"])
-
-                widgets = data.get("widgets")
-                if widgets:
-                    reorder_widgets(dashboard.id, widgets)
+                serializer.save()
+                if tombstone:
+                    DashboardTombstone.objects.get_or_create(
+                        organization=organization, slug=tombstone
+                    )
         except IntegrityError:
-            return self.respond({"Dashboard with that title already exists"}, status=409)
+            return self.respond({"Dashboard with that title already exists."}, status=409)
 
-        return self.respond(serialize(dashboard, request.user), status=200)
+        return self.respond(serialize(serializer.instance, request.user), status=200)

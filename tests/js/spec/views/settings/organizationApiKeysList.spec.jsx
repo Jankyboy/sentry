@@ -1,6 +1,5 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
+import {mountGlobalModal} from 'sentry-test/modal';
 
 import OrganizationApiKeysList from 'app/views/settings/organizationApiKeys/organizationApiKeysList';
 
@@ -13,10 +12,10 @@ const routes = [
   {path: 'api-keys/', name: 'API Key'},
 ];
 
-describe('OrganizationApiKeysList', function() {
-  beforeEach(function() {});
+describe('OrganizationApiKeysList', function () {
+  beforeEach(function () {});
 
-  it('renders', function() {
+  it('renders', function () {
     const wrapper = mountWithTheme(
       <OrganizationApiKeysList
         params={{orgId: 'org-slug'}}
@@ -28,7 +27,7 @@ describe('OrganizationApiKeysList', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('opens a modal when trying to delete a key', function() {
+  it('opens a modal when trying to delete a key', async function () {
     const wrapper = mountWithTheme(
       <OrganizationApiKeysList
         params={{orgId: 'org-slug'}}
@@ -44,7 +43,7 @@ describe('OrganizationApiKeysList', function() {
     wrapper.update();
 
     // expect a modal
-    const modal = wrapper.find('Modal');
-    expect(modal.first().prop('show')).toBe(true);
+    const modal = await mountGlobalModal();
+    expect(modal.find('GlobalModal[visible=true]').exists()).toBe(true);
   });
 });

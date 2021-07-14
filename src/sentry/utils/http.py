@@ -1,31 +1,29 @@
-from __future__ import absolute_import
-
-import six
-
 from collections import namedtuple
-from django.conf import settings
-from six.moves.urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 from functools import partial
+from typing import Optional
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
+
+from django.conf import settings
 
 from sentry import options
 from sentry.utils import json
-from sentry.utils.compat import map
-from sentry.utils.compat import filter
+from sentry.utils.compat import filter, map
 
 ParsedUriMatch = namedtuple("ParsedUriMatch", ["scheme", "domain", "path"])
 
 
-def absolute_uri(url=None):
+def absolute_uri(url: Optional[str] = None) -> str:
+    prefix = options.get("system.url-prefix")
     if not url:
-        return options.get("system.url-prefix")
-    return urljoin(options.get("system.url-prefix").rstrip("/") + "/", url.lstrip("/"))
+        return prefix
+    return urljoin(prefix.rstrip("/") + "/", url.lstrip("/"))
 
 
 def origin_from_url(url):
     if not url:
         return url
     url = urlparse(url)
-    return "%s://%s" % (url.scheme, url.netloc)
+    return f"{url.scheme}://{url.netloc}"
 
 
 def safe_urlencode(params, doseq=0):
@@ -45,12 +43,12 @@ def safe_urlencode(params, doseq=0):
     for k, v in params:
         k = k.encode("utf-8")
 
-        if isinstance(v, six.string_types):
+        if isinstance(v, str):
             new_params.append((k, v.encode("utf-8")))
         elif isinstance(v, (list, tuple)):
             new_params.append((k, [i.encode("utf-8") for i in v]))
         else:
-            new_params.append((k, six.text_type(v)))
+            new_params.append((k, str(v)))
 
     return urlencode(new_params, doseq)
 
@@ -66,18 +64,19 @@ def is_same_domain(url1, url2):
 
 
 def get_origins(project=None):
-    if settings.SENTRY_ALLOW_ORIGIN == "*":
-        return frozenset(["*"])
-
-    if settings.SENTRY_ALLOW_ORIGIN:
-        result = settings.SENTRY_ALLOW_ORIGIN.split(" ")
+    if not project:
+        if settings.SENTRY_ALLOW_ORIGIN in ("*", None):
+            result = ["*"]
+        elif settings.SENTRY_ALLOW_ORIGIN:
+            result = settings.SENTRY_ALLOW_ORIGIN.split(" ")
+        else:
+            result = []
     else:
-        result = []
-
-    if project:
         optval = project.get_option("sentry:origins", ["*"])
         if optval:
-            result.extend(optval)
+            result = optval
+        else:
+            result = []
 
     # lowercase and strip the trailing slash from all origin values
     # filter out empty values
@@ -102,12 +101,12 @@ def parse_uri_match(value):
 
     # we need to coerce our unicode inputs into proper
     # idna/punycode encoded representation for normalization.
-    if isinstance(domain, six.binary_type):
+    if isinstance(domain, bytes):
         domain = domain.decode("utf8")
     domain = domain.encode("idna").decode("utf-8")
 
     if port:
-        domain = "%s:%s" % (domain, port)
+        domain = f"{domain}:{port}"
 
     return ParsedUriMatch(scheme, domain, path)
 
@@ -149,7 +148,7 @@ def is_valid_origin(origin, project=None, allowed=None):
     if origin == "null":
         return False
 
-    if isinstance(origin, six.binary_type):
+    if isinstance(origin, bytes):
         try:
             origin = origin.decode("utf-8")
         except UnicodeDecodeError:
@@ -257,6 +256,6 @@ def heuristic_decode(data, possible_content_type=None):
 
 def percent_encode(val):
     # see https://en.wikipedia.org/wiki/Percent-encoding
-    if isinstance(val, six.text_type):
+    if isinstance(val, str):
         val = val.encode("utf8", errors="replace")
     return quote(val).replace("%7E", "~").replace("/", "%2F")

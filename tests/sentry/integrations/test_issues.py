@@ -1,12 +1,9 @@
-from __future__ import absolute_import
-
-import six
-
+from sentry.integrations.example.integration import AliasedIntegrationProvider
 from sentry.models import (
     ExternalIssue,
     Group,
-    GroupStatus,
     GroupLink,
+    GroupStatus,
     Integration,
     OrganizationIntegration,
 )
@@ -134,7 +131,7 @@ class IssueDefaultTest(TestCase):
 
     def test_get_repository_choices_default_repo(self):
         self.installation.org_integration.config = {
-            "project_issue_defaults": {six.text_type(self.group.project_id): {"repo": "user/repo2"}}
+            "project_issue_defaults": {str(self.group.project_id): {"repo": "user/repo2"}}
         }
         self.installation.org_integration.save()
         self.installation.get_repositories = lambda: [
@@ -145,12 +142,73 @@ class IssueDefaultTest(TestCase):
         assert default_repo == "user/repo2"
         assert repo_choice == [("user/repo1", "repo1"), ("user/repo2", "repo2")]
 
+    def test_store_issue_last_defaults_partial_update(self):
+        assert "project" in self.installation.get_persisted_default_config_fields()
+        assert "issueType" in self.installation.get_persisted_default_config_fields()
+        assert "assignedTo" in self.installation.get_persisted_user_default_config_fields()
+        assert "reportedBy" in self.installation.get_persisted_user_default_config_fields()
+
+        self.installation.store_issue_last_defaults(
+            self.project,
+            self.user,
+            {"project": "xyz", "issueType": "BUG", "assignedTo": "userA", "reportedBy": "userB"},
+        )
+        self.installation.store_issue_last_defaults(
+            self.project, self.user, {"issueType": "FEATURE", "assignedTo": "userC"}
+        )
+        # {} is commonly triggered by "link issue" flow
+        self.installation.store_issue_last_defaults(self.project, self.user, {})
+        assert self.installation.get_defaults(self.project, self.user) == {
+            "project": "xyz",
+            "issueType": "FEATURE",
+            "assignedTo": "userC",
+            "reportedBy": "userB",
+        }
+
+    def test_store_issue_last_defaults_multiple_projects(self):
+        assert "project" in self.installation.get_persisted_default_config_fields()
+        other_project = self.create_project(name="Foo", slug="foo", teams=[self.team])
+        self.installation.store_issue_last_defaults(
+            self.project, self.user, {"project": "xyz", "reportedBy": "userA"}
+        )
+        self.installation.store_issue_last_defaults(
+            other_project, self.user, {"project": "abc", "reportedBy": "userB"}
+        )
+        assert self.installation.get_defaults(self.project, self.user) == {
+            "project": "xyz",
+            "reportedBy": "userA",
+        }
+        assert self.installation.get_defaults(other_project, self.user) == {
+            "project": "abc",
+            "reportedBy": "userB",
+        }
+
+    def test_store_issue_last_defaults_for_user_multiple_providers(self):
+        other_integration = Integration.objects.create(provider=AliasedIntegrationProvider.key)
+        other_integration.add_organization(self.organization, self.user)
+        other_installation = other_integration.get_installation(self.organization.id)
+
+        self.installation.store_issue_last_defaults(
+            self.project, self.user, {"project": "xyz", "reportedBy": "userA"}
+        )
+        other_installation.store_issue_last_defaults(
+            self.project, self.user, {"project": "abc", "reportedBy": "userB"}
+        )
+        assert self.installation.get_defaults(self.project, self.user) == {
+            "project": "xyz",
+            "reportedBy": "userA",
+        }
+        assert other_installation.get_defaults(self.project, self.user) == {
+            "project": "abc",
+            "reportedBy": "userB",
+        }
+
     def test_annotations(self):
         label = self.installation.get_issue_display_name(self.external_issue)
         link = self.installation.get_issue_url(self.external_issue.key)
 
         assert self.installation.get_annotations_for_group_list([self.group]) == {
-            self.group.id: ['<a href="%s">%s</a>' % (link, label)]
+            self.group.id: [f'<a href="{link}">{label}</a>']
         }
 
         integration = Integration.objects.create(provider="example", external_id="4444")

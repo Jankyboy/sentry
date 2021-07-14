@@ -1,11 +1,10 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 import {initializeOrg} from 'sentry-test/initializeOrg';
+import {mountGlobalModal} from 'sentry-test/modal';
 
 import ProjectDebugFiles from 'app/views/settings/projectDebugFiles';
 
-describe('ProjectDebugFiles', function() {
+describe('ProjectDebugFiles', function () {
   const {organization, project, routerContext} = initializeOrg({});
 
   const props = {
@@ -20,7 +19,7 @@ describe('ProjectDebugFiles', function() {
 
   const endpoint = `/projects/${organization.slug}/${project.slug}/files/dsyms/`;
 
-  it('renders', function() {
+  it('renders', function () {
     MockApiClient.addMockResponse({
       url: endpoint,
       body: [TestStubs.DebugFile()],
@@ -31,15 +30,10 @@ describe('ProjectDebugFiles', function() {
     const items = wrapper.find('DebugFileRow');
 
     expect(items).toHaveLength(1);
-    expect(
-      items
-        .at(0)
-        .find('Name')
-        .text()
-    ).toBe('libS.so');
+    expect(items.at(0).find('Name').text()).toBe('libS.so');
   });
 
-  it('renders empty', function() {
+  it('renders empty', function () {
     MockApiClient.addMockResponse({
       url: endpoint,
       body: [],
@@ -52,7 +46,7 @@ describe('ProjectDebugFiles', function() {
     );
   });
 
-  it('deletes the file', function() {
+  it('deletes the file', async function () {
     MockApiClient.addMockResponse({
       url: endpoint,
       body: [TestStubs.DebugFile()],
@@ -70,7 +64,8 @@ describe('ProjectDebugFiles', function() {
     wrapper.find('Button[data-test-id="delete-dif"]').simulate('click');
 
     // Confirm Modal
-    wrapper.find('Modal Button[data-test-id="confirm-button"]').simulate('click');
+    const modal = await mountGlobalModal();
+    modal.find('Modal Button[data-test-id="confirm-button"]').simulate('click');
 
     expect(deleteMock).toHaveBeenCalled();
   });

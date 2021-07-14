@@ -1,10 +1,8 @@
-from __future__ import absolute_import
-
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from sentry.db.models import FlexibleForeignKey, Model, BaseManager, sane_repr
+from sentry.db.models import BaseManager, FlexibleForeignKey, Model, sane_repr
 from sentry.models import Project
 
 
@@ -14,7 +12,7 @@ class ProjectBookmark(Model):
     aggregated event (Group).
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     project = FlexibleForeignKey(Project, blank=True, null=True, db_constraint=False)
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)

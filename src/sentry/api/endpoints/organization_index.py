@@ -1,7 +1,3 @@
-from __future__ import absolute_import
-
-import six
-
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, Sum
@@ -9,11 +5,11 @@ from rest_framework import serializers, status
 from rest_framework.response import Response
 
 from sentry import analytics, features, options, roles
-from sentry.app import ratelimiter
-from sentry.api.base import DocSection, Endpoint
+from sentry.api.base import Endpoint
 from sentry.api.bases.organization import OrganizationPermission
 from sentry.api.paginator import DateTimePaginator, OffsetPaginator
 from sentry.api.serializers import serialize
+from sentry.app import ratelimiter
 from sentry.auth.superuser import is_active_superuser
 from sentry.db.models.query import in_iexact
 from sentry.models import (
@@ -26,12 +22,6 @@ from sentry.models import (
 )
 from sentry.search.utils import tokenize_query
 from sentry.signals import terms_accepted
-from sentry.utils.apidocs import scenario, attach_scenarios
-
-
-@scenario("ListYourOrganizations")
-def list_your_organizations_scenario(runner):
-    runner.request(method="GET", path="/organizations/")
 
 
 class OrganizationSerializer(serializers.Serializer):
@@ -41,7 +31,7 @@ class OrganizationSerializer(serializers.Serializer):
     agreeTerms = serializers.BooleanField(required=True)
 
     def __init__(self, *args, **kwargs):
-        super(OrganizationSerializer, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         if not (settings.TERMS_URL and settings.PRIVACY_URL):
             del self.fields["agreeTerms"]
 
@@ -52,10 +42,8 @@ class OrganizationSerializer(serializers.Serializer):
 
 
 class OrganizationIndexEndpoint(Endpoint):
-    doc_section = DocSection.ORGANIZATIONS
     permission_classes = (OrganizationPermission,)
 
-    @attach_scenarios([list_your_organizations_scenario])
     def get(self, request):
         """
         List your Organizations
@@ -75,7 +63,7 @@ class OrganizationIndexEndpoint(Endpoint):
 
         queryset = Organization.objects.distinct()
 
-        if request.auth and not request.user.is_authenticated():
+        if request.auth and not request.user.is_authenticated:
             if hasattr(request.auth, "project"):
                 queryset = queryset.filter(id=request.auth.project.organization_id)
             elif request.auth.organization is not None:
@@ -105,7 +93,7 @@ class OrganizationIndexEndpoint(Endpoint):
         query = request.GET.get("query")
         if query:
             tokens = tokenize_query(query)
-            for key, value in six.iteritems(tokens):
+            for key, value in tokens.items():
                 if key == "query":
                     value = " ".join(value)
                     queryset = queryset.filter(
@@ -185,7 +173,7 @@ class OrganizationIndexEndpoint(Endpoint):
                                 terms of service and privacy policy.
         :auth: required, user-context-needed
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return Response({"detail": "This endpoint requires user info"}, status=401)
 
         if not features.has("organizations:create", actor=request.user):
@@ -195,7 +183,7 @@ class OrganizationIndexEndpoint(Endpoint):
 
         limit = options.get("api.rate-limit.org-create")
         if limit and ratelimiter.is_limited(
-            u"org-create:{}".format(request.user.id), limit=limit, window=3600
+            f"org-create:{request.user.id}", limit=limit, window=3600
         ):
             return Response(
                 {"detail": "You are attempting to create too many organizations too quickly."},
@@ -233,7 +221,7 @@ class OrganizationIndexEndpoint(Endpoint):
                     analytics.record(
                         "organization.created",
                         org,
-                        actor_id=request.user.id if request.user.is_authenticated() else None,
+                        actor_id=request.user.id if request.user.is_authenticated else None,
                     )
 
             except IntegrityError:

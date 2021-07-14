@@ -1,12 +1,10 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
-import EventView from 'app/utils/discover/eventView';
 import DiscoverQuery from 'app/utils/discover/discoverQuery';
+import EventView from 'app/utils/discover/eventView';
 
-describe('DiscoverQuery', function() {
+describe('DiscoverQuery', function () {
   let location, api, eventView;
   beforeEach(() => {
     api = new Client();
@@ -24,7 +22,7 @@ describe('DiscoverQuery', function() {
     });
   });
 
-  it('fetches data on mount', async function() {
+  it('fetches data on mount', async function () {
     const getMock = MockApiClient.addMockResponse({
       url: '/organizations/test-org/eventsv2/',
       body: {
@@ -32,7 +30,7 @@ describe('DiscoverQuery', function() {
         data: [{transaction: '/health', count: 1000}],
       },
     });
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <DiscoverQuery
         orgSlug="test-org"
         api={api}
@@ -55,7 +53,7 @@ describe('DiscoverQuery', function() {
     expect(wrapper.find('p')).toHaveLength(1);
   });
 
-  it('applies limit and cursor props', async function() {
+  it('applies limit and cursor props', async function () {
     const getMock = MockApiClient.addMockResponse({
       url: '/organizations/test-org/eventsv2/',
       body: {
@@ -63,7 +61,7 @@ describe('DiscoverQuery', function() {
         data: [{transaction: '/health', count: 1000}],
       },
     });
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <DiscoverQuery
         orgSlug="test-org"
         api={api}

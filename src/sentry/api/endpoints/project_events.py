@@ -1,26 +1,11 @@
-from __future__ import absolute_import
-
 from functools import partial
 
 from sentry import eventstore
-from sentry.api.base import DocSection
 from sentry.api.bases.project import ProjectEndpoint
-from sentry.api.serializers import EventSerializer, serialize, SimpleEventSerializer
-from sentry.utils.apidocs import scenario, attach_scenarios
-
-
-@scenario("ListProjectAvailableSamples")
-def list_project_available_samples_scenario(runner):
-    runner.request(
-        method="GET",
-        path="/projects/%s/%s/events/" % (runner.org.slug, runner.default_project.slug),
-    )
+from sentry.api.serializers import EventSerializer, SimpleEventSerializer, serialize
 
 
 class ProjectEventsEndpoint(ProjectEndpoint):
-    doc_section = DocSection.EVENTS
-
-    @attach_scenarios([list_project_available_samples_scenario])
     def get(self, request, project):
         """
         List a Project's Events
@@ -44,9 +29,7 @@ class ProjectEventsEndpoint(ProjectEndpoint):
         query = request.GET.get("query")
         conditions = []
         if query:
-            conditions.append(
-                [["positionCaseInsensitive", ["message", "'%s'" % (query,)]], "!=", 0]
-            )
+            conditions.append([["positionCaseInsensitive", ["message", f"'{query}'"]], "!=", 0])
 
         full = request.GET.get("full", False)
 

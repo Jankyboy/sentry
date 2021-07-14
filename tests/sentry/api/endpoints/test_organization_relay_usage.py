@@ -1,14 +1,12 @@
-from __future__ import absolute_import
-
 from datetime import datetime
+
 import pytz
-
+from django.urls import reverse
 from exam import fixture
-from django.core.urlresolvers import reverse
 
+from sentry.models import RelayUsage
 from sentry.testutils import APITestCase
 from sentry.testutils.helpers import with_feature
-from sentry.models import RelayUsage
 
 
 class OrganizationRelayHistoryTest(APITestCase):
@@ -68,7 +66,7 @@ class OrganizationRelayHistoryTest(APITestCase):
 
         url = reverse("sentry-api-0-organization-details", args=[self.organization.slug])
         trusted_relays = [
-            {"name": "n_{}".format(idx), "description": "d_{}".format(idx), "publicKey": pk}
+            {"name": f"n_{idx}", "description": f"d_{idx}", "publicKey": pk}
             for idx, pk in enumerate(public_keys)
         ]
 
@@ -87,6 +85,7 @@ class OrganizationRelayHistoryTest(APITestCase):
         response = self.get_valid_response(self.organization.slug)
         assert response.data == []
 
+    @with_feature({"organizations:relay": False})
     def test_endpoint_checks_feature_present(self):
         self.login_as(user=self.user)
         resp = self.get_response(self.organization.slug)

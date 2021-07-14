@@ -1,10 +1,8 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {ApiSource} from 'app/components/search/sources/apiSource';
 
-describe('ApiSource', function() {
+describe('ApiSource', function () {
   let wrapper;
   const org = TestStubs.Organization();
   let orgsMock;
@@ -15,7 +13,7 @@ describe('ApiSource', function() {
   let eventIdMock;
   let allMocks;
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
       url: '/organizations/',
@@ -77,9 +75,9 @@ describe('ApiSource', function() {
     allMocks = {orgsMock, projectsMock, teamsMock, membersMock, shortIdMock, eventIdMock};
   });
 
-  it('queries all API endpoints', function() {
+  it('queries all API endpoints', function () {
     const mock = jest.fn().mockReturnValue(null);
-    wrapper = mount(
+    wrapper = mountWithTheme(
       <ApiSource params={{orgId: org.slug}} query="foo">
         {mock}
       </ApiSource>,
@@ -94,9 +92,9 @@ describe('ApiSource', function() {
     expect(eventIdMock).not.toHaveBeenCalled();
   });
 
-  it('only queries for shortids when query matches shortid format', async function() {
+  it('only queries for shortids when query matches shortid format', async function () {
     const mock = jest.fn().mockReturnValue(null);
-    wrapper = mount(
+    wrapper = mountWithTheme(
       <ApiSource params={{orgId: org.slug}} query="test-">
         {mock}
       </ApiSource>,
@@ -132,15 +130,16 @@ describe('ApiSource', function() {
               resultType: 'issue',
               to: '/org-slug/project-slug/issues/1/',
             }),
+            score: 1,
           },
         ],
       })
     );
   });
 
-  it('only queries for eventids when query matches eventid format of 32 chars', async function() {
+  it('only queries for eventids when query matches eventid format of 32 chars', async function () {
     const mock = jest.fn().mockReturnValue(null);
-    wrapper = mount(
+    wrapper = mountWithTheme(
       <ApiSource params={{orgId: org.slug}} query="1234567890123456789012345678901">
         {mock}
       </ApiSource>,
@@ -175,18 +174,18 @@ describe('ApiSource', function() {
               description: 'event description',
               sourceType: 'event',
               resultType: 'event',
-              to:
-                '/org-slug/project-slug/issues/1/events/12345678901234567890123456789012/',
+              to: '/org-slug/project-slug/issues/1/events/12345678901234567890123456789012/',
             }),
+            score: 1,
           },
         ],
       })
     );
   });
 
-  it('only queries org endpoint if there is no org in context', function() {
+  it('only queries org endpoint if there is no org in context', function () {
     const mock = jest.fn().mockReturnValue(null);
-    wrapper = mount(
+    wrapper = mountWithTheme(
       <ApiSource params={{}} query="foo">
         {mock}
       </ApiSource>,
@@ -199,10 +198,10 @@ describe('ApiSource', function() {
     expect(membersMock).not.toHaveBeenCalled();
   });
 
-  it('render function is called with correct results', async function() {
+  it('render function is called with correct results', async function () {
     const mock = jest.fn().mockReturnValue(null);
-    wrapper = mount(
-      <ApiSource params={{orgId: org.slug}} query="foo">
+    wrapper = mountWithTheme(
+      <ApiSource params={{orgId: org.slug}} organization={org} query="foo">
         {mock}
       </ApiSource>,
       TestStubs.routerContext()
@@ -212,7 +211,6 @@ describe('ApiSource', function() {
     wrapper.update();
     expect(mock).toHaveBeenLastCalledWith({
       isLoading: false,
-      allResults: expect.anything(),
       results: expect.arrayContaining([
         expect.objectContaining({
           item: expect.objectContaining({
@@ -244,6 +242,18 @@ describe('ApiSource', function() {
               slug: 'foo-project',
             }),
             sourceType: 'project',
+            resultType: 'route',
+            to: '/organizations/org-slug/projects/foo-project/?project=2',
+          }),
+          matches: expect.anything(),
+          score: expect.anything(),
+        }),
+        expect.objectContaining({
+          item: expect.objectContaining({
+            model: expect.objectContaining({
+              slug: 'foo-project',
+            }),
+            sourceType: 'project',
             resultType: 'settings',
             to: '/settings/org-slug/projects/foo-project/',
           }),
@@ -265,11 +275,12 @@ describe('ApiSource', function() {
       ]),
     });
 
+    // The return values here are because of fuzzy search matching.
     // There are no members that match
-    expect(mock.mock.calls[1][0].results).toHaveLength(4);
+    expect(mock.mock.calls[1][0].results).toHaveLength(6);
   });
 
-  it('render function is called with correct results when API requests partially succeed', async function() {
+  it('render function is called with correct results when API requests partially succeed', async function () {
     const mock = jest.fn().mockReturnValue(null);
 
     MockApiClient.addMockResponse({
@@ -277,7 +288,7 @@ describe('ApiSource', function() {
       query: 'foo',
       statusCode: 500,
     });
-    wrapper = mount(
+    wrapper = mountWithTheme(
       <ApiSource params={{orgId: org.slug}} query="foo">
         {mock}
       </ApiSource>,
@@ -288,7 +299,6 @@ describe('ApiSource', function() {
     wrapper.update();
     expect(mock).toHaveBeenLastCalledWith({
       isLoading: false,
-      allResults: expect.anything(),
       results: expect.arrayContaining([
         expect.objectContaining({
           item: expect.objectContaining({
@@ -314,13 +324,14 @@ describe('ApiSource', function() {
       ]),
     });
 
+    // The return values here are because of fuzzy search matching.
     // There are no members that match
-    expect(mock.mock.calls[1][0].results).toHaveLength(3);
+    expect(mock.mock.calls[1][0].results).toHaveLength(4);
   });
 
-  it('render function is updated as query changes', async function() {
+  it('render function is updated as query changes', async function () {
     const mock = jest.fn().mockReturnValue(null);
-    wrapper = mount(
+    wrapper = mountWithTheme(
       <ApiSource params={{orgId: org.slug}} query="foo">
         {mock}
       </ApiSource>,
@@ -330,8 +341,9 @@ describe('ApiSource', function() {
     await tick();
     wrapper.update();
 
+    // The return values here are because of fuzzy search matching.
     // There are no members that match
-    expect(mock.mock.calls[1][0].results).toHaveLength(4);
+    expect(mock.mock.calls[1][0].results).toHaveLength(6);
     expect(mock.mock.calls[1][0].results[0].item.model.slug).toBe('foo-org');
 
     mock.mockClear();
@@ -340,15 +352,15 @@ describe('ApiSource', function() {
     wrapper.update();
 
     // Still have 4 results, but is re-ordered
-    expect(mock.mock.calls[0][0].results).toHaveLength(4);
+    expect(mock.mock.calls[0][0].results).toHaveLength(5);
     expect(mock.mock.calls[0][0].results[0].item.model.slug).toBe('foo-team');
   });
 
-  describe('API queries', function() {
+  describe('API queries', function () {
     let mock;
-    beforeAll(function() {
+    beforeAll(function () {
       mock = jest.fn().mockReturnValue(null);
-      wrapper = mount(
+      wrapper = mountWithTheme(
         <ApiSource params={{orgId: org.slug}} query="">
           {mock}
         </ApiSource>,
@@ -356,47 +368,47 @@ describe('ApiSource', function() {
       );
     });
 
-    it('does not call API with empty query string', function() {
+    it('does not call API with empty query string', function () {
       expect(projectsMock).not.toHaveBeenCalled();
     });
 
-    it('calls API when query string length is 1 char', function() {
+    it('calls API when query string length is 1 char', function () {
       wrapper.setProps({query: 'f'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(1);
     });
 
-    it('calls API when query string length increases from 1 -> 2', function() {
+    it('calls API when query string length increases from 1 -> 2', function () {
       wrapper.setProps({query: 'fo'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(1);
     });
 
-    it('does not query API when query string > 2 chars', function() {
+    it('does not query API when query string > 2 chars', function () {
       // Should not query API when query is > 2 chars
       wrapper.setProps({query: 'foo'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(0);
     });
-    it('does not query API when query string 3 -> 4 chars', function() {
+    it('does not query API when query string 3 -> 4 chars', function () {
       wrapper.setProps({query: 'foob'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(0);
     });
 
-    it('re-queries API if first 2 characters are different', function() {
+    it('re-queries API if first 2 characters are different', function () {
       wrapper.setProps({query: 'ba'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(1);
     });
 
-    it('does not requery if query string is the same', function() {
+    it('does not requery if query string is the same', function () {
       wrapper.setProps({query: 'ba'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(0);
     });
 
-    it('queries if we go from 2 chars -> 1 char', function() {
+    it('queries if we go from 2 chars -> 1 char', function () {
       wrapper.setProps({query: 'b'});
       wrapper.update();
       expect(projectsMock).toHaveBeenCalledTimes(1);

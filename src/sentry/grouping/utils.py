@@ -1,21 +1,17 @@
-from __future__ import absolute_import
-
 import re
-
 from hashlib import md5
 
 from django.utils.encoding import force_bytes
 
-from sentry.utils.safe import get_path
 from sentry.stacktraces.processing import get_crash_frame_from_event_data
+from sentry.utils.safe import get_path
 
-
-_fingerprint_var_re = re.compile(r"^\{\{\s*(\S+)\s*\}\}$")
+_fingerprint_var_re = re.compile(r"\{\{\s*(\S+)\s*\}\}")
 
 
 def parse_fingerprint_var(value):
     match = _fingerprint_var_re.match(value)
-    if match is not None:
+    if match is not None and match.end() == len(value):
         return match.group(1)
 
 
@@ -39,40 +35,75 @@ def get_rule_bool(value):
             return False
 
 
-def resolve_fingerprint_values(values, event):
-    def get_fingerprint_value(value):
+def get_fingerprint_value(var, data):
+    if var == "transaction":
+        return data.get("transaction") or "<no-transaction>"
+    elif var == "message":
+        message = (
+            get_path(data, "logentry", "formatted")
+            or get_path(data, "logentry", "message")
+            or get_path(data, "exception", "values", -1, "value")
+        )
+        return message or "<no-message>"
+    elif var in ("type", "error.type"):
+        ty = get_path(data, "exception", "values", -1, "type")
+        return ty or "<no-type>"
+    elif var in ("value", "error.value"):
+        value = get_path(data, "exception", "values", -1, "value")
+        return value or "<no-value>"
+    elif var in ("function", "stack.function"):
+        frame = get_crash_frame_from_event_data(data)
+        func = frame.get("function") if frame else None
+        return func or "<no-function>"
+    elif var in ("path", "stack.abs_path"):
+        frame = get_crash_frame_from_event_data(data)
+        func = frame.get("abs_path") or frame.get("filename") if frame else None
+        return func or "<no-abs-path>"
+    elif var == "stack.filename":
+        frame = get_crash_frame_from_event_data(data)
+        func = frame.get("filename") or frame.get("abs_path") if frame else None
+        return func or "<no-filename>"
+    elif var in ("module", "stack.module"):
+        frame = get_crash_frame_from_event_data(data)
+        mod = frame.get("module") if frame else None
+        return mod or "<no-module>"
+    elif var in ("package", "stack.package"):
+        frame = get_crash_frame_from_event_data(data)
+        pkg = frame.get("package") if frame else None
+        if pkg:
+            pkg = pkg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        return pkg or "<no-package>"
+    elif var == "level":
+        return data.get("level") or "<no-level>"
+    elif var == "logger":
+        return data.get("logger") or "<no-logger>"
+    elif var.startswith("tags."):
+        tag = var[5:]
+        for t, value in data.get("tags") or ():
+            if t == tag:
+                return value
+        return "<no-value-for-tag-%s>" % tag
+
+
+def resolve_fingerprint_values(values, event_data):
+    def _get_fingerprint_value(value):
         var = parse_fingerprint_var(value)
         if var is None:
             return value
-        if var == "transaction":
-            return event.data.get("transaction") or "<no-transaction>"
-        elif var in ("type", "error.type"):
-            ty = get_path(event.data, "exception", "values", -1, "type")
-            return ty or "<no-type>"
-        elif var in ("function", "stack.function"):
-            frame = get_crash_frame_from_event_data(event.data)
-            func = frame.get("function") if frame else None
-            return func or "<no-function>"
-        elif var in ("module", "stack.module"):
-            frame = get_crash_frame_from_event_data(event.data)
-            mod = frame.get("module") if frame else None
-            return mod or "<no-module>"
-        elif var in ("package", "stack.package"):
-            frame = get_crash_frame_from_event_data(event.data)
-            pkg = frame.get("package") if frame else None
-            if pkg:
-                pkg = pkg.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            return pkg or "<no-package>"
-        elif var == "level":
-            return event.data.get("level") or "<no-level>"
-        elif var == "logger":
-            return event.data.get("logger") or "<no-logger>"
-        elif var.startswith("tags."):
-            tag = var[5:]
-            for t, value in event.data.get("tags") or ():
-                if t == tag:
-                    return value
-            return "<no-value-for-tag-%s>" % tag
-        return value
+        rv = get_fingerprint_value(var, event_data)
+        if rv is None:
+            return value
+        return rv
 
-    return [get_fingerprint_value(x) for x in values]
+    return [_get_fingerprint_value(x) for x in values]
+
+
+def expand_title_template(template, event_data):
+    def _handle_match(match):
+        var = match.group(1)
+        rv = get_fingerprint_value(var, event_data)
+        if rv is not None:
+            return rv
+        return match.group(0)
+
+    return _fingerprint_var_re.sub(_handle_match, template)

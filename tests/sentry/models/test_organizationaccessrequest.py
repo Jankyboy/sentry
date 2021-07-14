@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from django.core import mail
 
 from sentry.models import OrganizationAccessRequest, OrganizationMember, OrganizationMemberTeam
@@ -38,4 +36,4 @@ class SendRequestEmailTest(TestCase):
             request.send_request_email()
 
         assert len(mail.outbox) == 2, [m.subject for m in mail.outbox]
-        assert sorted([m.to[0] for m in mail.outbox]) == sorted([owner.email, team_admin.email])
+        assert sorted(m.to[0] for m in mail.outbox) == sorted([owner.email, team_admin.email])

@@ -1,14 +1,13 @@
-from __future__ import absolute_import
+import time
 
 from django.db.models.signals import post_save
 
 from sentry import analytics
 from sentry.adoption import manager
 from sentry.models import FeatureAdoption, GroupTombstone, Organization
-from sentry.plugins.bases import IssueTrackingPlugin
-from sentry.plugins.bases import IssueTrackingPlugin2
+from sentry.plugins.bases import IssueTrackingPlugin, IssueTrackingPlugin2
 from sentry.plugins.bases.notify import NotificationPlugin
-from sentry.receivers.rules import DEFAULT_RULE_LABEL, DEFAULT_RULE_DATA
+from sentry.receivers.rules import DEFAULT_RULE_DATA, DEFAULT_RULE_LABEL
 from sentry.signals import (
     advanced_search,
     advanced_search_feature_gated,
@@ -18,13 +17,18 @@ from sentry.signals import (
     event_processed,
     first_event_received,
     inbound_filter_toggled,
+    inbox_in,
+    inbox_out,
     integration_added,
     integration_issue_created,
     integration_issue_linked,
     issue_assigned,
-    issue_resolved,
-    issue_ignored,
     issue_deleted,
+    issue_ignored,
+    issue_mark_reviewed,
+    issue_resolved,
+    issue_unignored,
+    issue_unresolved,
     member_joined,
     ownership_rule_created,
     plugin_enabled,
@@ -34,8 +38,10 @@ from sentry.signals import (
     save_search_created,
     sso_enabled,
     team_created,
+    transaction_processed,
     user_feedback_received,
 )
+from sentry.utils import metrics
 from sentry.utils.javascript import has_sourcemap
 
 DEFAULT_TAGS = frozenset(
@@ -81,7 +87,6 @@ def record_first_event(project, **kwargs):
     )
 
 
-@event_processed.connect(weak=False)
 def record_event_processed(project, event, **kwargs):
     feature_slugs = []
 
@@ -110,7 +115,7 @@ def record_event_processed(project, event, **kwargs):
         feature_slugs.append("user_tracking")
 
     # Custom Tags
-    if set(tag[0] for tag in event.tags) - DEFAULT_TAGS:
+    if {tag[0] for tag in event.tags} - DEFAULT_TAGS:
         feature_slugs.append("custom_tags")
 
     # Sourcemaps
@@ -125,6 +130,10 @@ def record_event_processed(project, event, **kwargs):
         return
 
     FeatureAdoption.objects.bulk_record(project.organization_id, feature_slugs)
+
+
+event_processed.connect(record_event_processed, weak=False)
+transaction_processed.connect(record_event_processed, weak=False)
 
 
 @user_feedback_received.connect(weak=False)
@@ -155,7 +164,7 @@ def record_issue_assigned(project, group, user, **kwargs):
         organization_id=project.organization_id, feature_slug="assignment", complete=True
     )
 
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -171,11 +180,11 @@ def record_issue_assigned(project, group, user, **kwargs):
 
 @issue_resolved.connect(weak=False)
 def record_issue_resolved(organization_id, project, group, user, resolution_type, **kwargs):
-    """ There are three main types of ways to resolve issues
-        1) via a release (current release, next release, or other)
-        2) via commit (in the UI with the commit hash (marked as "in_commit")
-            or tagging the issue in a commit (marked as "with_commit"))
-        3) now
+    """There are three main types of ways to resolve issues
+    1) via a release (current release, next release, or other)
+    2) via commit (in the UI with the commit hash (marked as "in_commit")
+        or tagging the issue in a commit (marked as "with_commit"))
+    3) now
     """
     if resolution_type in ("in_next_release", "in_release"):
         FeatureAdoption.objects.record(
@@ -186,7 +195,7 @@ def record_issue_resolved(organization_id, project, group, user, resolution_type
             organization_id=organization_id, feature_slug="resolved_with_commit", complete=True
         )
 
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -202,6 +211,24 @@ def record_issue_resolved(organization_id, project, group, user, resolution_type
     )
 
 
+@issue_unresolved.connect(weak=False)
+def record_issue_unresolved(project, user, group, transition_type, **kwargs):
+    if user and user.is_authenticated:
+        user_id = default_user_id = user.id
+    else:
+        user_id = None
+        default_user_id = project.organization.get_default_owner().id
+
+    analytics.record(
+        "issue.unresolved",
+        user_id=user_id,
+        default_user_id=default_user_id,
+        organization_id=project.organization_id,
+        group_id=group.id,
+        transition_type=transition_type,
+    )
+
+
 @advanced_search.connect(weak=False)
 def record_advanced_search(project, **kwargs):
     FeatureAdoption.objects.record(
@@ -211,7 +238,7 @@ def record_advanced_search(project, **kwargs):
 
 @advanced_search_feature_gated.connect(weak=False)
 def record_advanced_search_feature_gated(user, organization, **kwargs):
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -231,7 +258,7 @@ def record_save_search_created(project, user, **kwargs):
         organization_id=project.organization_id, feature_slug="saved_search", complete=True
     )
 
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -255,7 +282,7 @@ def record_inbound_filter_toggled(project, **kwargs):
 
 @alert_rule_created.connect(weak=False)
 def record_alert_rule_created(
-    user, project, rule, rule_type, referrer=None, session_id=None, **kwargs
+    user, project, rule, rule_type, is_api_token, referrer=None, session_id=None, **kwargs
 ):
     if rule_type == "issue" and rule.label == DEFAULT_RULE_LABEL and rule.data == DEFAULT_RULE_DATA:
         return
@@ -264,7 +291,7 @@ def record_alert_rule_created(
         organization_id=project.organization_id, feature_slug="alert_rules", complete=True
     )
 
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -280,6 +307,7 @@ def record_alert_rule_created(
         rule_type=rule_type,
         referrer=referrer,
         session_id=session_id,
+        is_api_token=is_api_token,
     )
 
 
@@ -330,7 +358,7 @@ def record_repo_linked(repo, user, **kwargs):
         organization_id=repo.organization_id, feature_slug="repo_linked", complete=True
     )
 
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -375,7 +403,7 @@ def record_issue_ignored(project, user, group_list, activity_data, **kwargs):
         organization_id=project.organization_id, feature_slug="issue_ignored", complete=True
     )
 
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -396,9 +424,82 @@ def record_issue_ignored(project, user, group_list, activity_data, **kwargs):
         )
 
 
+@issue_unignored.connect(weak=False)
+def record_issue_unignored(project, user, group, transition_type, **kwargs):
+    if user and user.is_authenticated:
+        user_id = default_user_id = user.id
+    else:
+        user_id = None
+        default_user_id = project.organization.get_default_owner().id
+
+    analytics.record(
+        "issue.unignored",
+        user_id=user_id,
+        default_user_id=default_user_id,
+        organization_id=project.organization_id,
+        group_id=group.id,
+        transition_type=transition_type,
+    )
+
+
+@issue_mark_reviewed.connect(weak=False)
+def record_issue_reviewed(project, user, group, **kwargs):
+    if user and user.is_authenticated:
+        user_id = default_user_id = user.id
+    else:
+        user_id = None
+        default_user_id = project.organization.get_default_owner().id
+
+    analytics.record(
+        "issue.mark_reviewed",
+        user_id=user_id,
+        default_user_id=default_user_id,
+        organization_id=project.organization_id,
+        group_id=group.id,
+    )
+
+
+@inbox_in.connect(weak=False)
+def record_inbox_in(project, user, group, reason, **kwargs):
+    if user and user.is_authenticated:
+        user_id = default_user_id = user.id
+    else:
+        user_id = None
+        default_user_id = project.organization.get_default_owner().id
+
+    analytics.record(
+        "inbox.issue_in",
+        user_id=user_id,
+        default_user_id=default_user_id,
+        organization_id=project.organization_id,
+        group_id=group.id,
+        reason=reason,
+    )
+
+
+@inbox_out.connect(weak=False)
+def record_inbox_out(project, user, group, action, inbox_date_added, referrer, **kwargs):
+    if user and user.is_authenticated:
+        user_id = default_user_id = user.id
+    else:
+        user_id = None
+        default_user_id = project.organization.get_default_owner().id
+
+    analytics.record(
+        "inbox.issue_out",
+        user_id=user_id,
+        default_user_id=default_user_id,
+        organization_id=project.organization_id,
+        group_id=group.id,
+        action=action,
+        inbox_in_ts=int(time.mktime(inbox_date_added.timetuple())),
+        referrer=referrer,
+    )
+
+
 @team_created.connect(weak=False)
 def record_team_created(organization, user, team, **kwargs):
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -415,7 +516,7 @@ def record_team_created(organization, user, team, **kwargs):
 
 @integration_added.connect(weak=False)
 def record_integration_added(integration, organization, user, **kwargs):
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -428,11 +529,16 @@ def record_integration_added(integration, organization, user, **kwargs):
         provider=integration.provider,
         id=integration.id,
     )
+    metrics.incr(
+        "integration.added",
+        sample_rate=1.0,
+        tags={"integration_slug": integration.provider},
+    )
 
 
 @integration_issue_created.connect(weak=False)
 def record_integration_issue_created(integration, organization, user, **kwargs):
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -449,7 +555,7 @@ def record_integration_issue_created(integration, organization, user, **kwargs):
 
 @integration_issue_linked.connect(weak=False)
 def record_integration_issue_linked(integration, organization, user, **kwargs):
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None
@@ -466,7 +572,7 @@ def record_integration_issue_linked(integration, organization, user, **kwargs):
 
 @issue_deleted.connect(weak=False)
 def record_issue_deleted(group, user, delete_type, **kwargs):
-    if user and user.is_authenticated():
+    if user and user.is_authenticated:
         user_id = default_user_id = user.id
     else:
         user_id = None

@@ -1,4 +1,3 @@
-import React from 'react';
 import Cookies from 'js-cookie';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -9,9 +8,10 @@ import AccountSecurityWrapper from 'app/views/settings/account/accountSecurity/a
 const ENDPOINT = '/users/me/authenticators/';
 const ORG_ENDPOINT = '/organizations/';
 const INVITE_COOKIE = 'pending-invite';
+const ACCOUNT_EMAILS_ENDPOINT = '/users/me/emails/';
 
-describe('TwoFactorRequired', function() {
-  beforeEach(function() {
+describe('TwoFactorRequired', function () {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
 
     MockApiClient.addMockResponse({
@@ -22,9 +22,13 @@ describe('TwoFactorRequired', function() {
       url: ORG_ENDPOINT,
       body: TestStubs.Organizations(),
     });
+    MockApiClient.addMockResponse({
+      url: ACCOUNT_EMAILS_ENDPOINT,
+      body: TestStubs.AccountEmails(),
+    });
   });
 
-  it('renders empty', function() {
+  it('renders empty', function () {
     MockApiClient.addMockResponse({
       url: ORG_ENDPOINT,
       body: [],
@@ -40,7 +44,7 @@ describe('TwoFactorRequired', function() {
     expect(wrapper.find('StyledAlert[data-test-id="require-2fa"]')).toHaveLength(0);
   });
 
-  it('does not render when 2FA is disabled and no pendingInvite cookie', function() {
+  it('does not render when 2FA is disabled and no pendingInvite cookie', function () {
     const wrapper = mountWithTheme(
       <AccountSecurityWrapper>
         <TwoFactorRequired />
@@ -51,7 +55,7 @@ describe('TwoFactorRequired', function() {
     expect(wrapper.find('StyledAlert[data-test-id="require-2fa"]')).toHaveLength(0);
   });
 
-  it('does not render when 2FA is enrolled and no pendingInvite cookie', function() {
+  it('does not render when 2FA is enrolled and no pendingInvite cookie', function () {
     MockApiClient.addMockResponse({
       url: ENDPOINT,
       body: [TestStubs.Authenticators().Totp({isEnrolled: true})],
@@ -67,7 +71,7 @@ describe('TwoFactorRequired', function() {
     expect(wrapper.find('StyledAlert[data-test-id="require-2fa"]')).toHaveLength(0);
   });
 
-  it('does not render when 2FA is enrolled and has pendingInvite cookie', function() {
+  it('does not render when 2FA is enrolled and has pendingInvite cookie', function () {
     const cookieData = {
       memberId: 5,
       token: 'abcde',
@@ -94,7 +98,7 @@ describe('TwoFactorRequired', function() {
     Cookies.remove(INVITE_COOKIE);
   });
 
-  it('renders when 2FA is disabled and has pendingInvite cookie', function() {
+  it('renders when 2FA is disabled and has pendingInvite cookie', function () {
     Cookies.set(INVITE_COOKIE, '/accept/5/abcde/');
     MockApiClient.addMockResponse({
       url: ORG_ENDPOINT,

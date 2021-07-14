@@ -1,11 +1,9 @@
-import React from 'react';
-
-import {initializeOrg} from 'sentry-test/initializeOrg';
 import {mountWithTheme} from 'sentry-test/enzyme';
+import {initializeOrg} from 'sentry-test/initializeOrg';
 
-import IssueList from 'app/views/issueList/overview';
 import StreamGroup from 'app/components/stream/group';
 import TagStore from 'app/stores/tagStore';
+import IssueList from 'app/views/issueList/overview';
 
 // Mock <IssueListSidebar> (need <IssueListActions> to toggling real time polling)
 jest.mock('app/views/issueList/sidebar', () => jest.fn(() => null));
@@ -24,7 +22,7 @@ const DEFAULT_LINKS_HEADER =
 
 jest.useFakeTimers();
 
-describe('IssueList -> Polling', function() {
+describe('IssueList -> Polling', function () {
   let wrapper;
 
   let issuesRequest;
@@ -76,7 +74,7 @@ describe('IssueList -> Polling', function() {
     return wrapper;
   };
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
 
     MockApiClient.addMockResponse({
@@ -86,6 +84,11 @@ describe('IssueList -> Polling', function() {
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/recent-searches/',
       body: [],
+    });
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/issues-count/',
+      method: 'GET',
+      body: [{}],
     });
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/processingissues/',
@@ -126,6 +129,11 @@ describe('IssueList -> Polling', function() {
         Link: DEFAULT_LINKS_HEADER,
       },
     });
+    const groupStats = TestStubs.GroupStats();
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/issues-stats/',
+      body: [groupStats],
+    });
     pollRequest = MockApiClient.addMockResponse({
       url: `http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=${PREVIOUS_PAGE_CURSOR}:0:1`,
       body: [],
@@ -138,7 +146,7 @@ describe('IssueList -> Polling', function() {
     TagStore.init();
   });
 
-  afterEach(function() {
+  afterEach(function () {
     MockApiClient.clearMockResponses();
     if (wrapper) {
       wrapper.unmount();
@@ -146,7 +154,7 @@ describe('IssueList -> Polling', function() {
     wrapper = null;
   });
 
-  it('toggles polling for new issues', async function() {
+  it('toggles polling for new issues', async function () {
     await createWrapper();
 
     expect(issuesRequest).toHaveBeenCalledWith(
@@ -158,10 +166,10 @@ describe('IssueList -> Polling', function() {
     );
 
     // Enable real time control
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(1);
-    wrapper.find('[data-test-id="realtime-control"]').simulate('click');
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(1);
+    wrapper.find('button[data-test-id="real-time"]').simulate('click');
 
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(0);
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(0);
 
     // Each poll request gets delayed by additional 3s, up to max of 60s
     jest.advanceTimersByTime(3001);
@@ -170,14 +178,14 @@ describe('IssueList -> Polling', function() {
     expect(pollRequest).toHaveBeenCalledTimes(2);
 
     // Pauses
-    wrapper.find('[data-test-id="realtime-control"]').simulate('click');
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(1);
+    wrapper.find('button[data-test-id="real-time"]').simulate('click');
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(1);
 
     jest.advanceTimersByTime(12001);
     expect(pollRequest).toHaveBeenCalledTimes(2);
   });
 
-  it('stops polling for new issues when endpoint returns a 401', async function() {
+  it('stops polling for new issues when endpoint returns a 401', async function () {
     pollRequest = MockApiClient.addMockResponse({
       url: `http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=${PREVIOUS_PAGE_CURSOR}:0:1`,
       body: [],
@@ -187,8 +195,8 @@ describe('IssueList -> Polling', function() {
     await createWrapper();
 
     // Enable real time control
-    wrapper.find('[data-test-id="realtime-control"]').simulate('click');
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(0);
+    wrapper.find('button[data-test-id="real-time"]').simulate('click');
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(0);
 
     // Each poll request gets delayed by additional 3s, up to max of 60s
     jest.advanceTimersByTime(3001);
@@ -197,7 +205,7 @@ describe('IssueList -> Polling', function() {
     expect(pollRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('stops polling for new issues when endpoint returns a 403', async function() {
+  it('stops polling for new issues when endpoint returns a 403', async function () {
     pollRequest = MockApiClient.addMockResponse({
       url: `http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=${PREVIOUS_PAGE_CURSOR}:0:1`,
       body: [],
@@ -207,9 +215,9 @@ describe('IssueList -> Polling', function() {
     await createWrapper();
 
     // Enable real time control
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(1);
-    wrapper.find('[data-test-id="realtime-control"]').simulate('click');
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(0);
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(1);
+    wrapper.find('button[data-test-id="real-time"]').simulate('click');
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(0);
 
     // Each poll request gets delayed by additional 3s, up to max of 60s
     jest.advanceTimersByTime(3001);
@@ -218,7 +226,7 @@ describe('IssueList -> Polling', function() {
     expect(pollRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('stops polling for new issues when endpoint returns a 404', async function() {
+  it('stops polling for new issues when endpoint returns a 404', async function () {
     pollRequest = MockApiClient.addMockResponse({
       url: `http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=${PREVIOUS_PAGE_CURSOR}:0:1`,
       body: [],
@@ -228,8 +236,8 @@ describe('IssueList -> Polling', function() {
     await createWrapper();
 
     // Enable real time control
-    wrapper.find('[data-test-id="realtime-control"]').simulate('click');
-    expect(wrapper.find('[data-test-id="realtime-control"] IconPlay')).toHaveLength(0);
+    wrapper.find('button[data-test-id="real-time"]').simulate('click');
+    expect(wrapper.find('button[data-test-id="real-time"] IconPlay')).toHaveLength(0);
 
     // Each poll request gets delayed by additional 3s, up to max of 60s
     jest.advanceTimersByTime(3001);

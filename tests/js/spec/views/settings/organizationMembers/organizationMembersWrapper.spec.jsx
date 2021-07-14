@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {openInviteMembersModal} from 'app/actionCreators/modal';
@@ -15,7 +13,7 @@ jest.mock('app/actionCreators/modal', () => ({
   openInviteMembersModal: jest.fn(),
 }));
 
-describe('OrganizationMembersWrapper', function() {
+describe('OrganizationMembersWrapper', function () {
   const member = TestStubs.Member();
   const organization = TestStubs.Organization({
     access: ['member:admin', 'org:admin', 'member:write'],
@@ -40,7 +38,7 @@ describe('OrganizationMembersWrapper', function() {
     inviteStatus: 'requested_to_join',
   });
 
-  beforeEach(function() {
+  beforeEach(function () {
     trackAnalyticsEvent.mockClear();
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
@@ -70,7 +68,7 @@ describe('OrganizationMembersWrapper', function() {
     });
   });
 
-  it('does not render requests tab without access', function() {
+  it('does not render requests tab without access', function () {
     const org = TestStubs.Organization({
       access: [],
       status: {
@@ -87,7 +85,7 @@ describe('OrganizationMembersWrapper', function() {
     expect(trackAnalyticsEvent).not.toHaveBeenCalled();
   });
 
-  it('renders requests tab with access', function() {
+  it('renders requests tab with access', function () {
     const org = TestStubs.Organization({
       access: ['member:admin', 'org:admin', 'member:write'],
       status: {
@@ -118,7 +116,7 @@ describe('OrganizationMembersWrapper', function() {
     });
   });
 
-  it('renders requests tab with access and no invite requests', function() {
+  it('renders requests tab with access and no invite requests', function () {
     const org = TestStubs.Organization({
       access: ['member:admin', 'org:admin', 'member:write'],
       status: {
@@ -137,7 +135,7 @@ describe('OrganizationMembersWrapper', function() {
     expect(wrapper.find('ListLink[data-test-id="requests-tab"]').exists()).toBe(true);
   });
 
-  it('renders requests tab with team requests', function() {
+  it('renders requests tab with team requests', function () {
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/access-requests/',
       method: 'GET',
@@ -156,7 +154,7 @@ describe('OrganizationMembersWrapper', function() {
     expect(trackAnalyticsEvent).not.toHaveBeenCalled();
   });
 
-  it('renders requests tab with team requests and no access', function() {
+  it('renders requests tab with team requests and no access', function () {
     const org = TestStubs.Organization({
       access: [],
       status: {
@@ -187,19 +185,19 @@ describe('OrganizationMembersWrapper', function() {
     expect(trackAnalyticsEvent).not.toHaveBeenCalled();
   });
 
-  it('can invite member', function() {
+  it('can invite member', function () {
     const wrapper = mountWithTheme(
       <OrganizationMembersWrapper organization={organization} {...defaultProps} />,
       TestStubs.routerContext()
     );
 
-    const inviteButton = wrapper.find('StyledButton[aria-label="Invite Members"]');
+    const inviteButton = wrapper.find('StyledButton');
     inviteButton.simulate('click');
 
     expect(openInviteMembersModal).toHaveBeenCalled();
   });
 
-  it('can invite without permissions', function() {
+  it('can invite without permissions', function () {
     const org = TestStubs.Organization({
       access: [],
       status: {
@@ -212,13 +210,13 @@ describe('OrganizationMembersWrapper', function() {
       TestStubs.routerContext()
     );
 
-    const inviteButton = wrapper.find('StyledButton[aria-label="Invite Members"]');
+    const inviteButton = wrapper.find('StyledButton');
     inviteButton.simulate('click');
 
     expect(openInviteMembersModal).toHaveBeenCalled();
   });
 
-  it('renders member list', function() {
+  it('renders member list', function () {
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/members/',
       method: 'GET',
@@ -232,18 +230,8 @@ describe('OrganizationMembersWrapper', function() {
     );
 
     expect(wrapper.find('OrganizationMembersList').exists()).toBe(true);
-    expect(
-      wrapper
-        .find('PanelHeader')
-        .text()
-        .includes('Members')
-    ).toBe(true);
+    expect(wrapper.find('PanelHeader').text().includes('Members')).toBe(true);
 
-    expect(
-      wrapper
-        .find('StyledPanelItem')
-        .text()
-        .includes(member.name)
-    ).toBe(true);
+    expect(wrapper.find('StyledPanelItem').text().includes(member.name)).toBe(true);
   });
 });

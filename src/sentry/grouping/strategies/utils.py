@@ -1,6 +1,4 @@
-from __future__ import absolute_import
-
-import six
+from sentry.grouping.variants import HIERARCHICAL_VARIANTS
 
 
 def remove_non_stacktrace_variants(variants):
@@ -16,14 +14,14 @@ def remove_non_stacktrace_variants(variants):
 
     # In case any of the variants has a contributing stacktrace, we want
     # to make all other variants non contributing.
-    for key, component in six.iteritems(variants):
+    for key, component in variants.items():
         stacktrace_iter = component.iter_subcomponents(
             id="stacktrace", recursive=True, only_contributing=True
         )
         if next(stacktrace_iter, None) is not None:
             any_stacktrace_contributes = True
             stacktrace_variants.add(key)
-        else:
+        elif key not in HIERARCHICAL_VARIANTS:
             non_contributing_components.append(component)
 
     if any_stacktrace_contributes:

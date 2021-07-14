@@ -1,19 +1,17 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ProjectsStore from 'app/stores/projectsStore';
 import withProjects from 'app/utils/withProjects';
 
-describe('withProjects HoC', function() {
+describe('withProjects HoC', function () {
   beforeEach(() => {
     ProjectsStore.reset();
   });
 
-  it('works', function() {
+  it('works', function () {
     const MyComponent = () => null;
     const Container = withProjects(MyComponent);
-    const wrapper = mount(<Container />);
+    const wrapper = mountWithTheme(<Container />);
 
     expect(wrapper.find('MyComponent').prop('projects')).toEqual([]);
     expect(wrapper.find('MyComponent').prop('loadingProjects')).toEqual(true);

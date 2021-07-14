@@ -1,12 +1,11 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {MultiSelectField} from 'app/components/forms';
+import Form from 'app/components/forms/form';
 
-describe('MultiSelectField', function() {
-  describe('render()', function() {
-    it('renders without form context', function() {
+describe('MultiSelectField', function () {
+  describe('render()', function () {
+    it('renders without form context', function () {
       const wrapper = mountWithTheme(
         <MultiSelectField
           options={[
@@ -19,7 +18,7 @@ describe('MultiSelectField', function() {
       expect(wrapper).toSnapshot();
     });
 
-    it('has the right value from props', function() {
+    it('has the right value from props', function () {
       const wrapper = mountWithTheme(
         <MultiSelectField
           options={[
@@ -33,25 +32,17 @@ describe('MultiSelectField', function() {
       expect(wrapper.find('StyledSelectControl').prop('value')).toEqual(['a']);
     });
 
-    it('renders with form context', function() {
+    it('renders with form context', function () {
       const wrapper = mountWithTheme(
-        <MultiSelectField
-          options={[
-            {label: 'a', value: 'a'},
-            {label: 'b', value: 'b'},
-          ]}
-          name="fieldName"
-        />,
-        {
-          context: {
-            form: {
-              data: {
-                fieldName: ['a', 'b'],
-              },
-              errors: {},
-            },
-          },
-        }
+        <Form initialData={{fieldName: ['a', 'b']}}>
+          <MultiSelectField
+            options={[
+              {label: 'a', value: 'a'},
+              {label: 'b', value: 'b'},
+            ]}
+            name="fieldName"
+          />
+        </Form>
       );
 
       expect(wrapper.find('StyledSelectControl').prop('value')).toEqual(['a', 'b']);

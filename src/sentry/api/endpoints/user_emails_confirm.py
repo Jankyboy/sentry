@@ -1,12 +1,9 @@
-from __future__ import absolute_import
-
 import logging
 
 from rest_framework import serializers, status
 from rest_framework.response import Response
 
 from sentry.api.bases.user import UserEndpoint
-from sentry.api.decorators import sudo_required
 from sentry.api.validators import AllowedEmailField
 from sentry.models import UserEmail
 
@@ -15,7 +12,7 @@ logger = logging.getLogger("sentry.accounts")
 
 class InvalidEmailResponse(Response):
     def __init__(self):
-        super(InvalidEmailResponse, self).__init__(
+        super().__init__(
             {"detail": "Invalid email", "email": "Invalid email"},
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -34,7 +31,6 @@ class EmailSerializer(serializers.Serializer):
 
 
 class UserEmailsConfirmEndpoint(UserEndpoint):
-    @sudo_required
     def post(self, request, user):
         """
         Sends a confirmation email to user
@@ -46,7 +42,7 @@ class UserEmailsConfirmEndpoint(UserEndpoint):
         from sentry.app import ratelimiter
 
         if ratelimiter.is_limited(
-            u"auth:confirm-email:{}".format(user.id),
+            f"auth:confirm-email:{user.id}",
             limit=10,
             window=60,  # 10 per minute should be enough for anyone
         ):

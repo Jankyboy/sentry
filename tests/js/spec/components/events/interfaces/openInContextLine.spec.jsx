@@ -1,11 +1,9 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
-import {addQueryParamsToExistingUrl} from 'app/utils/queryString';
 import {OpenInContextLine} from 'app/components/events/interfaces/openInContextLine';
+import {addQueryParamsToExistingUrl} from 'app/utils/queryString';
 
-describe('OpenInContextLine', function() {
+describe('OpenInContextLine', function () {
   const filename = '/sentry/app.py';
   const group = TestStubs.Group();
   const install = TestStubs.SentryAppInstallation();
@@ -27,8 +25,7 @@ describe('OpenInContextLine', function() {
       uuid: 'dd9cc6d7-17f9-4d25-9017-4802821e694f',
       type: 'stacktrace-link',
       schema: {
-        url:
-          'http://localhost:4000/something?installationId=25d10adb-7b89-45ac-99b5-edaa714341ba&projectSlug=internal',
+        url: 'http://localhost:4000/something?installationId=25d10adb-7b89-45ac-99b5-edaa714341ba&projectSlug=internal',
         type: 'stacktrace-link',
         params: ['project', 'filename', 'lineno'],
         uri: '/something',
@@ -43,8 +40,8 @@ describe('OpenInContextLine', function() {
 
   const lineNo = 233;
 
-  describe('with stacktrace-link component', function() {
-    it('renders multiple buttons', function() {
+  describe('with stacktrace-link component', function () {
+    it('renders multiple buttons', function () {
       const wrapper = mountWithTheme(
         <OpenInContextLine filename={filename} lineNo={lineNo} components={components} />,
         TestStubs.routerContext()

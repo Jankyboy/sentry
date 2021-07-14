@@ -1,14 +1,11 @@
-from __future__ import absolute_import
-
-import re
-import time
 import logging
 import random
-import six
+import re
+import time
+from urllib.parse import parse_qsl
 
 from django.conf import settings
 from django.core.cache import cache
-from six.moves.urllib.parse import parse_qsl
 
 from sentry import http
 from sentry.utils import json
@@ -32,7 +29,7 @@ def is_expired(ts):
     return ts > (time.time() - SOFT_TIMEOUT - random.random() * SOFT_TIMEOUT_FUZZINESS)
 
 
-class Processor(object):
+class Processor:
     def __init__(self, vendor, mapping_url, regex, func):
         self.vendor = vendor
         self.mapping_url = mapping_url
@@ -40,7 +37,7 @@ class Processor(object):
         self.func = func
 
     def load_mapping(self):
-        key = "javascript.errormapping:%s" % self.vendor
+        key = f"javascript.errormapping:{self.vendor}"
         mapping = cache.get(key)
         cached_rv = None
         if mapping is not None:
@@ -49,12 +46,14 @@ class Processor(object):
                 return cached_rv
 
         try:
-            http_session = http.build_session()
-            response = http_session.get(
-                self.mapping_url, allow_redirects=True, timeout=settings.SENTRY_SOURCE_FETCH_TIMEOUT
-            )
-            # Make sure we only get a 2xx to prevent caching bad data
-            response.raise_for_status()
+            with http.build_session() as session:
+                response = session.get(
+                    self.mapping_url,
+                    allow_redirects=True,
+                    timeout=settings.SENTRY_SOURCE_FETCH_TIMEOUT,
+                )
+                # Make sure we only get a 2xx to prevent caching bad data
+                response.raise_for_status()
             data = response.json()
             cache.set(key, json.dumps([time.time(), data]), HARD_TIMEOUT)
         except Exception:
@@ -95,14 +94,14 @@ def process_react_exception(exc, match, mapping):
     args = []
     for k, v in parse_qsl(qs, keep_blank_values=True):
         if k == "args[]":
-            if isinstance(v, six.binary_type):
+            if isinstance(v, bytes):
                 v = v.decode("utf-8", "replace")
             args.append(v)
 
     # Due to truncated error messages we sometimes might not be able to
     # get all arguments.  In that case we fill up missing parameters for
     # the format string with <redacted>.
-    args = tuple(args + [u"<redacted>"] * (arg_count - len(args)))[:arg_count]
+    args = tuple(args + ["<redacted>"] * (arg_count - len(args)))[:arg_count]
     exc["value"] = msg_format % args
 
     return True
@@ -115,7 +114,7 @@ def rewrite_exception(data):
     """
     rv = False
     for exc in get_path(data, "exception", "values", filter=True, default=()):
-        for processor in six.itervalues(error_processors):
+        for processor in error_processors.values():
             try:
                 if processor.try_process(exc):
                     rv = True

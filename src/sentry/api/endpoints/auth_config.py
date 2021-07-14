@@ -1,17 +1,15 @@
-from __future__ import absolute_import
-
 from django.conf import settings
 from django.contrib.auth import REDIRECT_FIELD_NAME
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from rest_framework.response import Response
 
 from sentry import newsletter
+from sentry.api.base import Endpoint
 from sentry.auth.superuser import is_active_superuser
 from sentry.constants import WARN_SESSION_EXPIRED
 from sentry.http import get_server_hostname
-from sentry.utils import auth
 from sentry.models import Organization
-from sentry.api.base import Endpoint
+from sentry.utils import auth
 from sentry.web.frontend.auth_login import additional_context
 from sentry.web.frontend.base import OrganizationMixin
 
@@ -24,7 +22,7 @@ class AuthConfigEndpoint(Endpoint, OrganizationMixin):
         """
         Get context required to show a login page. Registration is handled elsewhere.
         """
-        if request.user.is_authenticated():
+        if request.user.is_authenticated:
             # if the user is a superuser, but not 'superuser authenticated' we
             # allow them to re-authenticate to gain superuser status
             if not request.user.is_superuser or is_active_superuser(request):

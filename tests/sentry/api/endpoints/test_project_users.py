@@ -1,8 +1,4 @@
-from __future__ import absolute_import
-
-import six
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.models import EventUser
 from sentry.testutils import APITestCase
@@ -11,7 +7,7 @@ from sentry.utils.compat import map
 
 class ProjectUsersTest(APITestCase):
     def setUp(self):
-        super(ProjectUsersTest, self).setUp()
+        super().setUp()
 
         self.project = self.create_project()
         self.euser1 = EventUser.objects.create(
@@ -46,13 +42,13 @@ class ProjectUsersTest(APITestCase):
         assert response.status_code == 200, response.content
         assert len(response.data) == 2
         assert sorted(map(lambda x: x["id"], response.data)) == sorted(
-            [six.text_type(self.euser1.id), six.text_type(self.euser2.id)]
+            [str(self.euser1.id), str(self.euser2.id)]
         )
 
     def test_empty_search_query(self):
         self.login_as(user=self.user)
 
-        response = self.client.get(u"{}?query=foo".format(self.path), format="json")
+        response = self.client.get(f"{self.path}?query=foo", format="json")
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 0
@@ -60,57 +56,48 @@ class ProjectUsersTest(APITestCase):
     def test_username_search(self):
         self.login_as(user=self.user)
 
-        response = self.client.get(u"{}?query=username:baz".format(self.path), format="json")
+        response = self.client.get(f"{self.path}?query=username:baz", format="json")
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(self.euser2.id)
+        assert response.data[0]["id"] == str(self.euser2.id)
 
-        response = self.client.get(u"{}?query=username:ba".format(self.path), format="json")
-
-        assert response.status_code == 200, response.content
-        assert len(response.data) == 2
-
-    def test_email_search(self):
-        self.login_as(user=self.user)
-
-        response = self.client.get(
-            u"{}?query=email:foo@example.com".format(self.path), format="json"
-        )
-
-        assert response.status_code == 200, response.content
-        assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(self.euser1.id)
-
-        response = self.client.get(u"{}?query=email:@example.com".format(self.path), format="json")
-
-        assert response.status_code == 200, response.content
-        assert len(response.data) == 2
-
-    def test_id_search(self):
-        self.login_as(user=self.user)
-
-        response = self.client.get(u"{}?query=id:1".format(self.path), format="json")
-
-        assert response.status_code == 200, response.content
-        assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(self.euser1.id)
-
-        response = self.client.get(u"{}?query=id:3".format(self.path), format="json")
+        response = self.client.get(f"{self.path}?query=username:ba", format="json")
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 0
 
-    def test_ip_search(self):
+    def test_email_search(self):
         self.login_as(user=self.user)
 
-        response = self.client.get(u"{}?query=ip:192.168.0.1".format(self.path), format="json")
+        response = self.client.get(f"{self.path}?query=email:foo@example.com", format="json")
 
         assert response.status_code == 200, response.content
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(self.euser2.id)
+        assert response.data[0]["id"] == str(self.euser1.id)
 
-        response = self.client.get(u"{}?query=ip:0".format(self.path), format="json")
+        response = self.client.get(f"{self.path}?query=email:@example.com", format="json")
+
+        assert response.status_code == 404, response.content
+
+    def test_id_search(self):
+        self.login_as(user=self.user)
+
+        response = self.client.get(f"{self.path}?query=id:1", format="json")
 
         assert response.status_code == 200, response.content
-        assert len(response.data) == 2
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == str(self.euser1.id)
+
+        response = self.client.get(f"{self.path}?query=id:3", format="json")
+
+        assert response.status_code == 404, response.content
+
+    def test_ip_search(self):
+        self.login_as(user=self.user)
+
+        response = self.client.get(f"{self.path}?query=ip:192.168.0.1", format="json")
+
+        assert response.status_code == 200, response.content
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == str(self.euser2.id)

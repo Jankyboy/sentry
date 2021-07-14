@@ -1,28 +1,121 @@
-from __future__ import absolute_import
-
-import six
+import sentry_sdk
 from django.core.exceptions import ValidationError
 from rest_framework import serializers
 from rest_framework.response import Response
-from rest_framework.exceptions import ParseError
+
 from sentry import features
 from sentry.api.base import EnvironmentMixin
-from sentry.api.bases.organization import OrganizationEndpoint, OrganizationDataExportPermission
+from sentry.api.bases.organization import OrganizationDataExportPermission, OrganizationEndpoint
 from sentry.api.serializers import serialize
-from sentry.api.utils import get_date_range_from_params
+from sentry.api.utils import InvalidParams, get_date_range_from_params
+from sentry.discover.arithmetic import is_equation, resolve_equation_list, strip_equation
+from sentry.exceptions import InvalidSearchQuery
 from sentry.models import Environment
+from sentry.search.events.fields import resolve_field_list
+from sentry.search.events.filter import get_filter
 from sentry.utils import metrics
 from sentry.utils.compat import map
 from sentry.utils.snuba import MAX_FIELDS
 
 from ..base import ExportQueryType
 from ..models import ExportedData
+from ..processors.discover import DiscoverProcessor
 from ..tasks import assemble_download
 
 
 class DataExportQuerySerializer(serializers.Serializer):
     query_type = serializers.ChoiceField(choices=ExportQueryType.as_str_choices(), required=True)
     query_info = serializers.JSONField(required=True)
+
+    def validate(self, data):
+        organization = self.context["organization"]
+        query_info = data["query_info"]
+
+        # Validate the project field, if provided
+        # A PermissionDenied error will be raised in `get_projects_by_id` if the request is invalid
+        project_query = query_info.get("project")
+        if project_query:
+            get_projects_by_id = self.context["get_projects_by_id"]
+            # Coerce the query into a set
+            if isinstance(project_query, list):
+                projects = get_projects_by_id(set(map(int, project_query)))
+            else:
+                projects = get_projects_by_id({int(project_query)})
+            query_info["project"] = [project.id for project in projects]
+
+        # Discover Pre-processing
+        if data["query_type"] == ExportQueryType.DISCOVER_STR:
+            # coerce the fields into a list as needed
+            base_fields = query_info.get("field", [])
+            if not isinstance(base_fields, list):
+                base_fields = [base_fields]
+
+            equations = []
+            fields = []
+            if self.context.get("has_arithmetic"):
+                for field in base_fields:
+                    if is_equation(field):
+                        equations.append(strip_equation(field))
+                    else:
+                        fields.append(field)
+            else:
+                fields = base_fields
+
+            if len(base_fields) > MAX_FIELDS:
+                detail = f"You can export up to {MAX_FIELDS} fields at a time. Please delete some and try again."
+                raise serializers.ValidationError(detail)
+            elif len(base_fields) == 0:
+                raise serializers.ValidationError("at least one field is required to export")
+
+            if "query" not in query_info:
+                detail = "query is a required to export, please pass an empty string if you don't want to set one"
+                raise serializers.ValidationError(detail)
+
+            query_info["field"] = fields
+            query_info["equations"] = equations
+
+            if not query_info.get("project"):
+                projects = self.context["get_projects"]()
+                query_info["project"] = [project.id for project in projects]
+
+            # make sure to fix the export start/end times to ensure consistent results
+            try:
+                start, end = get_date_range_from_params(query_info)
+            except InvalidParams as e:
+                sentry_sdk.set_tag("query.error_reason", "Invalid date params")
+                raise serializers.ValidationError(str(e))
+
+            if "statsPeriod" in query_info:
+                del query_info["statsPeriod"]
+            if "statsPeriodStart" in query_info:
+                del query_info["statsPeriodStart"]
+            if "statsPeriodEnd" in query_info:
+                del query_info["statsPeriodEnd"]
+            query_info["start"] = start.isoformat()
+            query_info["end"] = end.isoformat()
+
+            # validate the query string by trying to parse it
+            processor = DiscoverProcessor(
+                discover_query=query_info,
+                organization_id=organization.id,
+            )
+            try:
+                snuba_filter = get_filter(query_info["query"], processor.params)
+                if len(equations) > 0:
+                    resolved_equations, _ = resolve_equation_list(equations, fields)
+                else:
+                    resolved_equations = []
+                resolve_field_list(
+                    fields.copy(),
+                    snuba_filter,
+                    auto_fields=True,
+                    auto_aggregations=True,
+                    resolved_equations=resolved_equations,
+                )
+            except InvalidSearchQuery as err:
+                raise serializers.ValidationError(str(err))
+
+        return data
 
 
 class DataExportEndpoint(OrganizationEndpoint, EnvironmentMixin):
@@ -46,56 +139,25 @@ class DataExportEndpoint(OrganizationEndpoint, EnvironmentMixin):
         limit = request.data.get("limit")
 
         # Validate the data export payload
-        serializer = DataExportQuerySerializer(data=request.data)
+        serializer = DataExportQuerySerializer(
+            data=request.data,
+            context={
+                "organization": organization,
+                "get_projects_by_id": lambda project_query: self._get_projects_by_id(
+                    project_query, request, organization
+                ),
+                "get_projects": lambda: self.get_projects(request, organization),
+                "has_arithmetic": features.has(
+                    "organizations:discover-arithmetic", organization, actor=request.user
+                ),
+            },
+        )
         if not serializer.is_valid():
             return Response(serializer.errors, status=400)
         data = serializer.validated_data
 
-        # Validate the project field, if provided
-        # A PermissionDenied error will be raised in `_get_projects_by_id` if the request is invalid
-        project_query = data["query_info"].get("project")
-        if project_query:
-            # Coerce the query into a set
-            if isinstance(project_query, list):
-                projects = self._get_projects_by_id(
-                    set(map(int, project_query)), request, organization
-                )
-            else:
-                projects = self._get_projects_by_id({int(project_query)}, request, organization)
-            data["query_info"]["project"] = [project.id for project in projects]
-
-        # Discover Pre-processing
-        if data["query_type"] == ExportQueryType.DISCOVER_STR:
-            query_info = data["query_info"]
-
-            fields = query_info.get("field", [])
-            if not isinstance(fields, list):
-                fields = [fields]
-
-            if len(fields) > MAX_FIELDS:
-                detail = "You can export up to {0} fields at a time. Please delete some and try again.".format(
-                    MAX_FIELDS
-                )
-                raise ParseError(detail=detail)
-
-            query_info["field"] = fields
-
-            if "project" not in query_info:
-                projects = self.get_projects(request, organization)
-                query_info["project"] = [project.id for project in projects]
-
-            start, end = get_date_range_from_params(query_info)
-            if "statsPeriod" in query_info:
-                del query_info["statsPeriod"]
-            if "statsPeriodStart" in query_info:
-                del query_info["statsPeriodStart"]
-            if "statsPeriodEnd" in query_info:
-                del query_info["statsPeriodEnd"]
-            query_info["start"] = start.isoformat()
-            query_info["end"] = end.isoformat()
-
         try:
-            # If this user has sent a sent a request with the same payload and organization,
+            # If this user has sent a request with the same payload and organization,
             # we return them the latest one that is NOT complete (i.e. don't start another)
             query_type = ExportQueryType.from_str(data["query_type"])
             data_export, created = ExportedData.objects.get_or_create(
@@ -119,5 +181,5 @@ class DataExportEndpoint(OrganizationEndpoint, EnvironmentMixin):
             metrics.incr(
                 "dataexport.invalid", tags={"query_type": data.get("query_type")}, sample_rate=1.0
             )
-            return Response({"detail": six.text_type(e)}, status=400)
+            return Response({"detail": str(e)}, status=400)
         return Response(serialize(data_export, request.user), status=status)

@@ -1,19 +1,17 @@
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import withApi from 'app/utils/withApi';
 
-describe('withApi', function() {
+describe('withApi', function () {
   let apiInstance;
   const MyComponent = jest.fn(props => {
     apiInstance = props.api;
     return <div />;
   });
 
-  it('renders MyComponent with an api prop', function() {
+  it('renders MyComponent with an api prop', function () {
     const MyComponentWithApi = withApi(MyComponent);
-    mount(<MyComponentWithApi />);
+    mountWithTheme(<MyComponentWithApi />);
     expect(MyComponent).toHaveBeenCalledWith(
       expect.objectContaining({
         api: expect.anything(),
@@ -22,9 +20,9 @@ describe('withApi', function() {
     );
   });
 
-  it('cancels pending API requests when component is unmounted', function() {
+  it('cancels pending API requests when component is unmounted', function () {
     const MyComponentWithApi = withApi(MyComponent);
-    const wrapper = mount(<MyComponentWithApi />);
+    const wrapper = mountWithTheme(<MyComponentWithApi />);
     jest.spyOn(apiInstance, 'clear');
     expect(apiInstance.clear).not.toHaveBeenCalled();
     wrapper.unmount();
@@ -33,9 +31,9 @@ describe('withApi', function() {
     apiInstance.clear.mockRestore();
   });
 
-  it('does not cancels pending API requests if persistInFlight is enabled', function() {
+  it('does not cancels pending API requests if persistInFlight is enabled', function () {
     const MyComponentWithApi = withApi(MyComponent, {persistInFlight: true});
-    const wrapper = mount(<MyComponentWithApi />);
+    const wrapper = mountWithTheme(<MyComponentWithApi />);
     jest.spyOn(apiInstance, 'clear');
     wrapper.unmount();
     expect(apiInstance.clear).not.toHaveBeenCalled();

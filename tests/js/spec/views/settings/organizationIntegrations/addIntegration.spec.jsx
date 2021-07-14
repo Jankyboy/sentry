@@ -1,24 +1,22 @@
-/*global global*/
-import React from 'react';
-
-import {mount} from 'sentry-test/enzyme';
+/* global global */
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import AddIntegration from 'app/views/organizationIntegrations/addIntegration';
 
-describe('AddIntegration', function() {
+describe('AddIntegration', function () {
   const provider = TestStubs.GitHubIntegrationProvider();
   const integration = TestStubs.GitHubIntegration();
 
   const routerContext = TestStubs.routerContext();
 
-  it('Adds an integration on dialog completion', function() {
+  it('Adds an integration on dialog completion', function () {
     const onAdd = jest.fn();
 
     const focus = jest.fn();
     const open = jest.fn().mockReturnValue({focus});
     global.open = open;
 
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <AddIntegration provider={provider} onInstall={onAdd}>
         {onClick => (
           <a href="#" onClick={onClick}>

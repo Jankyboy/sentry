@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 import logging
 
 from django.dispatch.dispatcher import NO_RECEIVERS, Signal
@@ -55,6 +53,10 @@ buffer_incr_complete = BetterSignal(providing_args=["model", "columns", "extra",
 pending_delete = BetterSignal(providing_args=["instance", "actor"])
 event_processed = BetterSignal(providing_args=["project", "event"])
 
+# This signal should eventually be removed as we should not send
+# transactions through post processing
+transaction_processed = BetterSignal(providing_args=["project", "event"])
+
 # DEPRECATED
 event_received = BetterSignal(providing_args=["ip", "project"])
 event_accepted = BetterSignal(providing_args=["ip", "data", "project"])
@@ -62,7 +64,9 @@ event_accepted = BetterSignal(providing_args=["ip", "data", "project"])
 # Organization Onboarding Signals
 project_created = BetterSignal(providing_args=["project", "user", "default_rules"])
 first_event_pending = BetterSignal(providing_args=["project", "user"])
+
 first_event_received = BetterSignal(providing_args=["project", "event"])
+first_transaction_received = BetterSignal(providing_args=["project", "event"])
 member_invited = BetterSignal(providing_args=["member", "user"])
 member_joined = BetterSignal(providing_args=["member", "organization"])
 issue_tracker_used = BetterSignal(providing_args=["plugin", "project", "user"])
@@ -78,6 +82,7 @@ issue_assigned = BetterSignal(providing_args=["project", "group", "user"])
 issue_resolved = BetterSignal(
     providing_args=["organization_id", "project", "group", "user", "resolution_type"]
 )
+issue_unresolved = BetterSignal(providing_args=["project", "user", "group", "transition_type"])
 
 advanced_search = BetterSignal(providing_args=["project"])
 advanced_search_feature_gated = BetterSignal(providing_args=["organization", "user"])
@@ -85,12 +90,20 @@ save_search_created = BetterSignal(providing_args=["project", "user"])
 inbound_filter_toggled = BetterSignal(providing_args=["project"])
 sso_enabled = BetterSignal(providing_args=["organization", "user", "provider"])
 data_scrubber_enabled = BetterSignal(providing_args=["organization"])
-alert_rule_created = BetterSignal(providing_args=["project", "rule", "user", "rule_type"])
+alert_rule_created = BetterSignal(
+    providing_args=["project", "rule", "user", "rule_type", "is_api_token"]
+)
 repo_linked = BetterSignal(providing_args=["repo", "user"])
 release_created = BetterSignal(providing_args=["release"])
 deploy_created = BetterSignal(providing_args=["deploy"])
 ownership_rule_created = BetterSignal(providing_args=["project"])
 issue_ignored = BetterSignal(providing_args=["project", "user", "group_list", "activity_data"])
+issue_unignored = BetterSignal(providing_args=["project", "user", "group", "transition_type"])
+issue_mark_reviewed = BetterSignal(providing_args=["project", "user", "group"])
+inbox_in = BetterSignal(providing_args=["project", "user", "group", "reason"])
+inbox_out = BetterSignal(
+    providing_args=["project", "user", "group", "action", "inbox_date_added", "referrer"]
+)
 
 terms_accepted = BetterSignal(providing_args=["organization", "user", "ip_address"])
 team_created = BetterSignal(providing_args=["organization", "user", "team"])

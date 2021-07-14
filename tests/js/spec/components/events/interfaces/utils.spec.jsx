@@ -1,14 +1,15 @@
-import {MetaProxy, withMeta} from 'app/components/events/meta/metaProxy';
 import {
   getCurlCommand,
   objectToSortedTupleArray,
   removeFilterMaskedEntries,
+  stringifyQueryList,
 } from 'app/components/events/interfaces/utils';
+import {MetaProxy, withMeta} from 'app/components/events/meta/metaProxy';
 import {FILTER_MASK} from 'app/constants';
 
-describe('components/interfaces/utils', function() {
-  describe('getCurlCommand()', function() {
-    it('should convert an http request object to an equivalent unix curl command string', function() {
+describe('components/interfaces/utils', function () {
+  describe('getCurlCommand()', function () {
+    it('should convert an http request object to an equivalent unix curl command string', function () {
       expect(
         getCurlCommand({
           cookies: [
@@ -131,7 +132,7 @@ describe('components/interfaces/utils', function() {
       );
     });
 
-    it('works with a Proxy', function() {
+    it('works with a Proxy', function () {
       const spy = jest.spyOn(MetaProxy.prototype, 'get');
       const data = {
         fragment: '',
@@ -166,8 +167,8 @@ describe('components/interfaces/utils', function() {
     });
   });
 
-  describe('objectToSortedTupleArray()', function() {
-    it('should convert a key/value object to a sorted array of key/value tuples', function() {
+  describe('objectToSortedTupleArray()', function () {
+    it('should convert a key/value object to a sorted array of key/value tuples', function () {
       expect(
         objectToSortedTupleArray({
           foo: ['bar', 'baz'],
@@ -179,24 +180,42 @@ describe('components/interfaces/utils', function() {
     });
   });
 
-  describe('removeFilterMaskedEntries()', function() {
+  describe('removeFilterMaskedEntries()', function () {
     const rawData = {
       id: '26',
       name: FILTER_MASK,
       username: 'maiseythedog',
       email: FILTER_MASK,
     };
-    it('should remove filtered values', function() {
+    it('should remove filtered values', function () {
       const result = removeFilterMaskedEntries(rawData);
       expect(result).not.toHaveProperty('name');
       expect(result).not.toHaveProperty('email');
     });
-    it('should preserve unfiltered values', function() {
+    it('should preserve unfiltered values', function () {
       const result = removeFilterMaskedEntries(rawData);
       expect(result).toHaveProperty('id');
       expect(result.id).toEqual('26');
       expect(result).toHaveProperty('username');
       expect(result.username).toEqual('maiseythedog');
+    });
+  });
+
+  describe('stringifyQueryList()', function () {
+    it('should return query if it is a string', function () {
+      const query = stringifyQueryList('query');
+      expect(query).toEqual('query');
+    });
+    it('should parse query tuples', function () {
+      const query = stringifyQueryList([
+        ['field', 'ops.http'],
+        ['field', 'ops.db'],
+        ['field', 'total.time'],
+        ['numBuckets', '100'],
+      ]);
+      expect(query).toEqual(
+        'field=ops.http&field=ops.db&field=total.time&numBuckets=100'
+      );
     });
   });
 });

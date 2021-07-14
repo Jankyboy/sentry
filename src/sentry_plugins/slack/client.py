@@ -1,5 +1,4 @@
-from __future__ import absolute_import
-
+from sentry.shared_integrations.exceptions import ApiError
 from sentry_plugins.client import ApiClient
 
 
@@ -12,9 +11,14 @@ class SlackApiClient(ApiClient):
         self.username = username
         self.icon_url = icon_url
         self.channel = channel
-        super(SlackApiClient, self).__init__()
+        super().__init__()
 
     def request(self, data):
-        return self._request(
-            path=self.webhook, method="post", data=data, json=False, allow_text=True
-        )
+        try:
+            return self._request(
+                path=self.webhook, method="post", data=data, json=False, allow_text=True
+            )
+        except ApiError as e:
+            # Ignore 404 from slack webhooks
+            if e.code != 404:
+                raise e

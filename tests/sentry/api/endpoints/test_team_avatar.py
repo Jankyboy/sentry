@@ -1,10 +1,6 @@
-from __future__ import absolute_import
-
-import six
-
 from base64 import b64encode
 
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.models import TeamAvatar
 from sentry.testutils import APITestCase
@@ -20,7 +16,7 @@ class TeamAvatarTest(APITestCase):
         )
         response = self.client.get(url)
         assert response.status_code == 200
-        assert response.data["id"] == six.text_type(team.id)
+        assert response.data["id"] == str(team.id)
         assert response.data["avatar"]["avatarType"] == "letter_avatar"
         assert response.data["avatar"]["avatarUuid"] is None
 
@@ -43,7 +39,7 @@ class TeamAvatarTest(APITestCase):
         avatar = TeamAvatar.objects.get(team=team)
         assert response.status_code == 200, response.content
         assert avatar.get_avatar_type_display() == "upload"
-        assert avatar.file
+        assert avatar.file_id
 
     def test_put_bad(self):
         team = self.team  # force creation

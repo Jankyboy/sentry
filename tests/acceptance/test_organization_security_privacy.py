@@ -1,17 +1,14 @@
-from __future__ import absolute_import
-
-from sentry.utils import json
-
 from sentry.testutils import AcceptanceTestCase
+from sentry.utils import json
 
 
 class OrganizationSecurityAndPrivacyTest(AcceptanceTestCase):
     def setUp(self):
-        super(OrganizationSecurityAndPrivacyTest, self).setUp()
+        super().setUp()
         self.user = self.create_user("owner@example.com")
         self.org = self.create_organization(owner=self.user, name="Rowdy Tiger")
         self.login_as(self.user)
-        self.path = "/settings/{}/security-and-privacy/".format(self.org.slug)
+        self.path = f"/settings/{self.org.slug}/security-and-privacy/"
 
     def load_organization_helper(self, snapshot_name=None):
         self.browser.wait_until_not(".loading-indicator")
@@ -44,9 +41,9 @@ class OrganizationSecurityAndPrivacyTest(AcceptanceTestCase):
             '[data-test-id="organization-settings-security-and-privacy"] .error'
         )
         self.browser.click("#require2FA")
-        self.browser.wait_until(".modal")
-        self.browser.click('.modal [data-test-id="confirm-button"]')
-        self.browser.wait_until_not(".modal")
+        self.browser.wait_until("[role='dialog']")
+        self.browser.click("[role='dialog'] [data-test-id='confirm-button']")
+        self.browser.wait_until_not("[role='dialog']")
         self.browser.wait_until_test_id("toast-error")
         self.load_organization_helper("setting 2fa without 2fa enabled")
 

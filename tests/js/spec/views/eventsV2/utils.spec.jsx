@@ -1,23 +1,23 @@
 import {browserHistory} from 'react-router';
 
+import {COL_WIDTH_UNDEFINED} from 'app/components/gridEditable';
 import EventView from 'app/utils/discover/eventView';
 import {
   decodeColumnOrder,
-  pushEventViewToLocation,
-  getExpandedResults,
   downloadAsCsv,
+  getExpandedResults,
+  pushEventViewToLocation,
 } from 'app/views/eventsV2/utils';
-import {COL_WIDTH_UNDEFINED} from 'app/components/gridEditable';
 
-describe('decodeColumnOrder', function() {
-  it('can decode 0 elements', function() {
+describe('decodeColumnOrder', function () {
+  it('can decode 0 elements', function () {
     const results = decodeColumnOrder([]);
 
     expect(Array.isArray(results)).toBeTruthy();
     expect(results).toHaveLength(0);
   });
 
-  it('can decode fields', function() {
+  it('can decode fields', function () {
     const results = decodeColumnOrder([{field: 'title', width: 123}]);
 
     expect(Array.isArray(results)).toBeTruthy();
@@ -35,7 +35,43 @@ describe('decodeColumnOrder', function() {
     });
   });
 
-  it('can decode aggregate functions with no arguments', function() {
+  it('can decode measurement fields', function () {
+    const results = decodeColumnOrder([{field: 'measurements.foo', width: 123}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'measurements.foo',
+      name: 'measurements.foo',
+      column: {
+        kind: 'field',
+        field: 'measurements.foo',
+      },
+      width: 123,
+      isSortable: false,
+      type: 'number',
+    });
+  });
+
+  it('can decode span op breakdown fields', function () {
+    const results = decodeColumnOrder([{field: 'spans.foo', width: 123}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'spans.foo',
+      name: 'spans.foo',
+      column: {
+        kind: 'field',
+        field: 'spans.foo',
+      },
+      width: 123,
+      isSortable: false,
+      type: 'duration',
+    });
+  });
+
+  it('can decode aggregate functions with no arguments', function () {
     let results = decodeColumnOrder([{field: 'count()', width: 123}]);
 
     expect(Array.isArray(results)).toBeTruthy();
@@ -44,7 +80,7 @@ describe('decodeColumnOrder', function() {
       name: 'count()',
       column: {
         kind: 'function',
-        function: ['count', '', undefined],
+        function: ['count', '', undefined, undefined],
       },
       width: 123,
       isSortable: true,
@@ -58,7 +94,7 @@ describe('decodeColumnOrder', function() {
     expect(results[0].type).toEqual('duration');
   });
 
-  it('can decode elements with aggregate functions with arguments', function() {
+  it('can decode elements with aggregate functions with arguments', function () {
     const results = decodeColumnOrder([{field: 'avg(transaction.duration)'}]);
 
     expect(Array.isArray(results)).toBeTruthy();
@@ -68,7 +104,7 @@ describe('decodeColumnOrder', function() {
       name: 'avg(transaction.duration)',
       column: {
         kind: 'function',
-        function: ['avg', 'transaction.duration', undefined],
+        function: ['avg', 'transaction.duration', undefined, undefined],
       },
       width: COL_WIDTH_UNDEFINED,
       isSortable: true,
@@ -76,7 +112,7 @@ describe('decodeColumnOrder', function() {
     });
   });
 
-  it('can decode elements with aggregate functions with multiple arguments', function() {
+  it('can decode elements with aggregate functions with multiple arguments', function () {
     const results = decodeColumnOrder([
       {field: 'percentile(transaction.duration, 0.65)'},
     ]);
@@ -88,7 +124,79 @@ describe('decodeColumnOrder', function() {
       name: 'percentile(transaction.duration, 0.65)',
       column: {
         kind: 'function',
-        function: ['percentile', 'transaction.duration', '0.65'],
+        function: ['percentile', 'transaction.duration', '0.65', undefined],
+      },
+      width: COL_WIDTH_UNDEFINED,
+      isSortable: true,
+      type: 'duration',
+    });
+  });
+
+  it('can decode elements with aggregate functions using measurements', function () {
+    const results = decodeColumnOrder([{field: 'avg(measurements.foo)'}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'avg(measurements.foo)',
+      name: 'avg(measurements.foo)',
+      column: {
+        kind: 'function',
+        function: ['avg', 'measurements.foo', undefined, undefined],
+      },
+      width: COL_WIDTH_UNDEFINED,
+      isSortable: true,
+      type: 'number',
+    });
+  });
+
+  it('can decode elements with aggregate functions with multiple arguments using measurements', function () {
+    const results = decodeColumnOrder([{field: 'percentile(measurements.lcp, 0.65)'}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'percentile(measurements.lcp, 0.65)',
+      name: 'percentile(measurements.lcp, 0.65)',
+      column: {
+        kind: 'function',
+        function: ['percentile', 'measurements.lcp', '0.65', undefined],
+      },
+      width: COL_WIDTH_UNDEFINED,
+      isSortable: true,
+      type: 'duration',
+    });
+  });
+
+  it('can decode elements with aggregate functions using span op breakdowns', function () {
+    const results = decodeColumnOrder([{field: 'avg(spans.foo)'}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'avg(spans.foo)',
+      name: 'avg(spans.foo)',
+      column: {
+        kind: 'function',
+        function: ['avg', 'spans.foo', undefined, undefined],
+      },
+      width: COL_WIDTH_UNDEFINED,
+      isSortable: true,
+      type: 'duration',
+    });
+  });
+
+  it('can decode elements with aggregate functions with multiple arguments using span op breakdowns', function () {
+    const results = decodeColumnOrder([{field: 'percentile(spans.lcp, 0.65)'}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'percentile(spans.lcp, 0.65)',
+      name: 'percentile(spans.lcp, 0.65)',
+      column: {
+        kind: 'function',
+        function: ['percentile', 'spans.lcp', '0.65', undefined],
       },
       width: COL_WIDTH_UNDEFINED,
       isSortable: true,
@@ -97,7 +205,7 @@ describe('decodeColumnOrder', function() {
   });
 });
 
-describe('pushEventViewToLocation', function() {
+describe('pushEventViewToLocation', function () {
   const state = {
     id: '1234',
     name: 'best query',
@@ -117,7 +225,7 @@ describe('pushEventViewToLocation', function() {
     },
   };
 
-  it('correct query string object pushed to history', function() {
+  it('correct query string object pushed to history', function () {
     const eventView = new EventView(state);
 
     pushEventViewToLocation({
@@ -142,7 +250,7 @@ describe('pushEventViewToLocation', function() {
     });
   });
 
-  it('extra query params', function() {
+  it('extra query params', function () {
     const eventView = new EventView(state);
 
     pushEventViewToLocation({
@@ -172,7 +280,7 @@ describe('pushEventViewToLocation', function() {
   });
 });
 
-describe('getExpandedResults()', function() {
+describe('getExpandedResults()', function () {
   const state = {
     id: '1234',
     name: 'best query',
@@ -190,6 +298,17 @@ describe('getExpandedResults()', function() {
     statsPeriod: '14d',
     environment: ['staging'],
   };
+
+  it('id should be default column when drilldown results in no columns', () => {
+    const view = new EventView({
+      ...state,
+      fields: [{field: 'count()'}, {field: 'epm()'}, {field: 'eps()'}],
+    });
+
+    const result = getExpandedResults(view, {}, {});
+
+    expect(result.fields).toEqual([{field: 'id', width: -1}]);
+  });
 
   it('preserves aggregated fields', () => {
     let view = new EventView(state);
@@ -228,7 +347,6 @@ describe('getExpandedResults()', function() {
       ...state,
       fields: [
         {field: 'last_seen()'}, // expect this to be transformed to timestamp
-        {field: 'latest_event()'},
         {field: 'title'},
         {field: 'avg(transaction.duration)'}, // expect this to be dropped
         {field: 'p50()'},
@@ -239,10 +357,12 @@ describe('getExpandedResults()', function() {
         {field: 'p9001()'}, // it's over 9000
         {field: 'foobar()'}, // unknown function with no parameter
         {field: 'custom_tag'},
-        {field: 'title'}, // not expected to be dropped
+        {field: 'transaction.duration'}, // should be dropped
+        {field: 'title'}, // should be dropped
         {field: 'unique_count(id)'},
         {field: 'apdex(300)'}, // should be dropped
         {field: 'user_misery(300)'}, // should be dropped
+        {field: 'failure_count()'}, // expect this to be transformed to transaction.status
       ],
     });
 
@@ -252,12 +372,36 @@ describe('getExpandedResults()', function() {
       {field: 'title'},
       {field: 'transaction.duration', width: -1},
       {field: 'custom_tag'},
-      {field: 'title'},
+      {field: 'transaction.status', width: -1},
+    ]);
+
+    // transforms pXX functions with optional arguments properly
+    view = new EventView({
+      ...state,
+      fields: [
+        {field: 'p50(transaction.duration)'},
+        {field: 'p75(measurements.foo)'},
+        {field: 'p95(measurements.bar)'},
+        {field: 'p99(measurements.fcp)'},
+        {field: 'p100(measurements.lcp)'},
+      ],
+    });
+
+    result = getExpandedResults(view, {}, {});
+    expect(result.fields).toEqual([
+      {field: 'transaction.duration', width: -1},
+      {field: 'measurements.foo', width: -1},
+      {field: 'measurements.bar', width: -1},
+      {field: 'measurements.fcp', width: -1},
+      {field: 'measurements.lcp', width: -1},
     ]);
   });
 
   it('applies provided additional conditions', () => {
-    const view = new EventView(state);
+    const view = new EventView({
+      ...state,
+      fields: [...state.fields, {field: 'measurements.lcp'}, {field: 'measurements.fcp'}],
+    });
     let result = getExpandedResults(view, {extra: 'condition'}, {});
     expect(result.query).toEqual('event.type:error extra:condition');
 
@@ -286,6 +430,14 @@ describe('getExpandedResults()', function() {
     // Includes null
     result = getExpandedResults(view, {}, {custom_tag: null});
     expect(result.query).toEqual('event.type:error custom_tag:""');
+
+    // Handles measurements while ignoring null values
+    result = getExpandedResults(
+      view,
+      {},
+      {'measurements.lcp': 2, 'measurements.fcp': null}
+    );
+    expect(result.query).toEqual('event.type:error measurements.lcp:2');
   });
 
   it('removes any aggregates in either search conditions or extra conditions', () => {
@@ -311,6 +463,64 @@ describe('getExpandedResults()', function() {
     };
     const result = getExpandedResults(view, {}, event);
     expect(result.query).toEqual('event.type:error custom_tag:tag_value');
+  });
+
+  it('generate eventview from an empty eventview', () => {
+    const view = EventView.fromLocation({query: {}});
+    const result = getExpandedResults(view, {some_tag: 'value'}, {});
+    expect(result.fields).toEqual([]);
+    expect(result.query).toEqual('some_tag:value');
+  });
+
+  it('removes equations on aggregates', () => {
+    const view = new EventView({
+      ...state,
+      fields: [
+        {field: 'count()'},
+        {field: 'equation|count() / 2'},
+        {field: 'equation|(count() - count()) + 5'},
+      ],
+    });
+    const result = getExpandedResults(view, {});
+    expect(result.fields).toEqual([
+      {
+        field: 'id',
+        width: -1,
+      },
+    ]);
+  });
+
+  it('keeps equations without aggregates', () => {
+    const view = new EventView({
+      ...state,
+      fields: [{field: 'count()'}, {field: 'equation|transaction.duration / 2'}],
+    });
+    const result = getExpandedResults(view, {});
+    expect(result.fields).toEqual([
+      {
+        field: 'equation|transaction.duration / 2',
+        width: -1,
+      },
+    ]);
+  });
+
+  it('applies array value conditions from event data', () => {
+    const view = new EventView({
+      ...state,
+      fields: [...state.fields, {field: 'error.type'}],
+    });
+    const event = {
+      type: 'error',
+      tags: [
+        {key: 'nope', value: 'nope'},
+        {key: 'custom_tag', value: 'tag_value'},
+      ],
+      'error.type': ['DeadSystem Exception', 'RuntimeException', 'RuntimeException'],
+    };
+    const result = getExpandedResults(view, {}, event);
+    expect(result.query).toEqual(
+      'event.type:error custom_tag:tag_value error.type:"DeadSystem Exception" error.type:RuntimeException error.type:RuntimeException'
+    );
   });
 
   it('applies project condition to project property', () => {
@@ -349,7 +559,7 @@ describe('getExpandedResults()', function() {
     expect(result.environment).toEqual(['staging']);
   });
 
-  it('applies the normalized user tag', function() {
+  it('applies the normalized user tag', function () {
     const view = new EventView({
       ...state,
       fields: [{field: 'user'}, {field: 'title'}],
@@ -374,7 +584,7 @@ describe('getExpandedResults()', function() {
     expect(result.query).toEqual('event.type:error user:1234 title:"something bad"');
   });
 
-  it('applies the user field in a table row', function() {
+  it('applies the user field in a table row', function () {
     const view = new EventView({
       ...state,
       fields: [{field: 'user'}, {field: 'title'}],
@@ -473,12 +683,12 @@ describe('getExpandedResults()', function() {
   });
 });
 
-describe('downloadAsCsv', function() {
+describe('downloadAsCsv', function () {
   const messageColumn = {name: 'message'};
   const environmentColumn = {name: 'environment'};
   const countColumn = {name: 'count'};
   const userColumn = {name: 'user'};
-  it('handles raw data', function() {
+  it('handles raw data', function () {
     const result = {
       data: [
         {message: 'test 1', environment: 'prod'},
@@ -489,13 +699,13 @@ describe('downloadAsCsv', function() {
       encodeURIComponent('message,environment\r\ntest 1,prod\r\ntest 2,test')
     );
   });
-  it('handles aggregations', function() {
+  it('handles aggregations', function () {
     const result = {
       data: [{count: 3}],
     };
     expect(downloadAsCsv(result, [countColumn])).toContain(encodeURI('count\r\n3'));
   });
-  it('quotes unsafe strings', function() {
+  it('quotes unsafe strings', function () {
     const result = {
       data: [{message: '=HYPERLINK(http://some-bad-website#)'}],
     };
@@ -503,7 +713,7 @@ describe('downloadAsCsv', function() {
       encodeURIComponent("message\r\n'=HYPERLINK(http://some-bad-website#)")
     );
   });
-  it('handles the user column', function() {
+  it('handles the user column', function () {
     const result = {
       data: [
         {message: 'test 0', user: 'name:baz'},

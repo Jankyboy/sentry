@@ -1,14 +1,13 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
+import {mountGlobalModal} from 'sentry-test/modal';
 
+import * as modals from 'app/actionCreators/modal';
 import App from 'app/views/app';
 import ProjectTeams from 'app/views/settings/project/projectTeams';
-import * as modals from 'app/actionCreators/modal';
 
 jest.unmock('app/actionCreators/modal');
 
-describe('ProjectTeams', function() {
+describe('ProjectTeams', function () {
   let org;
   let project;
   let team;
@@ -19,7 +18,7 @@ describe('ProjectTeams', function() {
     hasAccess: true,
   };
 
-  beforeEach(function() {
+  beforeEach(function () {
     jest.spyOn(modals, 'openCreateTeamModal');
     org = TestStubs.Organization();
     project = TestStubs.ProjectDetails();
@@ -42,12 +41,12 @@ describe('ProjectTeams', function() {
     });
   });
 
-  afterEach(function() {
+  afterEach(function () {
     MockApiClient.clearMockResponses();
     modals.openCreateTeamModal.mockRestore();
   });
 
-  it('renders', async function() {
+  it('renders', async function () {
     const wrapper = mountWithTheme(
       <ProjectTeams
         params={{orgId: org.slug, projectId: project.slug}}
@@ -61,7 +60,7 @@ describe('ProjectTeams', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('can remove a team from project', async function() {
+  it('can remove a team from project', async function () {
     MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/teams/`,
       method: 'GET',
@@ -95,10 +94,7 @@ describe('ProjectTeams', function() {
     expect(mock).not.toHaveBeenCalled();
 
     // Click "Remove"
-    wrapper
-      .find('PanelBody Button')
-      .first()
-      .simulate('click');
+    wrapper.find('PanelBody Button').first().simulate('click');
 
     expect(mock).toHaveBeenCalledWith(
       endpoint,
@@ -110,15 +106,12 @@ describe('ProjectTeams', function() {
     await tick();
 
     // Remove second team
-    wrapper
-      .update()
-      .find('PanelBody Button')
-      .first()
-      .simulate('click');
+    wrapper.update().find('PanelBody Button').first().simulate('click');
 
     // Modal opens because this is the last team in project
     // Click confirm
-    wrapper.find('ModalDialog Button[priority="primary"]').simulate('click');
+    const modal = await mountGlobalModal();
+    modal.find('Button[priority="primary"]').simulate('click');
 
     expect(mock2).toHaveBeenCalledWith(
       endpoint2,
@@ -128,7 +121,7 @@ describe('ProjectTeams', function() {
     );
   });
 
-  it('removes team from project when project team is not in org list', async function() {
+  it('removes team from project when project team is not in org list', async function () {
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/teams/`,
@@ -174,10 +167,7 @@ describe('ProjectTeams', function() {
     expect(mock).not.toHaveBeenCalled();
 
     // Click "Remove"
-    wrapper
-      .find('PanelBody Button')
-      .first()
-      .simulate('click');
+    wrapper.find('PanelBody Button').first().simulate('click');
 
     expect(mock).toHaveBeenCalledWith(
       endpoint,
@@ -189,15 +179,12 @@ describe('ProjectTeams', function() {
     await tick();
 
     // Remove second team
-    wrapper
-      .update()
-      .find('PanelBody Button')
-      .first()
-      .simulate('click');
+    wrapper.update().find('PanelBody Button').first().simulate('click');
 
     // Modal opens because this is the last team in project
     // Click confirm
-    wrapper.find('ModalDialog Button[priority="primary"]').simulate('click');
+    const modal = await mountGlobalModal();
+    modal.find('Button[priority="primary"]').simulate('click');
 
     expect(mock2).toHaveBeenCalledWith(
       endpoint2,
@@ -207,7 +194,7 @@ describe('ProjectTeams', function() {
     );
   });
 
-  it('can associate a team with project', async function() {
+  it('can associate a team with project', async function () {
     const endpoint = `/projects/${org.slug}/${project.slug}/teams/${team2.slug}/`;
     const mock = MockApiClient.addMockResponse({
       url: endpoint,
@@ -242,7 +229,7 @@ describe('ProjectTeams', function() {
     );
   });
 
-  it('creates a new team adds it to current project using the "create team modal" in dropdown', async function() {
+  it('creates a new team adds it to current project using the "create team modal" in dropdown', async function () {
     MockApiClient.addMockResponse({
       url: '/internal/health/',
       body: {},

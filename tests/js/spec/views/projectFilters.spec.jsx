@@ -1,10 +1,8 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ProjectFilters from 'app/views/settings/project/projectFilters';
 
-describe('ProjectFilters', function() {
+describe('ProjectFilters', function () {
   const org = TestStubs.Organization();
   const project = TestStubs.Project({options: {}});
   const PROJECT_URL = `/projects/${org.slug}/${project.slug}/`;
@@ -26,6 +24,7 @@ describe('ProjectFilters', function() {
         <ProjectFilters
           params={{projectId: project.slug, orgId: org.slug}}
           location={{}}
+          project={project}
         />,
         TestStubs.routerContext()
       );
@@ -34,7 +33,7 @@ describe('ProjectFilters', function() {
     return wrapper;
   };
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
       url: PROJECT_URL,
@@ -59,7 +58,7 @@ describe('ProjectFilters', function() {
     creator();
   });
 
-  it('has browser extensions enabled initially', function() {
+  it('has browser extensions enabled initially', function () {
     const filter = 'browser-extensions';
     const mock = createFilterMock(filter);
     const Switch = wrapper.find(`BooleanField[name="${filter}"] Switch`);
@@ -79,7 +78,7 @@ describe('ProjectFilters', function() {
     );
   });
 
-  it('can toggle filters: localhost, web crawlers', function() {
+  it('can toggle filters: localhost, web crawlers', function () {
     ['localhost', 'web-crawlers'].map(filter => {
       const mock = createFilterMock(filter);
       const Switch = wrapper.find(`BooleanField[name="${filter}"] Switch`);
@@ -98,28 +97,19 @@ describe('ProjectFilters', function() {
     });
   });
 
-  it('has correct legacy browsers selected', function() {
-    expect(
-      wrapper
-        .find('LegacyBrowserFilterRow Switch')
-        .at(0)
-        .prop('isActive')
-    ).toBe(true);
-    expect(
-      wrapper
-        .find('LegacyBrowserFilterRow Switch')
-        .at(1)
-        .prop('isActive')
-    ).toBe(true);
-    expect(
-      wrapper
-        .find('LegacyBrowserFilterRow Switch')
-        .at(2)
-        .prop('isActive')
-    ).toBe(false);
+  it('has correct legacy browsers selected', function () {
+    expect(wrapper.find('LegacyBrowserFilterRow Switch').at(0).prop('isActive')).toBe(
+      true
+    );
+    expect(wrapper.find('LegacyBrowserFilterRow Switch').at(1).prop('isActive')).toBe(
+      true
+    );
+    expect(wrapper.find('LegacyBrowserFilterRow Switch').at(2).prop('isActive')).toBe(
+      false
+    );
   });
 
-  it('can toggle legacy browser', function() {
+  it('can toggle legacy browser', function () {
     const filter = 'legacy-browsers';
     const mock = createFilterMock(filter);
 
@@ -137,10 +127,7 @@ describe('ProjectFilters', function() {
     ]);
 
     // Toggle filter off
-    wrapper
-      .find('LegacyBrowserFilterRow Switch')
-      .at(3)
-      .simulate('click');
+    wrapper.find('LegacyBrowserFilterRow Switch').at(3).simulate('click');
     expect(Array.from(mock.mock.calls[1][1].data.subfilters)).toEqual([
       'ie_pre_9',
       'ie9',
@@ -151,14 +138,8 @@ describe('ProjectFilters', function() {
     mock.mockReset();
 
     // Click ie9 and < ie9
-    wrapper
-      .find('LegacyBrowserFilterRow Switch')
-      .at(0)
-      .simulate('click');
-    wrapper
-      .find('LegacyBrowserFilterRow Switch')
-      .at(1)
-      .simulate('click');
+    wrapper.find('LegacyBrowserFilterRow Switch').at(0).simulate('click');
+    wrapper.find('LegacyBrowserFilterRow Switch').at(1).simulate('click');
 
     expect(Array.from(mock.mock.calls[1][1].data.subfilters)).toEqual([
       'safari_pre_6',
@@ -166,7 +147,7 @@ describe('ProjectFilters', function() {
     ]);
   });
 
-  it('can toggle all/none for legacy browser', function() {
+  it('can toggle all/none for legacy browser', function () {
     const filter = 'legacy-browsers';
     const mock = createFilterMock(filter);
     const All = wrapper.find('BulkFilterItem').at(0);
@@ -191,7 +172,7 @@ describe('ProjectFilters', function() {
     expect(Array.from(mock.mock.calls[1][1].data.subfilters)).toEqual([]);
   });
 
-  it('can set ip address filter', function() {
+  it('can set ip address filter', function () {
     const mock = MockApiClient.addMockResponse({
       url: PROJECT_URL,
       method: 'PUT',
@@ -207,19 +188,20 @@ describe('ProjectFilters', function() {
     );
   });
 
-  it('filter by release/error message are not enabled', function() {
+  it('filter by release/error message are not enabled', function () {
     expect(wrapper.find('TextArea[name="filters:releases"][disabled]')).toHaveLength(1);
     expect(
       wrapper.find('TextArea[name="filters:error_messages"][disabled]')
     ).toHaveLength(1);
   });
 
-  it('has custom inbound filters with flag + can change', function() {
+  it('has custom inbound filters with flag + can change', function () {
     wrapper = creator(() =>
       mountWithTheme(
         <ProjectFilters
           params={{projectId: project.slug, orgId: org.slug}}
           location={{}}
+          project={project}
         />,
         {
           context: {
@@ -236,6 +218,9 @@ describe('ProjectFilters', function() {
 
     expect(wrapper.find('TextArea[name="filters:releases"]')).toHaveLength(1);
     expect(wrapper.find('TextArea[name="filters:error_messages"]')).toHaveLength(1);
+    expect(
+      wrapper.find('PanelAlert[data-test-id="error-message-disclaimer"]').exists()
+    ).toBeFalsy();
 
     const mock = MockApiClient.addMockResponse({
       url: PROJECT_URL,
@@ -260,16 +245,47 @@ describe('ProjectFilters', function() {
     );
   });
 
-  it('disables configuration for non project:write users', function() {
+  it('disables configuration for non project:write users', function () {
     wrapper = mountWithTheme(
       <ProjectFilters
         params={{projectId: project.slug, orgId: org.slug}}
         location={{}}
+        project={project}
       />,
       TestStubs.routerContext([{organization: TestStubs.Organization({access: []})}])
     );
 
     expect(wrapper.find('FormField[disabled=false]')).toHaveLength(0);
     expect(wrapper.find('LegacyBrowserFilterRow[disabled=false]')).toHaveLength(0);
+  });
+
+  it('shows disclaimer if error message filter is populated', function () {
+    wrapper = mountWithTheme(
+      <ProjectFilters
+        params={{projectId: project.slug, orgId: org.slug}}
+        project={{
+          ...project,
+          options: {
+            'filters:error_messages': 'test',
+          },
+        }}
+      />,
+      {
+        context: {
+          ...TestStubs.routerContext().context,
+          project: {
+            ...project,
+            features: ['custom-inbound-filters'],
+          },
+        },
+        childContextTypes: TestStubs.routerContext().childContextTypes,
+      }
+    );
+
+    expect(
+      wrapper.find('PanelAlert[data-test-id="error-message-disclaimer"]').text()
+    ).toBe(
+      "Minidumps, errors in the minified production build of React, and Internet Explorer's i18n errors cannot be filtered by message."
+    );
   });
 });

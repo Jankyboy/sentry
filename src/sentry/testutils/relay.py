@@ -1,12 +1,10 @@
-from __future__ import absolute_import
-
 import pytest
 import requests
 import responses
 
 from sentry import eventstore
 from sentry.eventtypes import transaction
-from sentry.models.relay import Relay
+from sentry.models import EventAttachment, Relay
 from sentry.testutils.helpers import get_auth_header
 
 
@@ -36,7 +34,7 @@ def ensure_relay_is_registered():
         pass  # NOQA
 
 
-class RelayStoreHelper(object):
+class RelayStoreHelper:
     """
     Tests that post to the store entry point should use this helper class
     (together with RelayStoreHelper) to check the functionality with relay.
@@ -99,11 +97,32 @@ class RelayStoreHelper(object):
         except AssertionError:
             return None
 
+    def post_and_retrieve_attachment(self, event_id, files):
+        url = self.get_relay_attachments_url(self.project.id, event_id)
+        responses.add_passthru(url)
+
+        resp = requests.post(url, files=files, headers={"x-sentry-auth": self.auth_header})
+
+        assert resp.ok
+
+        exists = self.wait_for_ingest_consumer(
+            lambda: EventAttachment.objects.filter(
+                project_id=self.project.id, event_id=event_id
+            ).exists()
+            or None  # must return None to continue waiting
+        )
+
+        assert exists
+
     def post_and_retrieve_minidump(self, files, data):
         url = self.get_relay_minidump_url(self.project.id, self.projectkey.public_key)
         responses.add_passthru(url)
 
-        resp = requests.post(url, files=dict(files or ()), data=dict(data or ()),)
+        resp = requests.post(
+            url,
+            files=dict(files or ()),
+            data=dict(data or ()),
+        )
 
         assert resp.ok
         event_id = resp.text.strip().replace("-", "")
@@ -119,7 +138,10 @@ class RelayStoreHelper(object):
         url = self.get_relay_unreal_url(self.project.id, self.projectkey.public_key)
         responses.add_passthru(url)
 
-        resp = requests.post(url, data=payload,)
+        resp = requests.post(
+            url,
+            data=payload,
+        )
 
         assert resp.ok
         event_id = resp.text.strip().replace("-", "")
@@ -140,6 +162,7 @@ class RelayStoreHelper(object):
         get_relay_minidump_url,
         get_relay_unreal_url,
         get_relay_security_url,
+        get_relay_attachments_url,
         wait_for_ingest_consumer,
     ):
         self.auth_header = get_auth_header(
@@ -151,4 +174,5 @@ class RelayStoreHelper(object):
         self.get_relay_minidump_url = get_relay_minidump_url  # noqa
         self.get_relay_unreal_url = get_relay_unreal_url  # noqa
         self.get_relay_security_url = get_relay_security_url  # noqa
+        self.get_relay_attachments_url = get_relay_attachments_url  # noqa
         self.wait_for_ingest_consumer = wait_for_ingest_consumer(settings)  # noqa

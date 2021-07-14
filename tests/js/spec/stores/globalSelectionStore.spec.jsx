@@ -1,21 +1,21 @@
-import GlobalSelectionStore from 'app/stores/globalSelectionStore';
 import {
-  updateProjects,
   updateDateTime,
   updateEnvironments,
+  updateProjects,
 } from 'app/actionCreators/globalSelection';
+import GlobalSelectionStore from 'app/stores/globalSelectionStore';
 
 jest.mock('app/utils/localStorage', () => ({
   getItem: () => JSON.stringify({projects: [5], environments: ['staging']}),
   setItem: jest.fn(),
 }));
 
-describe('GlobalSelectionStore', function() {
-  afterEach(function() {
+describe('GlobalSelectionStore', function () {
+  afterEach(function () {
     GlobalSelectionStore.reset();
   });
 
-  it('get()', function() {
+  it('get()', function () {
     expect(GlobalSelectionStore.get()).toEqual({
       isReady: false,
       selection: {
@@ -26,14 +26,14 @@ describe('GlobalSelectionStore', function() {
     });
   });
 
-  it('updateProjects()', async function() {
+  it('updateProjects()', async function () {
     expect(GlobalSelectionStore.get().selection.projects).toEqual([]);
     updateProjects([1]);
     await tick();
     expect(GlobalSelectionStore.get().selection.projects).toEqual([1]);
   });
 
-  it('updateDateTime()', async function() {
+  it('updateDateTime()', async function () {
     expect(GlobalSelectionStore.get().selection.datetime).toEqual({
       period: '14d',
       start: null,
@@ -77,7 +77,7 @@ describe('GlobalSelectionStore', function() {
     });
   });
 
-  it('updateEnvironments()', async function() {
+  it('updateEnvironments()', async function () {
     expect(GlobalSelectionStore.get().selection.environments).toEqual([]);
     updateEnvironments(['alpha']);
     await tick();

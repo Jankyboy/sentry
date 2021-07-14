@@ -1,7 +1,5 @@
-from __future__ import absolute_import
-
-from sentry.testutils.cases import RuleTestCase
 from sentry.rules.conditions.event_attribute import EventAttributeCondition, MatchType
+from sentry.testutils.cases import RuleTestCase
 
 
 class EventAttributeConditionTest(RuleTestCase):
@@ -44,10 +42,8 @@ class EventAttributeConditionTest(RuleTestCase):
         return event
 
     def test_render_label(self):
-        rule = self.get_rule(
-            data={"match": MatchType.EQUAL, "attribute": u"\xc3", "value": u"\xc4"}
-        )
-        assert rule.render_label() == u"The event's \xc3 value equals \xc4"
+        rule = self.get_rule(data={"match": MatchType.EQUAL, "attribute": "\xc3", "value": "\xc4"})
+        assert rule.render_label() == "The event's \xc3 value equals \xc4"
 
     def test_equals(self):
         event = self.get_event()
@@ -85,6 +81,18 @@ class EventAttributeConditionTest(RuleTestCase):
         )
         self.assertDoesNotPass(rule, event)
 
+    def test_does_not_start_with(self):
+        event = self.get_event()
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_STARTS_WITH, "attribute": "platform", "value": "ph"}
+        )
+        self.assertDoesNotPass(rule, event)
+
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_STARTS_WITH, "attribute": "platform", "value": "py"}
+        )
+        self.assertPasses(rule, event)
+
     def test_ends_with(self):
         event = self.get_event()
         rule = self.get_rule(
@@ -96,6 +104,18 @@ class EventAttributeConditionTest(RuleTestCase):
             data={"match": MatchType.ENDS_WITH, "attribute": "platform", "value": "thon"}
         )
         self.assertDoesNotPass(rule, event)
+
+    def test_does_not_end_with(self):
+        event = self.get_event()
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_ENDS_WITH, "attribute": "platform", "value": "hp"}
+        )
+        self.assertDoesNotPass(rule, event)
+
+        rule = self.get_rule(
+            data={"match": MatchType.NOT_ENDS_WITH, "attribute": "platform", "value": "thon"}
+        )
+        self.assertPasses(rule, event)
 
     def test_contains(self):
         event = self.get_event()
@@ -460,6 +480,50 @@ class EventAttributeConditionTest(RuleTestCase):
                 "match": MatchType.EQUAL,
                 "attribute": "stacktrace.abs_path",
                 "value": "path/to/foo.php",
+            }
+        )
+        self.assertDoesNotPass(rule, event)
+
+    def test_stacktrace_package(self):
+        """Stacktrace.package should match frames anywhere in the stack."""
+
+        event = self.get_event(
+            exception={
+                "values": [
+                    {
+                        "type": "SyntaxError",
+                        "value": "hello world",
+                        "stacktrace": {
+                            "frames": [
+                                {"filename": "example.php", "package": "package/example.lib"},
+                                {
+                                    "filename": "somecode.php",
+                                    "package": "package/otherpackage.lib",
+                                },
+                                {
+                                    "filename": "othercode.php",
+                                    "package": "package/somepackage.lib",
+                                },
+                            ]
+                        },
+                    }
+                ]
+            }
+        )
+
+        # correctly matching filenames, at various locations in the stacktrace
+        for value in ["package/example.lib", "package/otherpackage.lib", "package/somepackage.lib"]:
+            rule = self.get_rule(
+                data={"match": MatchType.EQUAL, "attribute": "stacktrace.package", "value": value}
+            )
+            self.assertPasses(rule, event)
+
+        # non-matching filename
+        rule = self.get_rule(
+            data={
+                "match": MatchType.EQUAL,
+                "attribute": "stacktrace.package",
+                "value": "package/otherotherpackage.lib",
             }
         )
         self.assertDoesNotPass(rule, event)

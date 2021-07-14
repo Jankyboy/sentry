@@ -1,20 +1,16 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
 from django.test.client import RequestFactory
+from django.urls import reverse
 
 from tests.apidocs.util import APIDocsTestCase
 
 
 class TeamsIndexDocs(APIDocsTestCase):
     def setUp(self):
-        organization = self.create_organization()
         self.create_team(organization=self.organization)
 
         self.url = reverse(
-            "sentry-api-0-organization-teams", kwargs={"organization_slug": organization.slug},
+            "sentry-api-0-organization-teams",
+            kwargs={"organization_slug": self.organization.slug},
         )
 
         self.login_as(user=self.user)

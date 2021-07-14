@@ -1,15 +1,16 @@
 import {browserHistory} from 'react-router';
 import cloneDeep from 'lodash/cloneDeep';
-import React from 'react';
+import range from 'lodash/range';
 
-import {initializeOrg} from 'sentry-test/initializeOrg';
 import {mountWithTheme, shallow} from 'sentry-test/enzyme';
+import {initializeOrg} from 'sentry-test/initializeOrg';
 
 import ErrorRobot from 'app/components/errorRobot';
-import GroupStore from 'app/stores/groupStore';
-import IssueListWithStores, {IssueListOverview} from 'app/views/issueList/overview';
 import StreamGroup from 'app/components/stream/group';
+import GroupStore from 'app/stores/groupStore';
 import TagStore from 'app/stores/tagStore';
+import * as parseLinkHeader from 'app/utils/parseLinkHeader';
+import IssueListWithStores, {IssueListOverview} from 'app/views/issueList/overview';
 
 // Mock <IssueListSidebar> and <IssueListActions>
 jest.mock('app/views/issueList/sidebar', () => jest.fn(() => null));
@@ -23,19 +24,22 @@ const DEFAULT_LINKS_HEADER =
   '<http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=1443575731:0:1>; rel="previous"; results="false"; cursor="1443575731:0:1", ' +
   '<http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=1443575000:0:0>; rel="next"; results="true"; cursor="1443575000:0:0"';
 
-describe('IssueList', function() {
+describe('IssueList', function () {
   let wrapper;
   let props;
 
   let organization;
   let project;
   let group;
+  let groupStats;
   let savedSearch;
 
   let fetchTagsRequest;
   let fetchMembersRequest;
+  const api = new MockApiClient();
+  const parseLinkHeaderSpy = jest.spyOn(parseLinkHeader, 'default');
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     project = TestStubs.ProjectDetails({
       id: '3559',
@@ -53,8 +57,9 @@ describe('IssueList', function() {
 
     savedSearch = TestStubs.Search({
       id: '789',
-      query: 'is:unresolved',
-      name: 'Unresolved Issues',
+      query: 'is:unresolved TypeError',
+      sort: 'date',
+      name: 'Unresolved TypeErrors',
       projectId: project.id,
     });
 
@@ -65,6 +70,11 @@ describe('IssueList', function() {
       headers: {
         Link: DEFAULT_LINKS_HEADER,
       },
+    });
+    groupStats = TestStubs.GroupStats();
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/issues-stats/',
+      body: [groupStats],
     });
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/searches/',
@@ -78,6 +88,11 @@ describe('IssueList', function() {
       url: '/organizations/org-slug/recent-searches/',
       method: 'POST',
       body: [],
+    });
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/issues-count/',
+      method: 'GET',
+      body: [{}],
     });
     MockApiClient.addMockResponse({
       url: '/organizations/org-slug/processingissues/',
@@ -114,6 +129,7 @@ describe('IssueList', function() {
     TagStore.init();
 
     props = {
+      api,
       savedSearchLoading: false,
       savedSearches: [savedSearch],
       useOrgSavedSearches: true,
@@ -133,7 +149,8 @@ describe('IssueList', function() {
     };
   });
 
-  afterEach(function() {
+  afterEach(function () {
+    jest.clearAllMocks();
     MockApiClient.clearMockResponses();
     if (wrapper) {
       wrapper.unmount();
@@ -141,7 +158,7 @@ describe('IssueList', function() {
     wrapper = null;
   });
 
-  describe('withStores and feature flags', function() {
+  describe('withStores and feature flags', function () {
     const {router, routerContext} = initializeOrg({
       organization: {
         features: ['global-views'],
@@ -159,13 +176,10 @@ describe('IssueList', function() {
 
     /* helpers */
     const getSavedSearchTitle = w =>
-      w.find('SavedSearchSelector DropdownMenu ButtonTitle').text();
+      w.find('SavedSearchTab DropdownMenu a').text().trim();
 
     const getSearchBarValue = w =>
-      w
-        .find('SmartSearchBarContainer StyledInput')
-        .prop('value')
-        .trim();
+      w.find('SmartSearchBarContainer textarea').prop('value').trim();
 
     const createWrapper = ({params, location, ...p} = {}) => {
       const newRouter = {
@@ -186,7 +200,7 @@ describe('IssueList', function() {
       );
     };
 
-    beforeEach(function() {
+    beforeEach(function () {
       StreamGroup.mockClear();
 
       recentSearchesRequest = MockApiClient.addMockResponse({
@@ -207,7 +221,7 @@ describe('IssueList', function() {
       });
     });
 
-    it('loads group rows with default query (no pinned queries, and no query in URL)', async function() {
+    it('loads group rows with default query (no pinned queries, and no query in URL)', async function () {
       createWrapper();
 
       // Loading saved searches
@@ -233,14 +247,14 @@ describe('IssueList', function() {
 
       expect(getSearchBarValue(wrapper)).toBe('is:unresolved');
 
-      // Organization saved search selector should have default saved search selected
-      expect(getSavedSearchTitle(wrapper)).toBe('Unresolved Issues');
+      // Saved search not active since is:unresolved is a tab
+      expect(getSavedSearchTitle(wrapper)).toBe('Saved Searches');
 
       // This is mocked
       expect(StreamGroup).toHaveBeenCalled();
     });
 
-    it('loads with query in URL and pinned queries', async function() {
+    it('loads with query in URL and pinned queries', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -282,7 +296,7 @@ describe('IssueList', function() {
       expect(getSavedSearchTitle(wrapper)).toBe('Custom Search');
     });
 
-    it('loads with a pinned saved query', async function() {
+    it('loads with a pinned saved query', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -317,7 +331,7 @@ describe('IssueList', function() {
       expect(getSavedSearchTitle(wrapper)).toBe('Org Custom');
     });
 
-    it('loads with a pinned custom query', async function() {
+    it('loads with a pinned custom query', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -352,7 +366,7 @@ describe('IssueList', function() {
       expect(getSavedSearchTitle(wrapper)).toBe('My Pinned Search');
     });
 
-    it('loads with a saved query', async function() {
+    it('loads with a saved query', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -362,6 +376,7 @@ describe('IssueList', function() {
             isPinned: false,
             isGlobal: true,
             query: 'assigned:me',
+            sort: 'priority',
             projectId: null,
             type: 0,
           }),
@@ -377,7 +392,9 @@ describe('IssueList', function() {
         expect.anything(),
         expect.objectContaining({
           // Should be called with default query
-          data: expect.stringContaining('assigned%3Ame'),
+          data:
+            expect.stringContaining('assigned%3Ame') &&
+            expect.stringContaining('sort=priority'),
         })
       );
 
@@ -387,7 +404,7 @@ describe('IssueList', function() {
       expect(getSavedSearchTitle(wrapper)).toBe('Assigned to Me');
     });
 
-    it('loads with a query in URL', async function() {
+    it('loads with a query in URL', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -422,7 +439,7 @@ describe('IssueList', function() {
       expect(getSavedSearchTitle(wrapper)).toBe('Custom Search');
     });
 
-    it('loads with an empty query in URL', async function() {
+    it('loads with an empty query in URL', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -436,7 +453,7 @@ describe('IssueList', function() {
           }),
         ],
       });
-      createWrapper({location: {query: {query: ''}}});
+      createWrapper({location: {query: {query: undefined}}});
 
       await tick();
       await tick();
@@ -450,13 +467,13 @@ describe('IssueList', function() {
         })
       );
 
-      expect(getSearchBarValue(wrapper)).toBe('');
+      expect(getSearchBarValue(wrapper)).toBe('is:resolved');
 
       // Organization saved search selector should have default saved search selected
-      expect(getSavedSearchTitle(wrapper)).toBe('Custom Search');
+      expect(getSavedSearchTitle(wrapper)).toBe('My Pinned Search');
     });
 
-    it('selects a saved search and changes sort', async function() {
+    it('selects a saved search and changes sort', async function () {
       const localSavedSearch = {...savedSearch, projectId: null};
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
@@ -467,11 +484,8 @@ describe('IssueList', function() {
       await tick();
       wrapper.update();
 
-      wrapper.find('SavedSearchSelector DropdownButton').simulate('click');
-      wrapper
-        .find('SavedSearchSelector MenuItem a')
-        .first()
-        .simulate('click');
+      wrapper.find('SavedSearchTab DropdownMenu a').simulate('click');
+      wrapper.find('SavedSearchMenuItem a').last().simulate('click');
 
       expect(browserHistory.push).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -486,17 +500,17 @@ describe('IssueList', function() {
           ...router.location,
           pathname: '/organizations/org-slug/issues/searches/789/',
           query: {
+            sort: 'freq',
             environment: [],
             project: [],
           },
         },
       });
+      await tick();
+      wrapper.update();
 
       wrapper.find('IssueListSortOptions DropdownButton').simulate('click');
-      wrapper
-        .find('IssueListSortOptions MenuItem span')
-        .at(3)
-        .simulate('click');
+      wrapper.find('DropdownItem').at(3).find('MenuItem span').at(1).simulate('click');
 
       expect(browserHistory.push).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -511,7 +525,7 @@ describe('IssueList', function() {
       );
     });
 
-    it('clears a saved search when a custom one is entered', async function() {
+    it('clears a saved search when a custom one is entered', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [
@@ -531,9 +545,9 @@ describe('IssueList', function() {
       await tick();
       await wrapper.update();
 
-      // Update the search input
+      // Update the search textarea
       wrapper
-        .find('IssueListFilters SmartSearchBar StyledInput input')
+        .find('IssueListFilters SmartSearchBar textarea')
         .simulate('change', {target: {value: 'dogs'}});
       // Submit the form
       wrapper.find('IssueListFilters SmartSearchBar form').simulate('submit');
@@ -552,7 +566,7 @@ describe('IssueList', function() {
       );
     });
 
-    it('pins and unpins a custom query', async function() {
+    it('pins and unpins a custom query', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [savedSearch],
@@ -570,6 +584,7 @@ describe('IssueList', function() {
           id: '666',
           name: 'My Pinned Search',
           query: 'assigned:me level:fatal',
+          sort: 'date',
           isPinned: true,
         },
       });
@@ -579,11 +594,11 @@ describe('IssueList', function() {
       });
 
       wrapper
-        .find('SmartSearchBar input')
+        .find('SmartSearchBar textarea')
         .simulate('change', {target: {value: 'assigned:me level:fatal'}});
       wrapper.find('SmartSearchBar form').simulate('submit');
 
-      expect(browserHistory.push).toHaveBeenLastCalledWith(
+      expect(browserHistory.push.mock.calls[0][0]).toEqual(
         expect.objectContaining({
           query: expect.objectContaining({
             query: 'assigned:me level:fatal',
@@ -602,9 +617,7 @@ describe('IssueList', function() {
         },
       });
 
-      expect(wrapper.find('SavedSearchSelector ButtonTitle').text()).toBe(
-        'Custom Search'
-      );
+      expect(getSavedSearchTitle(wrapper)).toBe('Custom Search');
 
       wrapper.find('Button[aria-label="Pin this search"] button').simulate('click');
 
@@ -631,9 +644,7 @@ describe('IssueList', function() {
       await tick();
       wrapper.update();
 
-      expect(wrapper.find('SavedSearchSelector ButtonTitle').text()).toBe(
-        'My Pinned Search'
-      );
+      expect(getSavedSearchTitle(wrapper)).toBe('My Pinned Search');
 
       wrapper.find('Button[aria-label="Unpin this search"] button').simulate('click');
 
@@ -647,18 +658,20 @@ describe('IssueList', function() {
           pathname: '/organizations/org-slug/issues/',
           query: {
             query: 'assigned:me level:fatal',
+            sort: 'date',
           },
         })
       );
     });
 
-    it('pins and unpins a saved query', async function() {
+    it('pins and unpins a saved query', async function () {
       const assignedToMe = TestStubs.Search({
         id: '234',
         name: 'Assigned to Me',
         isPinned: false,
         isGlobal: true,
         query: 'assigned:me',
+        sort: 'date',
         projectId: null,
         type: 0,
       });
@@ -681,11 +694,8 @@ describe('IssueList', function() {
         },
       });
 
-      wrapper.find('SavedSearchSelector DropdownButton').simulate('click');
-      wrapper
-        .find('SavedSearchSelector MenuItem a')
-        .first()
-        .simulate('click');
+      wrapper.find('SavedSearchTab DropdownMenu a').simulate('click');
+      wrapper.find('SavedSearchMenuItem a').first().simulate('click');
 
       await tick();
 
@@ -696,6 +706,7 @@ describe('IssueList', function() {
             environment: [],
             project: ['3559'],
             statsPeriod: '14d',
+            sort: 'date',
           },
         })
       );
@@ -707,9 +718,7 @@ describe('IssueList', function() {
         },
       });
 
-      expect(wrapper.find('SavedSearchSelector ButtonTitle').text()).toBe(
-        'Unresolved Issues'
-      );
+      expect(getSavedSearchTitle(wrapper)).toBe('Unresolved TypeErrors');
 
       wrapper.find('Button[aria-label="Pin this search"] button').simulate('click');
 
@@ -734,16 +743,11 @@ describe('IssueList', function() {
       await tick();
       wrapper.update();
 
-      expect(wrapper.find('SavedSearchSelector ButtonTitle').text()).toBe(
-        'Unresolved Issues'
-      );
+      expect(getSavedSearchTitle(wrapper)).toBe('Unresolved TypeErrors');
 
       // Select other saved search
-      wrapper.find('SavedSearchSelector DropdownButton').simulate('click');
-      wrapper
-        .find('SavedSearchSelector MenuItem a')
-        .at(1)
-        .simulate('click');
+      wrapper.find('SavedSearchTab DropdownMenu a').simulate('click');
+      wrapper.find('SavedSearchMenuItem a').last().simulate('click');
 
       expect(browserHistory.push).toHaveBeenLastCalledWith(
         expect.objectContaining({
@@ -752,6 +756,7 @@ describe('IssueList', function() {
             project: [],
             environment: [],
             statsPeriod: '14d',
+            sort: 'date',
           },
         })
       );
@@ -763,9 +768,7 @@ describe('IssueList', function() {
         },
       });
 
-      expect(wrapper.find('SavedSearchSelector ButtonTitle').text()).toBe(
-        'Assigned to Me'
-      );
+      expect(getSavedSearchTitle(wrapper)).toBe('Assigned to Me');
 
       createPin = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/pinned-searches/',
@@ -799,12 +802,10 @@ describe('IssueList', function() {
       await tick();
       wrapper.update();
 
-      expect(wrapper.find('SavedSearchSelector ButtonTitle').text()).toBe(
-        'Assigned to Me'
-      );
+      expect(getSavedSearchTitle(wrapper)).toBe('Assigned to Me');
     });
 
-    it('pinning and unpinning searches should keep project selected', async function() {
+    it('pinning and unpinning searches should keep project selected', async function () {
       savedSearchesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/searches/',
         body: [savedSearch],
@@ -833,12 +834,13 @@ describe('IssueList', function() {
           id: '666',
           name: 'My Pinned Search',
           query: 'assigned:me level:fatal',
+          sort: 'date',
           isPinned: true,
         },
       });
 
       wrapper
-        .find('SmartSearchBar input')
+        .find('SmartSearchBar textarea')
         .simulate('change', {target: {value: 'assigned:me level:fatal'}});
       wrapper.find('SmartSearchBar form').simulate('submit');
 
@@ -922,34 +924,25 @@ describe('IssueList', function() {
 
     it.todo('loads pinned search when invalid saved search id is accessed');
 
-    it('does not allow pagination to "previous" while on first page and resets cursors when navigating back to initial page', async function() {
+    it('does not allow pagination to "previous" while on first page and resets cursors when navigating back to initial page', async function () {
       let pushArgs;
       createWrapper();
       await tick();
       await tick();
       wrapper.update();
 
-      expect(
-        wrapper
-          .find('Pagination Button')
-          .first()
-          .prop('disabled')
-      ).toBe(true);
+      expect(wrapper.find('Pagination Button').first().prop('disabled')).toBe(true);
 
       issuesRequest = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/issues/',
         body: [group],
         headers: {
-          Link:
-            '<http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=1443575000:0:0>; rel="previous"; results="true"; cursor="1443575000:0:1", <http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=1443574000:0:0>; rel="next"; results="true"; cursor="1443574000:0:0"',
+          Link: '<http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=1443575000:0:0>; rel="previous"; results="true"; cursor="1443575000:0:1", <http://127.0.0.1:8000/api/0/organizations/org-slug/issues/?cursor=1443574000:0:0>; rel="next"; results="true"; cursor="1443574000:0:0"',
         },
       });
 
       // Click next
-      wrapper
-        .find('Pagination Button')
-        .last()
-        .simulate('click');
+      wrapper.find('Pagination Button').last().simulate('click');
 
       await tick();
 
@@ -968,18 +961,10 @@ describe('IssueList', function() {
       wrapper.setProps({location: pushArgs});
       wrapper.setContext({location: pushArgs});
 
-      expect(
-        wrapper
-          .find('Pagination Button')
-          .first()
-          .prop('disabled')
-      ).toBe(false);
+      expect(wrapper.find('Pagination Button').first().prop('disabled')).toBe(false);
 
       // Click next again
-      wrapper
-        .find('Pagination Button')
-        .last()
-        .simulate('click');
+      wrapper.find('Pagination Button').last().simulate('click');
 
       await tick();
 
@@ -999,10 +984,7 @@ describe('IssueList', function() {
       wrapper.setContext({location: pushArgs});
 
       // Click previous
-      wrapper
-        .find('Pagination Button')
-        .first()
-        .simulate('click');
+      wrapper.find('Pagination Button').first().simulate('click');
 
       await tick();
 
@@ -1022,10 +1004,7 @@ describe('IssueList', function() {
       wrapper.setContext({location: pushArgs});
 
       // Click previous back to initial page
-      wrapper
-        .find('Pagination Button')
-        .first()
-        .simulate('click');
+      wrapper.find('Pagination Button').first().simulate('click');
       await tick();
 
       // cursor is undefined because "prev" cursor is === initial "next" cursor
@@ -1043,14 +1022,14 @@ describe('IssueList', function() {
     });
   });
 
-  describe('transitionTo', function() {
+  describe('transitionTo', function () {
     let instance;
-    beforeEach(function() {
+    beforeEach(function () {
       wrapper = shallow(<IssueListOverview {...props} />);
       instance = wrapper.instance();
     });
 
-    it('transitions to query updates', function() {
+    it('transitions to query updates', function () {
       instance.transitionTo({query: 'is:ignored'});
 
       expect(browserHistory.push).toHaveBeenCalledWith({
@@ -1064,7 +1043,7 @@ describe('IssueList', function() {
       });
     });
 
-    it('transitions to cursor with project-less saved search', function() {
+    it('transitions to cursor with project-less saved search', function () {
       savedSearch = {
         id: 123,
         projectId: null,
@@ -1084,7 +1063,7 @@ describe('IssueList', function() {
       });
     });
 
-    it('transitions to cursor with project saved search', function() {
+    it('transitions to cursor with project saved search', function () {
       savedSearch = {
         id: 123,
         projectId: 999,
@@ -1104,13 +1083,13 @@ describe('IssueList', function() {
       });
     });
 
-    it('transitions to saved search that has a projectId', function() {
+    it('transitions to saved search that has a projectId', function () {
       savedSearch = {
         id: 123,
         projectId: 99,
         query: 'foo:bar',
       };
-      instance.transitionTo(null, savedSearch);
+      instance.transitionTo(undefined, savedSearch);
 
       expect(browserHistory.push).toHaveBeenCalledWith({
         pathname: '/organizations/org-slug/issues/searches/123/',
@@ -1122,14 +1101,34 @@ describe('IssueList', function() {
       });
     });
 
-    it('goes to all projects when using a basic saved search and global-views feature', function() {
+    it('transitions to saved search with a sort', function () {
+      savedSearch = {
+        id: 123,
+        project: null,
+        query: 'foo:bar',
+        sort: 'freq',
+      };
+      instance.transitionTo(undefined, savedSearch);
+
+      expect(browserHistory.push).toHaveBeenCalledWith({
+        pathname: '/organizations/org-slug/issues/searches/123/',
+        query: {
+          environment: [],
+          project: [parseInt(project.id, 10)],
+          statsPeriod: '14d',
+          sort: savedSearch.sort,
+        },
+      });
+    });
+
+    it('goes to all projects when using a basic saved search and global-views feature', function () {
       organization.features = ['global-views'];
       savedSearch = {
         id: 1,
         project: null,
         query: 'is:unresolved',
       };
-      instance.transitionTo(null, savedSearch);
+      instance.transitionTo(undefined, savedSearch);
 
       expect(browserHistory.push).toHaveBeenCalledWith({
         pathname: '/organizations/org-slug/issues/searches/1/',
@@ -1141,14 +1140,14 @@ describe('IssueList', function() {
       });
     });
 
-    it('retains project selection when using a basic saved search and no global-views feature', function() {
+    it('retains project selection when using a basic saved search and no global-views feature', function () {
       organization.features = [];
       savedSearch = {
         id: 1,
         projectId: null,
         query: 'is:unresolved',
       };
-      instance.transitionTo(null, savedSearch);
+      instance.transitionTo(undefined, savedSearch);
 
       expect(browserHistory.push).toHaveBeenCalledWith({
         pathname: '/organizations/org-slug/issues/searches/1/',
@@ -1161,12 +1160,12 @@ describe('IssueList', function() {
     });
   });
 
-  describe('getEndpointParams', function() {
-    beforeEach(function() {
+  describe('getEndpointParams', function () {
+    beforeEach(function () {
       wrapper = shallow(<IssueListOverview {...props} />);
     });
 
-    it('omits null values', function() {
+    it('omits null values', function () {
       wrapper.setProps({
         selection: {
           projects: null,
@@ -1183,7 +1182,7 @@ describe('IssueList', function() {
       expect(value.statsPeriod).toEqual('14d');
     });
 
-    it('omits defaults', function() {
+    it('omits defaults', function () {
       wrapper.setProps({
         location: {
           query: {
@@ -1198,20 +1197,20 @@ describe('IssueList', function() {
       expect(value.sort).toBeUndefined();
     });
 
-    it('uses saved search data', function() {
+    it('uses saved search data', function () {
       const value = wrapper.instance().getEndpointParams();
 
-      expect(value.query).toEqual(savedSearch.query);
+      expect(value.query).toEqual('is:unresolved');
       expect(value.project).toEqual([parseInt(savedSearch.projectId, 10)]);
     });
   });
 
-  describe('componentDidMount', function() {
-    beforeEach(function() {
+  describe('componentDidMount', function () {
+    beforeEach(function () {
       wrapper = shallow(<IssueListOverview {...props} />);
     });
 
-    it('fetches tags and sets state', async function() {
+    it('fetches tags and sets state', async function () {
       const instance = wrapper.instance();
       await instance.componentDidMount();
 
@@ -1219,7 +1218,7 @@ describe('IssueList', function() {
       expect(instance.state.tagsLoading).toBeFalsy();
     });
 
-    it('fetches members and sets state', async function() {
+    it('fetches members and sets state', async function () {
       const instance = wrapper.instance();
       await instance.componentDidMount();
       await wrapper.update();
@@ -1233,15 +1232,15 @@ describe('IssueList', function() {
       expect(members[project.slug][0].email).toBeTruthy();
     });
 
-    it('fetches groups when there is no searchid', async function() {
+    it('fetches groups when there is no searchid', async function () {
       await wrapper.instance().componentDidMount();
     });
   });
 
-  describe('componentDidUpdate fetching groups', function() {
+  describe('componentDidUpdate fetching groups', function () {
     let fetchDataMock;
 
-    beforeEach(function() {
+    beforeEach(function () {
       fetchDataMock = MockApiClient.addMockResponse({
         url: '/organizations/org-slug/issues/',
         body: [group],
@@ -1253,7 +1252,7 @@ describe('IssueList', function() {
       wrapper = shallow(<IssueListOverview {...props} />);
     });
 
-    it('fetches data on selection change', function() {
+    it('fetches data on selection change', function () {
       const selection = {projects: [99], environments: [], datetime: {period: '24h'}};
 
       wrapper.setProps({selection, foo: 'bar'});
@@ -1261,7 +1260,7 @@ describe('IssueList', function() {
       expect(fetchDataMock).toHaveBeenCalled();
     });
 
-    it('fetches data on savedSearch change', function() {
+    it('fetches data on savedSearch change', function () {
       savedSearch = {id: '1', query: 'is:resolved'};
       wrapper.setProps({savedSearch});
       wrapper.update();
@@ -1269,7 +1268,7 @@ describe('IssueList', function() {
       expect(fetchDataMock).toHaveBeenCalled();
     });
 
-    it('fetches data on location change', async function() {
+    it('fetches data on location change', async function () {
       const queryAttrs = ['query', 'sort', 'statsPeriod', 'cursor', 'groupStatsPeriod'];
       const location = cloneDeep(props.location);
       for (const [i, attr] of queryAttrs.entries()) {
@@ -1287,27 +1286,26 @@ describe('IssueList', function() {
       }
     });
 
-    it('uses correct statsPeriod when fetching issues list and no datetime given', async function() {
+    it('uses correct statsPeriod when fetching issues list and no datetime given', async function () {
       const selection = {projects: [99], environments: [], datetime: {}};
       wrapper.setProps({selection, foo: 'bar'});
 
       expect(fetchDataMock).toHaveBeenLastCalledWith(
         '/organizations/org-slug/issues/',
         expect.objectContaining({
-          data:
-            'limit=25&project=99&query=is%3Aunresolved&shortIdLookup=1&statsPeriod=14d',
+          data: 'collapse=stats&expand=owners&expand=inbox&limit=25&project=99&query=is%3Aunresolved&shortIdLookup=1&statsPeriod=14d',
         })
       );
     });
   });
 
-  describe('componentDidUpdate fetching members', function() {
-    beforeEach(function() {
+  describe('componentDidUpdate fetching members', function () {
+    beforeEach(function () {
       wrapper = shallow(<IssueListOverview {...props} />);
       wrapper.instance().fetchData = jest.fn();
     });
 
-    it('fetches memberlist on project change', function() {
+    it('fetches memberlist on project change', function () {
       // Called during componentDidMount
       expect(fetchMembersRequest).toHaveBeenCalledTimes(1);
 
@@ -1322,13 +1320,13 @@ describe('IssueList', function() {
     });
   });
 
-  describe('componentDidUpdate fetching tags', function() {
-    beforeEach(function() {
+  describe('componentDidUpdate fetching tags', function () {
+    beforeEach(function () {
       wrapper = shallow(<IssueListOverview {...props} />);
       wrapper.instance().fetchData = jest.fn();
     });
 
-    it('fetches tags on project change', function() {
+    it('fetches tags on project change', function () {
       // Called during componentDidMount
       expect(fetchTagsRequest).toHaveBeenCalledTimes(1);
 
@@ -1344,12 +1342,12 @@ describe('IssueList', function() {
     });
   });
 
-  describe('processingIssues', function() {
-    beforeEach(function() {
-      wrapper = shallow(<IssueListOverview {...props} />);
+  describe('processingIssues', function () {
+    beforeEach(function () {
+      wrapper = mountWithTheme(<IssueListOverview {...props} />);
     });
 
-    it('fetches and displays processing issues', async function() {
+    it('fetches and displays processing issues', async function () {
       const instance = wrapper.instance();
       instance.componentDidMount();
       await wrapper.update();
@@ -1365,17 +1363,15 @@ describe('IssueList', function() {
     });
   });
 
-  describe('render states', function() {
-    beforeEach(function() {
+  describe('render states', function () {
+    it('displays the loading icon', function () {
       wrapper = mountWithTheme(<IssueListOverview {...props} />);
-    });
-
-    it('displays the loading icon', function() {
       wrapper.setState({savedSearchLoading: true});
       expect(wrapper.find('LoadingIndicator')).toHaveLength(1);
     });
 
-    it('displays an error', function() {
+    it('displays an error', function () {
+      wrapper = mountWithTheme(<IssueListOverview {...props} />);
       wrapper.setState({
         error: 'Things broke',
         savedSearchLoading: false,
@@ -1387,7 +1383,8 @@ describe('IssueList', function() {
       expect(error.props().message).toEqual('Things broke');
     });
 
-    it('displays congrats robots animation with only is:unresolved query', async function() {
+    it('displays congrats robots animation with only is:unresolved query', async function () {
+      wrapper = mountWithTheme(<IssueListOverview {...props} />);
       wrapper.setState({
         savedSearchLoading: false,
         issuesLoading: false,
@@ -1400,7 +1397,7 @@ describe('IssueList', function() {
       expect(wrapper.find('NoUnresolvedIssues').exists()).toBe(true);
     });
 
-    it('displays an empty resultset with is:unresolved and level:error query', async function() {
+    it('displays an empty resultset with is:unresolved and level:error query', async function () {
       const errorsOnlyQuery = {
         ...props,
         location: {
@@ -1424,7 +1421,7 @@ describe('IssueList', function() {
       expect(wrapper.find('EmptyStateWarning').exists()).toBe(true);
     });
 
-    it('displays an empty resultset with has:browser query', async function() {
+    it('displays an empty resultset with has:browser query', async function () {
       const hasBrowserQuery = {
         ...props,
         location: {
@@ -1449,7 +1446,7 @@ describe('IssueList', function() {
     });
   });
 
-  describe('Error Robot', function() {
+  describe('Error Robot', function () {
     const createWrapper = moreProps => {
       const defaultProps = {
         ...props,
@@ -1477,7 +1474,7 @@ describe('IssueList', function() {
       return localWrapper;
     };
 
-    it('displays when no projects selected and all projects user is member of, does not have first event', async function() {
+    it('displays when no projects selected and all projects user is member of, does not have first event', async function () {
       const projects = [
         TestStubs.Project({
           id: '1',
@@ -1509,6 +1506,10 @@ describe('IssueList', function() {
         url: '/organizations/org-slug/projects/',
         body: projects,
       });
+      MockApiClient.addMockResponse({
+        url: '/projects/org-slug/foo/issues/',
+        body: [],
+      });
       wrapper = createWrapper({
         organization: TestStubs.Organization({
           projects,
@@ -1520,7 +1521,7 @@ describe('IssueList', function() {
       expect(wrapper.find(ErrorRobot)).toHaveLength(1);
     });
 
-    it('does not display when no projects selected and any projects have a first event', async function() {
+    it('does not display when no projects selected and any projects have a first event', async function () {
       const projects = [
         TestStubs.Project({
           id: '1',
@@ -1563,7 +1564,7 @@ describe('IssueList', function() {
       expect(wrapper.find(ErrorRobot)).toHaveLength(0);
     });
 
-    it('displays when all selected projects do not have first event', async function() {
+    it('displays when all selected projects do not have first event', async function () {
       const projects = [
         TestStubs.Project({
           id: '1',
@@ -1595,6 +1596,10 @@ describe('IssueList', function() {
         url: '/organizations/org-slug/projects/',
         body: projects,
       });
+      MockApiClient.addMockResponse({
+        url: '/projects/org-slug/foo/issues/',
+        body: [],
+      });
 
       wrapper = createWrapper({
         selection: {
@@ -1612,7 +1617,7 @@ describe('IssueList', function() {
       expect(wrapper.find(ErrorRobot)).toHaveLength(1);
     });
 
-    it('does not display when any selected projects have first event', function() {
+    it('does not display when any selected projects have first event', function () {
       const projects = [
         TestStubs.Project({
           id: '1',
@@ -1657,6 +1662,147 @@ describe('IssueList', function() {
       });
 
       expect(wrapper.find(ErrorRobot)).toHaveLength(0);
+    });
+  });
+
+  it('displays a count that represents the current page', function () {
+    parseLinkHeaderSpy.mockReturnValue({
+      next: {
+        results: true,
+      },
+      previous: {
+        results: false,
+      },
+    });
+    props = {
+      ...props,
+      location: {
+        query: {
+          cursor: 'some cursor',
+          page: 0,
+        },
+      },
+    };
+    wrapper = mountWithTheme(<IssueListOverview {...props} />);
+    wrapper.setState({
+      groupIds: range(0, 25).map(String),
+      queryCount: 500,
+      queryMaxCount: 1000,
+    });
+
+    const paginationWrapper = wrapper.find('PaginationWrapper');
+    expect(paginationWrapper.text()).toBe('Showing 25 of 500 issues');
+
+    parseLinkHeaderSpy.mockReturnValue({
+      next: {
+        results: true,
+      },
+      previous: {
+        results: true,
+      },
+    });
+    wrapper.setProps({
+      location: {
+        query: {
+          cursor: 'some cursor',
+          page: 1,
+        },
+      },
+    });
+    expect(paginationWrapper.text()).toBe('Showing 50 of 500 issues');
+    expect(wrapper.find('IssueListHeader').exists()).toBeTruthy();
+  });
+
+  it('displays a count that makes sense based on the current page', function () {
+    parseLinkHeaderSpy.mockReturnValue({
+      next: {
+        // Is at last page according to the cursor
+        results: false,
+      },
+      previous: {
+        results: true,
+      },
+    });
+    props = {
+      ...props,
+      location: {
+        query: {
+          cursor: 'some cursor',
+          page: 3,
+        },
+      },
+    };
+    wrapper = mountWithTheme(<IssueListOverview {...props} />);
+    wrapper.setState({
+      groupIds: range(0, 25).map(String),
+      queryCount: 500,
+      queryMaxCount: 1000,
+    });
+
+    const paginationWrapper = wrapper.find('PaginationWrapper');
+    expect(paginationWrapper.text()).toBe('Showing 500 of 500 issues');
+
+    parseLinkHeaderSpy.mockReturnValue({
+      next: {
+        results: true,
+      },
+      previous: {
+        // Is at first page according to cursor
+        results: false,
+      },
+    });
+    wrapper.setProps({
+      location: {
+        query: {
+          cursor: 'some cursor',
+          page: 2,
+        },
+      },
+    });
+    expect(paginationWrapper.text()).toBe('Showing 25 of 500 issues');
+    expect(wrapper.find('IssueListHeader').exists()).toBeTruthy();
+  });
+
+  it('displays a count based on items removed', function () {
+    parseLinkHeaderSpy.mockReturnValue({
+      next: {
+        results: true,
+      },
+      previous: {
+        results: true,
+      },
+    });
+    props = {
+      ...props,
+      location: {
+        query: {
+          cursor: 'some cursor',
+          page: 1,
+        },
+      },
+    };
+    wrapper = mountWithTheme(<IssueListOverview {...props} />);
+    wrapper.setState({
+      groupIds: range(0, 25).map(String),
+      queryCount: 75,
+      itemsRemoved: 1,
+      queryMaxCount: 1000,
+    });
+
+    const paginationWrapper = wrapper.find('PaginationWrapper');
+    // 2nd page subtracts the one removed
+    expect(paginationWrapper.text()).toBe('Showing 49 of 74 issues');
+  });
+
+  describe('with relative change feature', function () {
+    it('defaults to larger graph selection', function () {
+      organization.features = ['issue-list-trend-sort'];
+      props.location = {
+        query: {query: 'is:unresolved', sort: 'trend'},
+        search: 'query=is:unresolved',
+      };
+      wrapper = mountWithTheme(<IssueListOverview {...props} />);
+      expect(wrapper.instance().getGroupStatsPeriod()).toBe('auto');
     });
   });
 });

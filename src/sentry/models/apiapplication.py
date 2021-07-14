@@ -1,19 +1,17 @@
-from __future__ import absolute_import, print_function
+from urllib.parse import urlparse
+from uuid import uuid4
 
 import petname
-
 from django.db import models
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
-from six.moves.urllib.parse import urlparse
-from uuid import uuid4
 
 from sentry.db.models import (
-    Model,
     BaseManager,
     BoundedPositiveIntegerField,
     EncryptedTextField,
     FlexibleForeignKey,
+    Model,
     sane_repr,
 )
 
@@ -26,7 +24,7 @@ def generate_token():
     return uuid4().hex + uuid4().hex
 
 
-class ApiApplicationStatus(object):
+class ApiApplicationStatus:
     active = 0
     inactive = 1
     pending_deletion = 2
@@ -34,7 +32,7 @@ class ApiApplicationStatus(object):
 
 
 class ApiApplication(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     client_id = models.CharField(max_length=64, unique=True, default=generate_token)
     client_secret = EncryptedTextField(default=generate_token)
@@ -65,7 +63,7 @@ class ApiApplication(Model):
 
     __repr__ = sane_repr("name", "owner_id")
 
-    def __unicode__(self):
+    def __str__(self):
         return self.name
 
     @property

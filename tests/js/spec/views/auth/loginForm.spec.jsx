@@ -1,5 +1,4 @@
 import {browserHistory} from 'react-router';
-import React from 'react';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
 
@@ -20,11 +19,11 @@ function doLogin(wrapper, apiRequest) {
   );
 }
 
-describe('LoginForm', function() {
+describe('LoginForm', function () {
   const routerContext = TestStubs.routerContext();
   const api = new MockApiClient();
 
-  it('handles errors', async function() {
+  it('handles errors', async function () {
     const mockRequest = MockApiClient.addMockResponse({
       url: '/auth/login/',
       method: 'POST',
@@ -48,7 +47,7 @@ describe('LoginForm', function() {
     expect(wrapper.find('.alert').exists()).toBe(true);
   });
 
-  it('handles success', async function() {
+  it('handles success', async function () {
     const userObject = {
       id: 1,
       name: 'Joe',
@@ -78,7 +77,7 @@ describe('LoginForm', function() {
     expect(browserHistory.push).toHaveBeenCalledWith({pathname: '/next/'});
   });
 
-  it('renders login provider buttons', function() {
+  it('renders login provider buttons', function () {
     const authConfig = {
       vstsLoginLink: '/vstsLogin',
       githubLoginLink: '/githubLogin',

@@ -1,11 +1,11 @@
-from __future__ import absolute_import
-
 from base64 import b64encode
-from six.moves.urllib.parse import urlencode
+from urllib.parse import urlencode
+
+from django.utils.encoding import force_bytes
 
 
 def get_basic_auth(username, password):
-    basic_auth = b64encode(username + ":" + password).decode("ascii")
+    basic_auth = b64encode(force_bytes(username + ":" + password)).decode("ascii")
 
     return "Basic %s" % basic_auth
 

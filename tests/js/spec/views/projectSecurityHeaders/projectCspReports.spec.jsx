@@ -1,16 +1,14 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ProjectCspReports from 'app/views/settings/projectSecurityHeaders/csp';
 
-describe('ProjectCspReports', function() {
+describe('ProjectCspReports', function () {
   const org = TestStubs.Organization();
   const project = TestStubs.Project();
   const projectUrl = `/projects/${org.slug}/${project.slug}/`;
   const routeUrl = `/projects/${org.slug}/${project.slug}/csp/`;
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/keys/`,
@@ -26,7 +24,7 @@ describe('ProjectCspReports', function() {
     });
   });
 
-  it('renders', function() {
+  it('renders', function () {
     const wrapper = mountWithTheme(
       <ProjectCspReports
         organization={org}
@@ -41,7 +39,7 @@ describe('ProjectCspReports', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('can enable default ignored sources', function() {
+  it('can enable default ignored sources', function () {
     const wrapper = mountWithTheme(
       <ProjectCspReports
         organization={org}
@@ -77,7 +75,7 @@ describe('ProjectCspReports', function() {
     );
   });
 
-  it('can set additional ignored sources', function() {
+  it('can set additional ignored sources', function () {
     const wrapper = mountWithTheme(
       <ProjectCspReports
         organization={org}

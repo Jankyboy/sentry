@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 from django.db import IntegrityError, transaction
 from django.db.models.signals import post_save
 from django.utils import timezone
@@ -10,15 +8,17 @@ from sentry.models import (
     Commit,
     Group,
     GroupAssignee,
+    GroupInboxRemoveAction,
     GroupLink,
-    GroupSubscription,
-    GroupSubscriptionReason,
     GroupStatus,
+    GroupSubscription,
+    PullRequest,
     Release,
     Repository,
-    PullRequest,
     UserOption,
+    remove_group_from_inbox,
 )
+from sentry.notifications.types import GroupSubscriptionReason
 from sentry.signals import issue_resolved
 from sentry.tasks.clear_expired_resolutions import clear_expired_resolutions
 
@@ -123,6 +123,7 @@ def resolved_in_commit(instance, created, **kwargs):
                 Group.objects.filter(id=group.id).update(
                     status=GroupStatus.RESOLVED, resolved_at=current_datetime
                 )
+                remove_group_from_inbox(group, action=GroupInboxRemoveAction.RESOLVED)
         except IntegrityError:
             pass
         else:

@@ -1,13 +1,11 @@
-import React from 'react';
-
-import {initializeOrg} from 'sentry-test/initializeOrg';
 import {mountWithTheme, shallow} from 'sentry-test/enzyme';
+import {initializeOrg} from 'sentry-test/initializeOrg';
 
 import {TeamCreate} from 'app/views/teamCreate';
 
-describe('TeamCreate', function() {
-  describe('render()', function() {
-    it('renders correctly', function() {
+describe('TeamCreate', function () {
+  describe('render()', function () {
+    it('renders correctly', function () {
       const {organization, routerContext} = initializeOrg();
       const wrapper = mountWithTheme(
         <TeamCreate
@@ -22,11 +20,11 @@ describe('TeamCreate', function() {
     });
   });
 
-  describe('handleSubmitSuccess()', function() {
+  describe('handleSubmitSuccess()', function () {
     let wrapper;
     const redirectMock = jest.fn();
 
-    beforeEach(function() {
+    beforeEach(function () {
       redirectMock.mockReset();
       wrapper = shallow(
         <TeamCreate
@@ -48,7 +46,7 @@ describe('TeamCreate', function() {
       );
     });
 
-    it('redirects to team settings', function() {
+    it('redirects to team settings', function () {
       wrapper.setContext({
         organization: {
           id: '1337',

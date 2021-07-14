@@ -1,25 +1,25 @@
-from __future__ import absolute_import
-
-from six.moves.urllib.parse import urlparse
+from urllib.parse import urlparse
 
 from django.forms.utils import ErrorList
 from django.http import HttpResponse
+from django.urls import reverse
+from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
-from django.core.urlresolvers import reverse
-from django.utils.decorators import method_decorator
-
-from sentry.utils import json
-from sentry.models import Organization
-from sentry.utils.http import absolute_uri
-from sentry.web.helpers import render_to_response
-
-from sentry_plugins.jira_ac.forms import JiraConfigForm
-from sentry_plugins.jira_ac.models import JiraTenant
-from sentry_plugins.jira_ac.utils import get_jira_auth_from_request, ApiError
 from jwt.exceptions import ExpiredSignatureError
 
-JIRA_KEY = "%s.jira_ac" % (urlparse(absolute_uri()).hostname,)
+from sentry import options
+from sentry.models import Organization
+from sentry.utils import json
+from sentry.utils.http import absolute_uri
+from sentry.utils.sdk import bind_organization_context, configure_scope
+from sentry.web.decorators import transaction_start
+from sentry.web.helpers import render_to_response
+from sentry_plugins.jira_ac.forms import JiraConfigForm
+from sentry_plugins.jira_ac.models import JiraTenant
+from sentry_plugins.jira_ac.utils import ApiError, get_jira_auth_from_request
+
+JIRA_KEY = f"{urlparse(absolute_uri()).hostname}.jira_ac"
 
 
 class BaseJiraWidgetView(View):
@@ -40,65 +40,74 @@ class BaseJiraWidgetView(View):
     def get_response(self, template, context=None):
         context = context or self.get_context()
         res = render_to_response(template, context, self.request)
-        res["X-Frame-Options"] = "ALLOW-FROM %s" % self.request.GET["xdm_e"]
+
+        sources = [
+            self.request.GET.get("xdm_e"),
+            options.get("system.url-prefix"),
+        ]
+        sources_string = " ".join(s for s in sources if s)
+        res["Content-Security-Policy"] = "frame-ancestors 'self' %s" % sources_string
+
         return res
 
 
 class JiraUIWidgetView(BaseJiraWidgetView):
+    @transaction_start("JiraUIWidgetView.get")
     def get(self, request, *args, **kwargs):
-        try:
-            # make sure this exists and is valid
-            jira_auth = self.get_jira_auth()
-        except (ApiError, JiraTenant.DoesNotExist, ExpiredSignatureError):
-            return self.get_response("error.html")
+        with configure_scope() as scope:
+            try:
+                # make sure this exists and is valid
+                jira_auth = self.get_jira_auth()
+            except (ApiError, JiraTenant.DoesNotExist, ExpiredSignatureError) as e:
+                scope.set_tag("result", f"error.{e.__class__.__name__}")
+                return self.get_response("error.html")
 
-        if request.user.is_anonymous():
-            return self.get_response("signin.html")
+            if request.user.is_anonymous:
+                scope.set_tag("result", "signin")
+                return self.get_response("signin.html")
 
-        org = jira_auth.organization
-        context = self.get_context()
-        if org is None:
-            context.update(
-                {
-                    "error_message": (
-                        "You still need to configure this plugin, which "
-                        "can be done from the Manage Add-ons page."
-                    )
-                }
-            )
-            return self.get_response("error.html", context)
+            org = jira_auth.organization
+            context = self.get_context()
+            if org is None:
+                context.update(
+                    {
+                        "error_message": (
+                            "You still need to configure this plugin, which "
+                            "can be done from the Manage Add-ons page."
+                        )
+                    }
+                )
+                scope.set_tag("result", "error.no_org")
+                return self.get_response("error.html", context)
 
-        context.update(
-            {
-                "sentry_api_url": absolute_uri(
-                    "/api/0/organizations/%s/users/issues/" % (org.slug,)
-                ),
-                "issue_key": self.request.GET.get("issueKey"),
-            }
-        )
+            bind_organization_context(org)
+            context.update({"organization_slug": org.slug})
 
-        return self.get_response("widget.html", context)
+            scope.set_tag("result", "success")
+            return self.get_response("widget.html", context)
 
 
 class JiraConfigView(BaseJiraWidgetView):
     def get_context(self):
-        context = super(JiraConfigView, self).get_context()
+        context = super().get_context()
         context["body_class"] = "aui-page-focused aui-page-size-medium"
         return context
 
+    @transaction_start("JiraConfigView.get")
     def get(self, request, *args, **kwargs):
         try:
             jira_auth = self.get_jira_auth()
         except (ApiError, JiraTenant.DoesNotExist):
             return self.get_response("error.html")
 
-        if request.user.is_anonymous():
+        if request.user.is_anonymous:
             return self.get_response("signin.html")
 
         org = jira_auth.organization
         form_context = None
         if org:
             form_context = {"organization": org.id}
+            bind_organization_context(org)
 
         form = JiraConfigForm([(o.id, o.name) for o in request.user.get_orgs()], form_context)
         context = self.get_context()
@@ -106,13 +115,14 @@ class JiraConfigView(BaseJiraWidgetView):
 
         return self.get_response("config.html", context)
 
+    @transaction_start("JiraConfigView.post")
     def post(self, request, *args, **kwargs):
         try:
             jira_auth = get_jira_auth_from_request(request)
         except (ApiError, JiraTenant.DoesNotExist):
             self.get_response("error.html")
 
-        if request.user.is_anonymous():
+        if request.user.is_anonymous:
             return self.get_response("signin.html")
 
         orgs = self.request.user.get_orgs()
@@ -127,6 +137,7 @@ class JiraConfigView(BaseJiraWidgetView):
                 errors.append("Invalid organization")
             else:
                 jira_auth.update(organization=org)
+                bind_organization_context(org)
 
         context = self.get_context()
         context.update({"is_configured": jira_auth.is_configured(), "form": form})
@@ -135,6 +146,7 @@ class JiraConfigView(BaseJiraWidgetView):
 
 
 class JiraDescriptorView(View):
+    @transaction_start("JiraDescriptorView.get")
     def get(self, request, *args, **kwargs):
         return HttpResponse(
             json.dumps(
@@ -172,9 +184,10 @@ class JiraDescriptorView(View):
 class JiraInstalledCallback(View):
     @method_decorator(csrf_exempt)
     def dispatch(self, request, *args, **kwargs):
-        return super(JiraInstalledCallback, self).dispatch(request, *args, **kwargs)
+        return super().dispatch(request, *args, **kwargs)
 
     @method_decorator(csrf_exempt)
+    @transaction_start("JiraInstalledCallback.post")
     def post(self, request, *args, **kwargs):
         registration_info = json.loads(request.body)
         JiraTenant.objects.create_or_update(

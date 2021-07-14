@@ -1,32 +1,63 @@
-from __future__ import absolute_import
-
 import abc
 import logging
-import six
 import time
+from typing import List
 
 from confluent_kafka import (
+    OFFSET_BEGINNING,
+    OFFSET_END,
+    OFFSET_INVALID,
+    OFFSET_STORED,
     Consumer,
     KafkaError,
     KafkaException,
-    OFFSET_BEGINNING,
-    OFFSET_END,
-    OFFSET_STORED,
-    OFFSET_INVALID,
 )
 from confluent_kafka.admin import AdminClient
-
 from django.conf import settings
 
-logger = logging.getLogger("batching-kafka-consumer")
+from sentry.utils import kafka_config
 
+logger = logging.getLogger("batching-kafka-consumer")
 
 DEFAULT_QUEUED_MAX_MESSAGE_KBYTES = 50000
 DEFAULT_QUEUED_MIN_MESSAGES = 10000
 
 
-@six.add_metaclass(abc.ABCMeta)
-class AbstractBatchWorker(object):
+def wait_for_topics(admin_client: AdminClient, topics: List[str], timeout: int = 10) -> None:
+    """
+    Make sure that the provided topics exist and have non-zero partitions in them.
+    """
+    for topic in topics:
+        start = time.time()
+        last_error = None
+
+        while True:
+            if time.time() > start + timeout:
+                raise RuntimeError(
+                    f"Timeout when waiting for Kafka topic '{topic}' to become available, last error: {last_error}"
+                )
+
+            result = admin_client.list_topics(topic=topic)
+            topic_metadata = result.topics.get(topic)
+            if topic_metadata and topic_metadata.partitions and not topic_metadata.error:
+                logger.debug("Topic '%s' is ready", topic)
+                break
+            elif topic_metadata.error in {
+                KafkaError.UNKNOWN_TOPIC_OR_PART,
+                KafkaError.LEADER_NOT_AVAILABLE,
+            }:
+                last_error = topic_metadata.error
+                logger.warning("Topic '%s' or its partitions are not ready, retrying...", topic)
+                time.sleep(0.1)
+                continue
+            else:
+                raise RuntimeError(
+                    "Unknown error when waiting for Kafka topic '%s': %s"
+                    % (topic, topic_metadata.error)
+                )
+
+
+class AbstractBatchWorker(metaclass=abc.ABCMeta):
     """The `BatchingKafkaConsumer` requires an instance of this class to
     handle user provided work such as processing raw messages and flushing
     processed batches to a custom backend."""
@@ -42,7 +73,6 @@ class AbstractBatchWorker(object):
         A simple example would be decoding the JSON value and extracting a few
         fields.
         """
-        pass
 
     @abc.abstractmethod
     def flush_batch(self, batch):
@@ -52,7 +82,6 @@ class AbstractBatchWorker(object):
 
         A simple example would be writing the batch to another Kafka topic.
         """
-        pass
 
     @abc.abstractmethod
     def shutdown(self):
@@ -61,10 +90,9 @@ class AbstractBatchWorker(object):
         cleanup.
 
         A simple example would be closing any remaining backend connections."""
-        pass
 
 
-class BatchingKafkaConsumer(object):
+class BatchingKafkaConsumer:
     """The `BatchingKafkaConsumer` is an abstraction over most Kafka consumer's main event
     loops. For this reason it uses inversion of control: the user provides an implementation
     for the `AbstractBatchWorker` and then the `BatchingKafkaConsumer` handles the rest.
@@ -106,14 +134,14 @@ class BatchingKafkaConsumer(object):
         worker,
         max_batch_size,
         max_batch_time,
-        bootstrap_servers,
+        cluster_name,
         group_id,
         metrics=None,
         producer=None,
         dead_letter_topic=None,
         commit_log_topic=None,
         auto_offset_reset="error",
-        queued_max_messages_kbytes=DEFAULT_QUEUED_MAX_MESSAGE_KBYTES,
+        queued_max_messages_kbytes=None,
         queued_min_messages=DEFAULT_QUEUED_MIN_MESSAGES,
         metrics_sample_rates=None,
         metrics_default_tags=None,
@@ -146,9 +174,12 @@ class BatchingKafkaConsumer(object):
         elif not isinstance(topics, list):
             topics = [topics]
 
+        if queued_max_messages_kbytes is None:
+            queued_max_messages_kbytes = DEFAULT_QUEUED_MAX_MESSAGE_KBYTES
+
         self.consumer = self.create_consumer(
             topics,
-            bootstrap_servers,
+            cluster_name,
             group_id,
             auto_offset_reset,
             queued_max_messages_kbytes,
@@ -169,71 +200,35 @@ class BatchingKafkaConsumer(object):
         sample_rate = self.__metrics_sample_rates.get(metric, settings.SENTRY_METRICS_SAMPLE_RATE)
         return self.__metrics.timing(metric, value, tags=tags, sample_rate=sample_rate)
 
-    def _wait_for_topics(self, admin_client, topics, timeout=10):
-        """
-        Make sure that the provided topics exist and have non-zero partitions in them.
-        """
-        for topic in topics:
-            start = time.time()
-            last_error = None
-
-            while True:
-                if time.time() > start + timeout:
-                    raise RuntimeError(
-                        "Timeout when waiting for Kafka topic '%s' to become available, last error: %s".format(
-                            topic, last_error
-                        )
-                    )
-
-                result = admin_client.list_topics(topic=topic)
-                topic_metadata = result.topics.get(topic)
-                if topic_metadata and topic_metadata.partitions and not topic_metadata.error:
-                    logger.debug("Topic '%s' is ready", topic)
-                    break
-                elif topic_metadata.error in {
-                    KafkaError.UNKNOWN_TOPIC_OR_PART,
-                    KafkaError.LEADER_NOT_AVAILABLE,
-                }:
-                    last_error = topic_metadata.error
-                    logger.warn("Topic '%s' or its partitions are not ready, retrying...", topic)
-                    time.sleep(0.1)
-                    continue
-                else:
-                    raise RuntimeError(
-                        "Unknown error when waiting for Kafka topic '%s': %s"
-                        % (topic, topic_metadata.error)
-                    )
-
     def create_consumer(
         self,
         topics,
-        bootstrap_servers,
+        cluster_name,
         group_id,
         auto_offset_reset,
         queued_max_messages_kbytes,
         queued_min_messages,
     ):
-
-        consumer_config = {
-            "enable.auto.commit": False,
-            "bootstrap.servers": ",".join(bootstrap_servers),
-            "group.id": group_id,
-            "default.topic.config": {"auto.offset.reset": auto_offset_reset},
-            # overridden to reduce memory usage when there's a large backlog
-            "queued.max.messages.kbytes": queued_max_messages_kbytes,
-            "queued.min.messages": queued_min_messages,
-        }
+        consumer_config = kafka_config.get_kafka_consumer_cluster_options(
+            cluster_name,
+            override_params={
+                "enable.auto.commit": False,
+                "group.id": group_id,
+                "default.topic.config": {"auto.offset.reset": auto_offset_reset},
+                # overridden to reduce memory usage when there's a large backlog
+                "queued.max.messages.kbytes": queued_max_messages_kbytes,
+                "queued.min.messages": queued_min_messages,
+            },
+        )
 
         if settings.KAFKA_CONSUMER_AUTO_CREATE_TOPICS:
             # This is required for confluent-kafka>=1.5.0, otherwise the topics will
             # not be automatically created.
-            admin_client = AdminClient(
-                {
-                    "bootstrap.servers": consumer_config["bootstrap.servers"],
-                    "allow.auto.create.topics": "true",
-                }
+            conf = kafka_config.get_kafka_admin_cluster_options(
+                cluster_name, override_params={"allow.auto.create.topics": "true"}
             )
-            self._wait_for_topics(admin_client, topics)
+            admin_client = AdminClient(conf)
+            wait_for_topics(admin_client, topics)
 
         consumer = Consumer(consumer_config)
 
@@ -304,8 +299,8 @@ class BatchingKafkaConsumer(object):
                     key=msg.key(),
                     value=msg.value(),
                     headers={
-                        "partition": six.text_type(msg.partition()) if msg.partition() else None,
-                        "offset": six.text_type(msg.offset()) if msg.offset() else None,
+                        "partition": str(msg.partition()) if msg.partition() else None,
+                        "offset": str(msg.offset()) if msg.offset() else None,
                         "topic": msg.topic(),
                     },
                     on_delivery=self._commit_message_delivery_callback,
@@ -409,7 +404,7 @@ class BatchingKafkaConsumer(object):
             except KafkaException as e:
                 if e.args[0].code() in (
                     KafkaError.REQUEST_TIMED_OUT,
-                    KafkaError.NOT_COORDINATOR_FOR_GROUP,
+                    KafkaError.NOT_COORDINATOR,
                     KafkaError._WAIT_COORD,
                 ):
                     logger.warning("Commit failed: %s (%d retries)", e, retries)
@@ -441,9 +436,7 @@ class BatchingKafkaConsumer(object):
 
                 self.producer.produce(
                     self.commit_log_topic,
-                    key="{}:{}:{}".format(item.topic, item.partition, self.group_id).encode(
-                        "utf-8"
-                    ),
-                    value="{}".format(item.offset).encode("utf-8"),
+                    key=f"{item.topic}:{item.partition}:{self.group_id}".encode("utf-8"),
+                    value=f"{item.offset}".encode("utf-8"),
                     on_delivery=self._commit_message_delivery_callback,
                 )

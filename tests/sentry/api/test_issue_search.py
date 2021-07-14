@@ -1,9 +1,4 @@
-from __future__ import absolute_import
-
-import six
-
 from sentry.api.event_search import (
-    InvalidSearchQuery,
     AggregateFilter,
     AggregateKey,
     SearchFilter,
@@ -11,14 +6,16 @@ from sentry.api.event_search import (
     SearchValue,
 )
 from sentry.api.issue_search import (
-    convert_actor_value,
+    convert_actor_or_none_value,
+    convert_first_release_value,
     convert_query_values,
     convert_release_value,
     convert_user_value,
     parse_search_query,
     value_converters,
 )
-from sentry.constants import STATUS_CHOICES
+from sentry.exceptions import InvalidSearchQuery
+from sentry.models.group import STATUS_QUERY_CHOICES
 from sentry.testutils import TestCase
 
 
@@ -57,8 +54,23 @@ class ParseSearchQueryTest(TestCase):
             SearchFilter(key=SearchKey(name="unassigned"), operator="!=", value=SearchValue(False))
         ]
 
+    def test_is_query_linked(self):
+        assert parse_search_query("is:linked") == [
+            SearchFilter(key=SearchKey(name="linked"), operator="=", value=SearchValue(True))
+        ]
+        assert parse_search_query("is:unlinked") == [
+            SearchFilter(key=SearchKey(name="linked"), operator="=", value=SearchValue(False))
+        ]
+
+        assert parse_search_query("!is:linked") == [
+            SearchFilter(key=SearchKey(name="linked"), operator="!=", value=SearchValue(True))
+        ]
+        assert parse_search_query("!is:unlinked") == [
+            SearchFilter(key=SearchKey(name="linked"), operator="!=", value=SearchValue(False))
+        ]
+
     def test_is_query_status(self):
-        for status_string, status_val in STATUS_CHOICES.items():
+        for status_string, status_val in STATUS_QUERY_CHOICES.items():
             assert parse_search_query("is:%s" % status_string) == [
                 SearchFilter(
                     key=SearchKey(name="status"), operator="=", value=SearchValue(status_val)
@@ -74,9 +86,12 @@ class ParseSearchQueryTest(TestCase):
         with self.assertRaises(InvalidSearchQuery) as cm:
             parse_search_query("is:wrong")
 
-        assert six.text_type(cm.exception).startswith(
-            'Invalid value for "is" search, valid values are'
-        )
+        assert str(cm.exception).startswith('Invalid value for "is" search, valid values are')
+
+    def test_is_query_inbox(self):
+        assert parse_search_query("is:for_review") == [
+            SearchFilter(key=SearchKey(name="for_review"), operator="=", value=SearchValue(True))
+        ]
 
     def test_numeric_filter(self):
         # test numeric format
@@ -104,9 +119,7 @@ class ParseSearchQueryTest(TestCase):
             'times_seen:"<10"',
         ]
         for invalid_query in invalid_queries:
-            with self.assertRaises(
-                InvalidSearchQuery, expected_regex="Invalid format for numeric search"
-            ):
+            with self.assertRaises(InvalidSearchQuery, expected_regex="Invalid number"):
                 parse_search_query(invalid_query)
 
     def test_boolean_operators_not_allowed(self):
@@ -130,12 +143,9 @@ class ParseSearchQueryTest(TestCase):
             SearchFilter(
                 key=SearchKey(name="message"),
                 operator="=",
-                value=SearchValue(raw_value="TypeError Anonymous function"),
-            ),
-            SearchFilter(
-                key=SearchKey(name="message"),
-                operator="=",
-                value=SearchValue(raw_value="(app/javascript/utils/transform-object-keys)"),
+                value=SearchValue(
+                    raw_value="TypeError Anonymous function(app/javascript/utils/transform-object-keys)"
+                ),
             ),
         ]
 
@@ -144,7 +154,7 @@ class ConvertQueryValuesTest(TestCase):
     def test_valid_converter(self):
         filters = [SearchFilter(SearchKey("assigned_to"), "=", SearchValue("me"))]
         expected = value_converters["assigned_to"](
-            filters[0].value.raw_value, [self.project], self.user, None
+            [filters[0].value.raw_value], [self.project], self.user, None
         )
         filters = convert_query_values(filters, [self.project], self.user, None)
         assert filters[0].value.raw_value == expected
@@ -158,14 +168,14 @@ class ConvertQueryValuesTest(TestCase):
 
 class ConvertStatusValueTest(TestCase):
     def test_valid(self):
-        for status_string, status_val in STATUS_CHOICES.items():
-            filters = [SearchFilter(SearchKey("status"), "=", SearchValue(status_string))]
+        for status_string, status_val in STATUS_QUERY_CHOICES.items():
+            filters = [SearchFilter(SearchKey("status"), "=", SearchValue([status_string]))]
             result = convert_query_values(filters, [self.project], self.user, None)
-            assert result[0].value.raw_value == status_val
+            assert result[0].value.raw_value == [status_val]
 
-            filters = [SearchFilter(SearchKey("status"), "=", SearchValue(status_val))]
+            filters = [SearchFilter(SearchKey("status"), "=", SearchValue([status_val]))]
             result = convert_query_values(filters, [self.project], self.user, None)
-            assert result[0].value.raw_value == status_val
+            assert result[0].value.raw_value == [status_val]
 
     def test_invalid(self):
         filters = [SearchFilter(SearchKey("status"), "=", SearchValue("wrong"))]
@@ -180,38 +190,56 @@ class ConvertStatusValueTest(TestCase):
             convert_query_values(filters, [self.project], self.user, None)
 
 
-class ConvertActorValueTest(TestCase):
+class ConvertActorOrNoneValueTest(TestCase):
     def test_user(self):
-        assert convert_actor_value("me", [self.project], self.user, None) == convert_user_value(
-            "me", [self.project], self.user, None
-        )
+        assert convert_actor_or_none_value(
+            ["me"], [self.project], self.user, None
+        ) == convert_user_value(["me"], [self.project], self.user, None)
+
+    def test_none(self):
+        assert convert_actor_or_none_value(["none"], [self.project], self.user, None) == [None]
 
     def test_team(self):
-        assert (
-            convert_actor_value("#%s" % self.team.slug, [self.project], self.user, None)
-            == self.team
-        )
+        assert convert_actor_or_none_value(
+            [f"#{self.team.slug}"], [self.project], self.user, None
+        ) == [self.team]
 
     def test_invalid_team(self):
-        assert convert_actor_value("#never_upgrade", [self.project], self.user, None).id == 0
+        assert (
+            convert_actor_or_none_value(["#never_upgrade"], [self.project], self.user, None)[0].id
+            == 0
+        )
 
 
 class ConvertUserValueTest(TestCase):
     def test_me(self):
-        assert convert_user_value("me", [self.project], self.user, None) == self.user
+        assert convert_user_value(["me"], [self.project], self.user, None) == [self.user]
 
     def test_specified_user(self):
         user = self.create_user()
-        assert convert_user_value(user.username, [self.project], self.user, None) == user
+        assert convert_user_value([user.username], [self.project], self.user, None) == [user]
 
     def test_invalid_user(self):
-        assert convert_user_value("fake-user", [], None, None).id == 0
+        assert convert_user_value(["fake-user"], [], None, None)[0].id == 0
 
 
 class ConvertReleaseValueTest(TestCase):
     def test(self):
-        assert convert_release_value("123", [self.project], self.user, None) == "123"
+        assert convert_release_value(["123"], [self.project], self.user, None) == "123"
 
     def test_latest(self):
         release = self.create_release(self.project)
-        assert convert_release_value("latest", [self.project], self.user, None) == release.version
+        assert convert_release_value(["latest"], [self.project], self.user, None) == release.version
+        assert convert_release_value(["14.*"], [self.project], self.user, None) == "14.*"
+
+
+class ConvertFirstReleaseValueTest(TestCase):
+    def test(self):
+        assert convert_first_release_value(["123"], [self.project], self.user, None) == ["123"]
+
+    def test_latest(self):
+        release = self.create_release(self.project)
+        assert convert_first_release_value(["latest"], [self.project], self.user, None) == [
+            release.version
+        ]
+        assert convert_first_release_value(["14.*"], [self.project], self.user, None) == ["14.*"]

@@ -1,9 +1,7 @@
-from __future__ import absolute_import
-
+import logging
 from uuid import uuid4
 
 from django.apps import apps
-from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -12,10 +10,10 @@ from sentry.exceptions import DeleteAborted
 from sentry.signals import pending_delete
 from sentry.tasks.base import instrumented_task, retry, track_group_async_operation
 
-# in prod we run with infinite retries to recover from errors
-# in debug/development, we assume these tasks generally shouldn't fail
-MAX_RETRIES = 1 if settings.DEBUG else None
-MAX_RETRIES = 1
+logger = logging.getLogger(__name__)
+
+
+MAX_RETRIES = 5
 
 
 @instrumented_task(name="sentry.tasks.deletion.run_scheduled_deletions", queue="cleanup")
@@ -153,7 +151,8 @@ def delete_organization(object_id, transaction_id=None, actor_id=None, **kwargs)
 @retry(exclude=(DeleteAborted,))
 def delete_team(object_id, transaction_id=None, **kwargs):
     from sentry import deletions
-    from sentry.models import Team, TeamStatus
+    from sentry.incidents.models import AlertRule
+    from sentry.models import Rule, Team, TeamStatus
 
     try:
         instance = Team.objects.get(id=object_id)
@@ -166,6 +165,9 @@ def delete_team(object_id, transaction_id=None, **kwargs):
     task = deletions.get(
         model=Team, query={"id": object_id}, transaction_id=transaction_id or uuid4().hex
     )
+    AlertRule.objects.filter(owner_id=instance.actor_id).update(owner=None)
+    Rule.objects.filter(owner_id=instance.actor_id).update(owner=None)
+
     has_more = task.chunk()
     if has_more:
         delete_team.apply_async(
@@ -365,7 +367,7 @@ def delete_repository(object_id, transaction_id=None, actor_id=None, **kwargs):
 @retry(exclude=(DeleteAborted,))
 def delete_organization_integration(object_id, transaction_id=None, actor_id=None, **kwargs):
     from sentry import deletions
-    from sentry.models import OrganizationIntegration, Repository
+    from sentry.models import Identity, OrganizationIntegration, Repository
 
     try:
         instance = OrganizationIntegration.objects.get(id=object_id)
@@ -379,6 +381,22 @@ def delete_organization_integration(object_id, transaction_id=None, actor_id=Non
     Repository.objects.filter(
         organization_id=instance.organization_id, integration_id=instance.integration_id
     ).update(integration_id=None)
+
+    # delete the identity attached through the default_auth_id
+    if instance.default_auth_id:
+        log_info = {
+            "integration_id": instance.integration_id,
+            "identity_id": instance.default_auth_id,
+        }
+        try:
+            identity = Identity.objects.get(id=instance.default_auth_id)
+        except Identity.DoesNotExist:
+            # the identity may not exist for a variety of reasons but for debugging puproses
+            # we should keep track
+            logger.info("delete_organization_integration.identity_does_not_exist", extra=log_info)
+        else:
+            identity.delete()
+            logger.info("delete_organization_integration.identity_deleted", extra=log_info)
 
     task = deletions.get(
         model=OrganizationIntegration,

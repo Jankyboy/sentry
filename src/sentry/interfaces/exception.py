@@ -1,16 +1,13 @@
-from __future__ import absolute_import
-
 __all__ = ("Exception", "Mechanism", "upgrade_legacy_mechanism")
 
 import re
-import six
 
 from sentry.interfaces.base import Interface
-from sentry.utils.json import prune_empty_keys
 from sentry.interfaces.stacktrace import Stacktrace
+from sentry.utils.json import prune_empty_keys
 from sentry.utils.safe import get_path
 
-_type_value_re = re.compile("^(\w+):(.*)$")
+_type_value_re = re.compile(r"^(\w+):(.*)$")
 
 
 def upgrade_legacy_mechanism(data):
@@ -130,11 +127,11 @@ class Mechanism(Interface):
     """
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         for key in ("type", "synthetic", "description", "help_link", "handled", "data", "meta"):
             data.setdefault(key, None)
 
-        return cls(**data)
+        return super().to_python(data, **kwargs)
 
     def to_json(self):
         return prune_empty_keys(
@@ -170,7 +167,7 @@ def uncontribute_non_stacktrace_variants(variants):
 
     # In case any of the variants has a contributing stacktrace, we want
     # to make all other variants non contributing.  Thr e
-    for (key, component) in six.iteritems(variants):
+    for (key, component) in variants.items():
         if any(
             s.contributes for s in component.iter_subcomponents(id="stacktrace", recursive=True)
         ):
@@ -220,14 +217,14 @@ class SingleException(Interface):
     grouping_variants = ["system", "app"]
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         if get_path(data, "stacktrace", "frames", filter=True):
-            stacktrace = Stacktrace.to_python(data["stacktrace"])
+            stacktrace = Stacktrace.to_python_subpath(data, ["stacktrace"], **kwargs)
         else:
             stacktrace = None
 
         if get_path(data, "raw_stacktrace", "frames", filter=True):
-            raw_stacktrace = Stacktrace.to_python(data["raw_stacktrace"], raw=True)
+            raw_stacktrace = Stacktrace.to_python_subpath(data, ["raw_stacktrace"], **kwargs)
         else:
             raw_stacktrace = None
 
@@ -235,11 +232,11 @@ class SingleException(Interface):
         value = data.get("value")
 
         if data.get("mechanism"):
-            mechanism = Mechanism.to_python(data["mechanism"])
+            mechanism = Mechanism.to_python_subpath(data, ["mechanism"], **kwargs)
         else:
             mechanism = None
 
-        kwargs = {
+        new_data = {
             "type": type,
             "value": value,
             "module": data.get("module"),
@@ -249,7 +246,7 @@ class SingleException(Interface):
             "raw_stacktrace": raw_stacktrace,
         }
 
-        return cls(**kwargs)
+        return super().to_python(new_data, **kwargs)
 
     def to_json(self):
         mechanism = (
@@ -303,7 +300,7 @@ class SingleException(Interface):
 
         return {
             "type": self.type,
-            "value": six.text_type(self.value) if self.value else None,
+            "value": str(self.value) if self.value else None,
             "mechanism": mechanism,
             "threadId": self.thread_id,
             "module": self.module,
@@ -384,12 +381,17 @@ class Exception(Interface):
         return len(self.exceptions())
 
     @classmethod
-    def to_python(cls, data):
-        return cls(
-            values=[
-                v and SingleException.to_python(v) for v in get_path(data, "values", default=[])
-            ],
-            exc_omitted=data.get("exc_omitted"),
+    def to_python(cls, data, **kwargs):
+        values = []
+        for i, v in enumerate(get_path(data, "values", default=[])):
+            if not v:
+                # Cannot skip over None-values, need to preserve offsets
+                values.append(v)
+            else:
+                values.append(SingleException.to_python_subpath(data, ["values", i], **kwargs))
+
+        return super().to_python(
+            {"values": values, "exc_omitted": data.get("exc_omitted")}, **kwargs
         )
 
     # TODO(ja): Fix all following methods when to_python is refactored. All
@@ -420,7 +422,7 @@ class Exception(Interface):
 
         result = {}
         values = meta.get("values", meta)
-        for index, value in six.iteritems(values):
+        for index, value in values.items():
             exc = self.values[int(index)]
             if exc is not None:
                 result[index] = exc.get_api_meta(value, is_public=is_public, platform=platform)
@@ -436,7 +438,7 @@ class Exception(Interface):
             if not exc:
                 continue
 
-            output.append(u"{0}: {1}\n".format(exc.type, exc.value))
+            output.append(f"{exc.type}: {exc.value}\n")
             if exc.stacktrace:
                 output.append(
                     exc.stacktrace.get_stacktrace(
@@ -458,5 +460,4 @@ class Exception(Interface):
 
         mechanism = self.values[0].mechanism
         if mechanism:
-            for tag in mechanism.iter_tags():
-                yield tag
+            yield from mechanism.iter_tags()

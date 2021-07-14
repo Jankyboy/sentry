@@ -1,9 +1,6 @@
-from __future__ import absolute_import
-
 from django.db import transaction
 from rest_framework import status
 
-from sentry.api.base import DocSection
 from sentry.api.bases.project import ProjectEndpoint
 from sentry.api.exceptions import ResourceDoesNotExist
 from sentry.api.serializers import serialize
@@ -13,8 +10,6 @@ from sentry.models import AuditLogEntryEvent, ServiceHook
 
 
 class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
-    doc_section = DocSection.PROJECTS
-
     def get(self, request, project, hook_id):
         """
         Retrieve a Service Hook
@@ -49,7 +44,7 @@ class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
         :param array[string] events: the events to subscribe to
         :auth: required
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return self.respond(status=401)
 
         try:
@@ -100,7 +95,7 @@ class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
         :pparam string hook_id: the guid of the service hook.
         :auth: required
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return self.respond(status=401)
 
         try:
@@ -119,4 +114,4 @@ class ProjectServiceHookDetailsEndpoint(ProjectEndpoint):
                 data=hook.get_audit_log_data(),
             )
 
-        return self.respond(serialize(hook, request.user), status=204)
+        return self.respond(status=204)

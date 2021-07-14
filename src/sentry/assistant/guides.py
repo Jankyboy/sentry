@@ -1,7 +1,4 @@
-from __future__ import absolute_import
-
-from django.utils.translation import ugettext_lazy as _
-
+from django.conf import settings
 
 # Guide Schema
 # id (text, required): unique id
@@ -21,93 +18,51 @@ from django.utils.translation import ugettext_lazy as _
 #                          element but you'd still like it to be shown, set this as None.
 
 GUIDES = {
-    "issue": {
-        "id": 1,
-        "required_targets": ["issue_title", "exception"],
-        "steps": [
-            {
-                "title": _("Issue Details"),
-                "message": _(
-                    "The issue page contains all the details about an issue. Let's get started."
-                ),
-                "target": "issue_title",
-            },
-            {
-                "title": _("Stacktrace"),
-                "message": _(
-                    "See the sequence of function calls that led to the error, and "
-                    "global/local variables for each stack frame."
-                ),
-                "target": "exception",
-            },
-            {
-                "title": _("Breadcrumbs"),
-                "message": _(
-                    "Breadcrumbs are a trail of events that happened prior to the error. They're "
-                    "similar to traditional logs but can record more rich structured data. "
-                    "When Sentry is used with web frameworks, breadcrumbs are automatically "
-                    "captured for events like database calls and network requests."
-                ),
-                "target": "breadcrumbs",
-            },
-            {
-                "title": _("Tags"),
-                "message": _(
-                    "Attach arbitrary key-value pairs to each event which you can search and filter on. "
-                    "View a heatmap of all tags for an issue on the right panel. "
-                ),
-                "target": "tags",
-            },
-            {
-                "title": _("Resolve"),
-                "message": _(
-                    "Resolve an issue to remove it from your issue list. "
-                    'Sentry can also <a href="/settings/account/notifications/" target="_blank"> '
-                    "alert you</a> when a new issue occurs or a resolved issue re-occurs."
-                ),
-                "target": "resolve",
-            },
-            {
-                "title": _("Delete and Ignore"),
-                "message": _(
-                    "Delete an issue to remove it from your issue list until it happens again. "
-                    "Ignore an issue to remove it permanently or until certain conditions are met."
-                ),
-                "target": "ignore_delete_discard",
-            },
-            {
-                "title": _("Issue Number"),
-                "message": _(
-                    "Include this unique identifier in your commit message to have Sentry automatically "
-                    "resolve the issue when your code is deployed. "
-                    '<a href="https://docs.sentry.io/learn/releases/" target="_blank">Learn more</a>.'
-                ),
-                "target": "issue_number",
-            },
-            {
-                "title": _("Ownership Rules"),
-                "message": _(
-                    "Define users or teams responsible for specific file paths or URLs so "
-                    "that alerts can be routed to the right person. "
-                    '<a href="https://docs.sentry.io/learn/issue-owners/" target="_blank">Learn more</a>.'
-                ),
-                "target": "owners",
-            },
+    "issue": {"id": 1, "required_targets": ["issue_title", "exception"]},
+    "issue_stream": {"id": 3, "required_targets": ["issue_stream"]},
+    "inbox_guide": {"id": 8, "required_targets": ["inbox_guide"]},
+    "for_review_guide": {"id": 9, "required_targets": ["for_review_guide_tab"]},
+    "alerts_write_member": {"id": 10, "required_targets": ["alerts_write_member"]},
+    "alerts_write_owner": {"id": 11, "required_targets": ["alerts_write_owner"]},
+    "assigned_or_suggested_guide": {"id": 12, "required_targets": ["assigned_or_suggested_query"]},
+    "release_adoption": {"id": 13, "required_targets": ["release_adoption"]},
+    "stack_trace_preview": {"id": 15, "required_targets": ["issue_stream_title"]},
+    "trace_view": {
+        "id": 16,
+        "required_targets": ["trace_view_guide_row", "trace_view_guide_row_details"],
+    },
+    "span_op_breakdowns_and_tag_explorer": {
+        "id": 17,
+        "required_targets": [
+            "span_op_breakdowns_filter",
+            "span_op_relative_breakdowns",
+            "tag_explorer",
         ],
     },
-    "issue_stream": {
-        "id": 3,
-        "required_targets": ["issue_stream"],
-        "steps": [
-            {
-                "title": _("Issues"),
-                "message": _(
-                    "Sentry automatically groups similar events together into an issue. Similarity "
-                    "is determined by stacktrace and other factors. "
-                    '<a href="https://docs.sentry.io/data-management/rollups/" target="_blank">Learn more</a>. '
-                ),
-                "target": "issue_stream",
-            }
-        ],
+    "team_key_transactions": {"id": 18, "required_targets": ["team_key_transaction_header"]},
+    "project_transaction_threshold": {
+        "id": 19,
+        "required_targets": ["project_transaction_threshold"],
+    },
+    "project_transaction_threshold_override": {
+        "id": 20,
+        "required_targets": ["project_transaction_threshold_override"],
+    },
+    "percentage_based_alerts": {
+        "id": 21,
+        "required_targets": ["percentage_based_alerts"],
     },
 }
+
+# demo mode has different guides
+if settings.DEMO_MODE:
+    GUIDES = {
+        "sidebar": {"id": 20, "required_targets": ["projects"]},
+        "issue_stream_v2": {"id": 21, "required_targets": ["issue_title"]},
+        "issue_v2": {"id": 22, "required_targets": ["issue_details"]},
+        "releases": {"id": 23, "required_targets": ["release_version"]},
+        "release_details": {"id": 24, "required_targets": ["release_chart"]},
+        "discover_landing": {"id": 25, "required_targets": ["discover_landing_header"]},
+        "discover_event_view": {"id": 26, "required_targets": ["create_alert_from_discover"]},
+        "transaction_details": {"id": 27, "required_targets": ["span_tree"]},
+    }

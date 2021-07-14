@@ -1,10 +1,8 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
+import * as modal from 'app/actionCreators/modal';
 import {Client} from 'app/api';
 import PluginDetailedView from 'app/views/organizationIntegrations/pluginDetailedView';
-import * as modal from 'app/actionCreators/modal';
 
 const mockResponse = mocks => {
   mocks.forEach(([url, body]) =>
@@ -15,7 +13,7 @@ const mockResponse = mocks => {
   );
 };
 
-describe('PluginDetailedView', function() {
+describe('PluginDetailedView', function () {
   const org = TestStubs.Organization();
   const routerContext = TestStubs.routerContext();
   let wrapper;
@@ -78,22 +76,22 @@ describe('PluginDetailedView', function() {
       routerContext
     );
   });
-  it('shows the Integration name and install status', async function() {
+  it('shows the Integration name and install status', async function () {
     expect(wrapper.find('Name').props().children).toEqual('PagerDuty (Legacy)');
     expect(wrapper.find('IntegrationStatus').props().status).toEqual('Installed');
   });
-  it('shows the Add to Project button', async function() {
+  it('shows the Add to Project button', async function () {
     expect(wrapper.find('AddButton').props().disabled).toEqual(false);
     expect(wrapper.find('AddButton').props().children).toEqual('Add to Project');
   });
 
-  it('onClick', async function() {
+  it('onClick', async function () {
     modal.openModal = jest.fn();
     wrapper.find('AddButton').simulate('click');
     expect(modal.openModal).toHaveBeenCalled();
   });
 
-  it('view configurations', async function() {
+  it('view configurations', async function () {
     wrapper = mountWithTheme(
       <PluginDetailedView
         params={{integrationSlug: 'pagerduty', orgId: org.slug}}

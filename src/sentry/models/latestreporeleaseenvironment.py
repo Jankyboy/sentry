@@ -1,5 +1,3 @@
-from __future__ import absolute_import, print_function
-
 from sentry.db.models import BoundedBigIntegerField, Model, sane_repr
 
 
@@ -9,7 +7,7 @@ class LatestRepoReleaseEnvironment(Model):
     commits in the given repo.
     """
 
-    __core__ = False
+    __include_in_export__ = False
 
     repository_id = BoundedBigIntegerField()
     # 0 for 'all environments'

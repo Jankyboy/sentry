@@ -1,8 +1,6 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-
-from django.db import migrations, models
 from django.conf import settings
+from django.db import migrations, models
+
 import social_auth.fields
 
 
@@ -25,11 +23,15 @@ class Migration(migrations.Migration):
                 ("extra_data", social_auth.fields.JSONField(default="{}")),
                 (
                     "user",
-                    models.ForeignKey(related_name="social_auth", to=settings.AUTH_USER_MODEL),
+                    models.ForeignKey(
+                        related_name="social_auth",
+                        to=settings.AUTH_USER_MODEL,
+                        on_delete=models.CASCADE,
+                    ),
                 ),
             ],
         ),
         migrations.AlterUniqueTogether(
-            name="usersocialauth", unique_together=set([("provider", "uid", "user")])
+            name="usersocialauth", unique_together={("provider", "uid", "user")}
         ),
     ]

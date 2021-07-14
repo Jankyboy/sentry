@@ -1,40 +1,37 @@
-from __future__ import absolute_import
-
-from time import time
 import logging
 import re
+from time import time
 
-import six
 from django import forms
 from django.utils.translation import ugettext as _
 
-from sentry import http, features
+from sentry import features, http
 from sentry.auth.exceptions import IdentityNotValid
 from sentry.constants import ObjectStatus
+from sentry.identity.pipeline import IdentityProviderPipeline
+from sentry.identity.vsts import get_user_info, use_limited_scopes
+from sentry.integrations import (
+    FeatureDescription,
+    IntegrationFeatures,
+    IntegrationInstallation,
+    IntegrationMetadata,
+    IntegrationProvider,
+)
+from sentry.integrations.repositories import RepositoryMixin
+from sentry.integrations.vsts.issues import VstsIssueSync
+from sentry.models import Integration as IntegrationModel
 from sentry.models import (
-    Integration as IntegrationModel,
     IntegrationExternalProject,
     Organization,
     OrganizationIntegration,
+    Repository,
 )
-from sentry.integrations import (
-    IntegrationInstallation,
-    IntegrationFeatures,
-    IntegrationProvider,
-    IntegrationMetadata,
-    FeatureDescription,
-)
+from sentry.pipeline import NestedPipelineView, PipelineView
 from sentry.shared_integrations.exceptions import ApiError, IntegrationError
-from sentry.integrations.repositories import RepositoryMixin
-from sentry.integrations.vsts.issues import VstsIssueSync
-from sentry.models import Repository
-from sentry.pipeline import NestedPipelineView
-from sentry.identity.pipeline import IdentityProviderPipeline
-from sentry.identity.vsts import get_user_info, use_limited_scopes
-from sentry.pipeline import PipelineView
-from sentry.web.helpers import render_to_response
 from sentry.tasks.integrations import migrate_repo
 from sentry.utils.http import absolute_uri
+from sentry.web.helpers import render_to_response
+
 from .client import VstsApiClient
 from .repository import VstsRepositoryProvider
 from .webhooks import WorkItemWebhook
@@ -77,6 +74,12 @@ FEATURES = [
         """,
         IntegrationFeatures.ISSUE_SYNC,
     ),
+    FeatureDescription(
+        """
+        Automatically create Azure DevOps work items based on Issue Alert conditions.
+        """,
+        IntegrationFeatures.TICKET_RULES,
+    ),
 ]
 
 metadata = IntegrationMetadata(
@@ -84,7 +87,7 @@ metadata = IntegrationMetadata(
     features=FEATURES,
     author="The Sentry Team",
     noun=_("Installation"),
-    issue_url="https://github.com/getsentry/sentry/issues/new?title=VSTS%20Integration:%20&labels=Component%3A%20Integrations",
+    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug.yml&title=Azure%20DevOps%20Integration%20Problem",
     source_url="https://github.com/getsentry/sentry/tree/master/src/sentry/integrations/vsts",
     aspects={},
 )
@@ -101,7 +104,7 @@ class VstsIntegration(IntegrationInstallation, RepositoryMixin, VstsIssueSync):
     inbound_assignee_key = "sync_reverse_assignment"
 
     def __init__(self, *args, **kwargs):
-        super(VstsIntegration, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.default_identity = None
 
     def reinstall(self):
@@ -119,7 +122,7 @@ class VstsIntegration(IntegrationInstallation, RepositoryMixin, VstsIssueSync):
         for repo in repos["value"]:
             data.append(
                 {
-                    "name": "%s/%s" % (repo["project"]["name"], repo["name"]),
+                    "name": "{}/{}".format(repo["project"]["name"], repo["name"]),
                     "identifier": repo["id"],
                 }
             )
@@ -163,7 +166,7 @@ class VstsIntegration(IntegrationInstallation, RepositoryMixin, VstsIssueSync):
         project_selector = []
 
         try:
-            projects = client.get_projects(instance)["value"]
+            projects = client.get_projects(instance)
             all_states = set()
 
             for idx, project in enumerate(projects):
@@ -205,6 +208,7 @@ class VstsIntegration(IntegrationInstallation, RepositoryMixin, VstsIssueSync):
                     "on_unresolve": _("When unresolved"),
                 },
                 "mappedColumnLabel": _("Azure DevOps Project"),
+                "formatMessageValue": False,
             },
             {
                 "name": self.outbound_assignee_key,
@@ -314,9 +318,10 @@ class VstsIntegrationProvider(IntegrationProvider):
 
     features = frozenset(
         [
+            IntegrationFeatures.COMMITS,
             IntegrationFeatures.ISSUE_BASIC,
             IntegrationFeatures.ISSUE_SYNC,
-            IntegrationFeatures.COMMITS,
+            IntegrationFeatures.TICKET_RULES,
         ]
     )
 
@@ -409,9 +414,7 @@ class VstsIntegrationProvider(IntegrationProvider):
             )
         except ApiError as e:
             auth_codes = (400, 401, 403)
-            permission_error = "permission" in six.text_type(
-                e
-            ) or "not authorized" in six.text_type(e)
+            permission_error = "permission" in str(e) or "not authorized" in str(e)
             if e.code in auth_codes or permission_error:
                 raise IntegrationError(
                     "You do not have sufficient account access to create webhooks "
@@ -437,15 +440,15 @@ class VstsIntegrationProvider(IntegrationProvider):
 
     @classmethod
     def get_base_url(cls, access_token, account_id):
-        session = http.build_session()
         url = VstsIntegrationProvider.VSTS_ACCOUNT_LOOKUP_URL % account_id
-        response = session.get(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer %s" % access_token,
-            },
-        )
+        with http.build_session() as session:
+            response = session.get(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+            )
         if response.status_code == 200:
             return response.json()["locationUrl"]
         return None
@@ -505,17 +508,15 @@ class AccountConfigView(PipelineView):
         return None
 
     def get_accounts(self, access_token, user_id):
-        session = http.build_session()
-        url = (
-            "https://app.vssps.visualstudio.com/_apis/accounts?ownerId=%s&api-version=4.1" % user_id
-        )
-        response = session.get(
-            url,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer %s" % access_token,
-            },
-        )
+        url = f"https://app.vssps.visualstudio.com/_apis/accounts?ownerId={user_id}&api-version=4.1"
+        with http.build_session() as session:
+            response = session.get(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {access_token}",
+                },
+            )
         if response.status_code == 200:
             return response.json()
         return None
@@ -523,7 +524,7 @@ class AccountConfigView(PipelineView):
 
 class AccountForm(forms.Form):
     def __init__(self, accounts, *args, **kwargs):
-        super(AccountForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.fields["account"] = forms.ChoiceField(
             choices=[(acct["accountId"], acct["accountName"]) for acct in accounts],
             label="Account",

@@ -1,7 +1,5 @@
-from __future__ import absolute_import
-
-from django.core.urlresolvers import reverse
 from django.http import Http404
+from django.urls import reverse
 
 from sentry.incidents.logic import unsubscribe_from_incident
 from sentry.incidents.models import Incident

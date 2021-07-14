@@ -1,4 +1,3 @@
-import React from 'react';
 import moment from 'moment';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -8,7 +7,7 @@ import {trackAdhocEvent, trackAnalyticsEvent} from 'app/utils/analytics';
 
 jest.mock('app/utils/analytics');
 
-describe('EventCauseEmpty', function() {
+describe('EventCauseEmpty', function () {
   let putMock;
   const routerContext = TestStubs.routerContext();
   const organization = TestStubs.Organization();
@@ -16,8 +15,11 @@ describe('EventCauseEmpty', function() {
     platform: 'javascript',
     firstEvent: '2020-01-01T23:54:33.831199Z',
   });
+  const event = TestStubs.Event();
 
-  beforeEach(function() {
+  beforeEach(function () {
+    jest.clearAllMocks();
+
     MockApiClient.clearMockResponses();
 
     MockApiClient.addMockResponse({
@@ -26,18 +28,18 @@ describe('EventCauseEmpty', function() {
     });
     MockApiClient.addMockResponse({
       method: 'GET',
-      url: '/promptsactivity/',
+      url: '/prompts-activity/',
       body: {},
     });
     putMock = MockApiClient.addMockResponse({
       method: 'PUT',
-      url: '/promptsactivity/',
+      url: '/prompts-activity/',
     });
   });
 
-  it('renders', async function() {
+  it('renders', async function () {
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
       routerContext
     );
 
@@ -54,22 +56,44 @@ describe('EventCauseEmpty', function() {
     });
   });
 
-  it('can be snoozed', async function() {
+  /**
+   * Want to alternate between showing the configure suspect commits prompt and
+   * the show configure distributed tracing prompt.
+   */
+  it('doesnt render when event id starts with even char', async function () {
+    const newEvent = {
+      ...event,
+      id: 'A',
+      eventID: 'ABCDEFABCDEFABCDEFABCDEFABCDEFAB',
+    };
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={newEvent} organization={organization} project={project} />,
       routerContext
     );
 
     await tick();
     wrapper.update();
 
-    wrapper
-      .find('button[aria-label="Snooze"]')
-      .first()
-      .simulate('click');
+    expect(wrapper.find('ExampleCommitPanel').exists()).toBe(false);
+    expect(trackAdhocEvent).not.toHaveBeenCalled();
+  });
+
+  it('can be snoozed', async function () {
+    const wrapper = mountWithTheme(
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
+      routerContext
+    );
+
+    await tick();
+    wrapper.update();
+
+    wrapper.find('button[aria-label="Snooze"]').first().simulate('click');
+
+    await tick();
+    await wrapper.update();
 
     expect(putMock).toHaveBeenCalledWith(
-      '/promptsactivity/',
+      '/prompts-activity/',
       expect.objectContaining({
         method: 'PUT',
         data: {
@@ -92,19 +116,17 @@ describe('EventCauseEmpty', function() {
     });
   });
 
-  it('does not render when snoozed', async function() {
-    const snoozed_ts = moment()
-      .subtract(1, 'day')
-      .unix();
+  it('does not render when snoozed', async function () {
+    const snoozed_ts = moment().subtract(1, 'day').unix();
 
     MockApiClient.addMockResponse({
       method: 'GET',
-      url: '/promptsactivity/',
+      url: '/prompts-activity/',
       body: {data: {snoozed_ts}},
     });
 
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
       routerContext
     );
 
@@ -114,19 +136,17 @@ describe('EventCauseEmpty', function() {
     expect(wrapper.find('ExampleCommitPanel').exists()).toBe(false);
   });
 
-  it('renders when snoozed more than 7 days ago', async function() {
-    const snoozed_ts = moment()
-      .subtract(9, 'day')
-      .unix();
+  it('renders when snoozed more than 7 days ago', async function () {
+    const snoozed_ts = moment().subtract(9, 'day').unix();
 
     MockApiClient.addMockResponse({
       method: 'GET',
-      url: '/promptsactivity/',
+      url: '/prompts-activity/',
       body: {data: {snoozed_ts}},
     });
 
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
       routerContext
     );
 
@@ -136,22 +156,22 @@ describe('EventCauseEmpty', function() {
     expect(wrapper.find('ExampleCommitPanel').exists()).toBe(true);
   });
 
-  it('can be dismissed', async function() {
+  it('can be dismissed', async function () {
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
       routerContext
     );
 
     await tick();
     wrapper.update();
 
-    wrapper
-      .find('button[aria-label="Dismiss"]')
-      .first()
-      .simulate('click');
+    wrapper.find('button[aria-label="Dismiss"]').first().simulate('click');
+
+    await tick();
+    await wrapper.update();
 
     expect(putMock).toHaveBeenCalledWith(
-      '/promptsactivity/',
+      '/prompts-activity/',
       expect.objectContaining({
         method: 'PUT',
         data: {
@@ -174,15 +194,15 @@ describe('EventCauseEmpty', function() {
     });
   });
 
-  it('does not render when dismissed', async function() {
+  it('does not render when dismissed', async function () {
     MockApiClient.addMockResponse({
       method: 'GET',
-      url: '/promptsactivity/',
+      url: '/prompts-activity/',
       body: {data: {dismissed_ts: moment().unix()}},
     });
 
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
       routerContext
     );
 
@@ -192,19 +212,16 @@ describe('EventCauseEmpty', function() {
     expect(wrapper.find('ExampleCommitPanel').exists()).toBe(false);
   });
 
-  it('can capture analytics on docs click', async function() {
+  it('can capture analytics on docs click', async function () {
     const wrapper = mountWithTheme(
-      <EventCauseEmpty organization={organization} project={project} />,
+      <EventCauseEmpty event={event} organization={organization} project={project} />,
       routerContext
     );
 
     await tick();
     wrapper.update();
 
-    wrapper
-      .find('[aria-label="Read the docs"]')
-      .first()
-      .simulate('click');
+    wrapper.find('[aria-label="Read the docs"]').first().simulate('click');
 
     expect(trackAnalyticsEvent).toHaveBeenCalledWith({
       eventKey: 'event_cause.docs_clicked',

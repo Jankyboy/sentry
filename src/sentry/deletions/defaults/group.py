@@ -1,12 +1,39 @@
-from __future__ import absolute_import, print_function
-
 import os
-from sentry import eventstore, nodestore
+
+from sentry import eventstore, models, nodestore
 from sentry.eventstore.models import Event
-from sentry.models import EventAttachment, UserReport
-from sentry.reprocessing2 import delete_unprocessed_events
 
 from ..base import BaseDeletionTask, BaseRelation, ModelDeletionTask, ModelRelation
+
+# Group models that relate only to groups and not to events. We assume those to
+# be safe to delete/mutate within a single transaction for user-triggered
+# actions (delete/reprocess/merge/unmerge)
+DIRECT_GROUP_RELATED_MODELS = (
+    models.GroupHash,
+    models.GroupAssignee,
+    models.GroupCommitResolution,
+    models.GroupLink,
+    models.GroupBookmark,
+    models.GroupMeta,
+    models.GroupEnvironment,
+    models.GroupRelease,
+    models.GroupRedirect,
+    models.GroupResolution,
+    models.GroupRuleStatus,
+    models.GroupSeen,
+    models.GroupShare,
+    models.GroupSnooze,
+    models.GroupInbox,
+    models.GroupOwner,
+    models.GroupEmailThread,
+    models.GroupSubscription,
+)
+
+_GROUP_RELATED_MODELS = DIRECT_GROUP_RELATED_MODELS + (
+    # prioritize GroupHash
+    models.UserReport,
+    models.EventAttachment,
+)
 
 
 class EventDataDeletionTask(BaseDeletionTask):
@@ -20,7 +47,7 @@ class EventDataDeletionTask(BaseDeletionTask):
         self.group_id = group_id
         self.project_id = project_id
         self.last_event = None
-        super(EventDataDeletionTask, self).__init__(manager, **kwargs)
+        super().__init__(manager, **kwargs)
 
     def chunk(self):
         conditions = []
@@ -53,45 +80,28 @@ class EventDataDeletionTask(BaseDeletionTask):
         node_ids = [Event.generate_node_id(self.project_id, event.event_id) for event in events]
         nodestore.delete_multi(node_ids)
 
-        delete_unprocessed_events(events)
-
-        # Remove EventAttachment and UserReport
+        # Remove EventAttachment and UserReport *again* as those may not have a
+        # group ID, therefore there may be dangling ones after "regular" model
+        # deletion.
         event_ids = [event.event_id for event in events]
-        EventAttachment.objects.filter(event_id__in=event_ids, project_id=self.project_id).delete()
-        UserReport.objects.filter(event_id__in=event_ids, project_id=self.project_id).delete()
+        models.EventAttachment.objects.filter(
+            event_id__in=event_ids, project_id=self.project_id
+        ).delete()
+        models.UserReport.objects.filter(
+            event_id__in=event_ids, project_id=self.project_id
+        ).delete()
 
         return True
 
 
 class GroupDeletionTask(ModelDeletionTask):
     def get_child_relations(self, instance):
-        from sentry import models
 
         relations = []
 
-        model_list = (
-            # prioritize GroupHash
-            models.GroupHash,
-            models.GroupAssignee,
-            models.GroupCommitResolution,
-            models.GroupLink,
-            models.GroupBookmark,
-            models.GroupMeta,
-            models.GroupEnvironment,
-            models.GroupRelease,
-            models.GroupRedirect,
-            models.GroupResolution,
-            models.GroupRuleStatus,
-            models.GroupSeen,
-            models.GroupShare,
-            models.GroupSnooze,
-            models.GroupEmailThread,
-            models.GroupSubscription,
-            models.UserReport,
-            models.EventAttachment,
+        relations.extend(
+            [ModelRelation(m, {"group_id": instance.id}) for m in _GROUP_RELATED_MODELS]
         )
-
-        relations.extend([ModelRelation(m, {"group_id": instance.id}) for m in model_list])
 
         # Skip EventDataDeletionTask if this is being called from cleanup.py
         if not os.environ.get("_SENTRY_CLEANUP"):
@@ -112,7 +122,7 @@ class GroupDeletionTask(ModelDeletionTask):
         if not self.skip_models or similarity not in self.skip_models:
             similarity.delete(None, instance)
 
-        return super(GroupDeletionTask, self).delete_instance(instance)
+        return super().delete_instance(instance)
 
     def mark_deletion_in_progress(self, instance_list):
         from sentry.models import Group, GroupStatus

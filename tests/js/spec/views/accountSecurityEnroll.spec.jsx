@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {Client} from 'app/api';
@@ -7,14 +5,14 @@ import AccountSecurityEnroll from 'app/views/settings/account/accountSecurity/ac
 
 const ENDPOINT = '/users/me/authenticators/';
 
-describe('AccountSecurityEnroll', function() {
+describe('AccountSecurityEnroll', function () {
   let wrapper;
 
-  describe('Totp', function() {
+  describe('Totp', function () {
     Client.clearMockResponses();
     const authenticator = TestStubs.Authenticators().Totp({
       isEnrolled: false,
-      qrcode: [[1, 0]],
+      qrcode: 'otpauth://totp/test%40sentry.io?issuer=Sentry&secret=secret',
       secret: 'secret',
       form: [
         {
@@ -24,7 +22,7 @@ describe('AccountSecurityEnroll', function() {
       ],
     });
 
-    beforeAll(function() {
+    beforeAll(function () {
       Client.addMockResponse({
         url: `${ENDPOINT}${authenticator.authId}/enroll/`,
         body: authenticator,
@@ -44,15 +42,15 @@ describe('AccountSecurityEnroll', function() {
       );
     });
 
-    it('does not have enrolled circle indicator', function() {
+    it('does not have enrolled circle indicator', function () {
       expect(wrapper.find('CircleIndicator').prop('enabled')).toBe(false);
     });
 
-    it('has qrcode component', function() {
-      expect(wrapper.find('Qrcode')).toHaveLength(1);
+    it('has qrcode component', function () {
+      expect(wrapper.find('QRCode')).toHaveLength(1);
     });
 
-    it('can enroll', function() {
+    it('can enroll', function () {
       const enrollMock = Client.addMockResponse({
         url: `${ENDPOINT}${authenticator.authId}/enroll/`,
         method: 'POST',
@@ -72,7 +70,7 @@ describe('AccountSecurityEnroll', function() {
       );
     });
 
-    it('can redirect with already enrolled error', function() {
+    it('can redirect with already enrolled error', function () {
       Client.addMockResponse({
         url: `${ENDPOINT}${authenticator.authId}/enroll/`,
         body: {details: 'Already enrolled'},

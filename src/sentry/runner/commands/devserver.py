@@ -1,8 +1,8 @@
-from __future__ import absolute_import, print_function
+import threading
+import types
+from urllib.parse import urlparse
 
 import click
-import six
-from six.moves.urllib.parse import urlparse
 
 from sentry.runner.decorators import configuration, log_options
 
@@ -19,11 +19,33 @@ _DEFAULT_DAEMONS = {
     "ingest": ["sentry", "run", "ingest-consumer", "--all-consumer-types"],
     "server": ["sentry", "run", "web"],
     "storybook": ["yarn", "storybook"],
+    "subscription-consumer": [
+        "sentry",
+        "run",
+        "query-subscription-consumer",
+        "--commit-batch-size",
+        "1",
+        "--force-offset-reset",
+        "latest",
+    ],
 }
 
 
-def _get_daemon(name):
-    return (name, _DEFAULT_DAEMONS[name])
+def add_daemon(name, command):
+    """
+    Used by getsentry to add additional workers to the devserver setup.
+    """
+    if name in _DEFAULT_DAEMONS:
+        raise KeyError(f"The {name} worker has already been defined")
+    _DEFAULT_DAEMONS[name] = command
+
+
+def _get_daemon(name, *args, **kwargs):
+    display_name = name
+    if "suffix" in kwargs:
+        display_name = "{}-{}".format(name, kwargs["suffix"])
+
+    return (display_name, _DEFAULT_DAEMONS[name] + list(args))
 
 
 @click.command()
@@ -36,18 +58,19 @@ def _get_daemon(name):
     "--prefix/--no-prefix", default=True, help="Show the service name prefix and timestamp"
 )
 @click.option(
+    "--pretty/--no-pretty", default=False, help="Styleize various outputs from the devserver"
+)
+@click.option(
     "--styleguide/--no-styleguide",
     default=False,
     help="Start local styleguide web server on port 9001",
 )
 @click.option("--environment", default="development", help="The environment name.")
 @click.option(
-    "--skip-daemons",
-    default=None,
+    "--debug-server/--no-debug-server",
+    default=False,
     required=False,
-    help="List (comma-delimited) of daemons not to start (values: {})".format(
-        ", ".join(sorted(_DEFAULT_DAEMONS.keys()))
-    ),
+    help="Start web server in same process",
 )
 @click.option(
     "--experimental-spa/--no-experimental-spa",
@@ -60,13 +83,18 @@ def _get_daemon(name):
 @log_options()
 @configuration
 def devserver(
-    reload, watchers, workers, experimental_spa, styleguide, prefix, environment, skip_daemons, bind
+    reload,
+    watchers,
+    workers,
+    experimental_spa,
+    styleguide,
+    prefix,
+    pretty,
+    environment,
+    debug_server,
+    bind,
 ):
     "Starts a lightweight web server for development."
-    skip_daemons = set(skip_daemons.split(",")) if skip_daemons else set()
-    if skip_daemons.difference(_DEFAULT_DAEMONS.keys()):
-        unrecognized_daemons = skip_daemons.difference(_DEFAULT_DAEMONS.keys())
-        raise click.ClickException("Not a daemon name: {}".format(", ".join(unrecognized_daemons)))
 
     if bind is None:
         bind = "127.0.0.1:8000"
@@ -86,6 +114,7 @@ def devserver(
     os.environ["NODE_ENV"] = "production" if environment.startswith("prod") else environment
 
     from django.conf import settings
+
     from sentry import options
     from sentry.services.http import SentryHTTPServer
 
@@ -154,21 +183,14 @@ def devserver(
         uwsgi_overrides["protocol"] = "http"
 
         os.environ["FORCE_WEBPACK_DEV_SERVER"] = "1"
+        os.environ["SENTRY_WEBPACK_PROXY_HOST"] = "%s" % host
         os.environ["SENTRY_WEBPACK_PROXY_PORT"] = "%s" % proxy_port
         os.environ["SENTRY_BACKEND_PORT"] = "%s" % port
 
         # webpack and/or typescript is causing memory issues
         os.environ["NODE_OPTIONS"] = (
-            (os.environ.get("NODE_OPTIONS", "") + " --max-old-space-size=4096")
+            os.environ.get("NODE_OPTIONS", "") + " --max-old-space-size=4096"
         ).lstrip()
-
-        # Replace the webpack watcher with the drop-in webpack-dev-server
-        webpack_config = next(w for w in daemons if w[0] == "webpack")[1]
-        webpack_config[0] = os.path.join(
-            *os.path.split(webpack_config[0])[0:-1] + ("webpack-dev-server",)
-        )
-
-        daemons = [w for w in daemons if w[0] != "webpack"] + [("webpack", webpack_config)]
     else:
         # If we are the bare http server, use the http option with uwsgi protocol
         # See https://uwsgi-docs.readthedocs.io/en/latest/HTTP.html
@@ -176,7 +198,7 @@ def devserver(
             {
                 # Make sure uWSGI spawns an HTTP server for us as we don't
                 # have a proxy/load-balancer in front in dev mode.
-                "http": "%s:%s" % (host, port),
+                "http": f"{host}:{port}",
                 "protocol": "uwsgi",
                 # This is needed to prevent https://git.io/fj7Lw
                 "uwsgi-socket": None,
@@ -196,11 +218,23 @@ def devserver(
         if eventstream.requires_post_process_forwarder():
             daemons += [_get_daemon("post-process-forwarder")]
 
+        if settings.SENTRY_EXTRA_WORKERS:
+            daemons.extend([_get_daemon(name) for name in settings.SENTRY_EXTRA_WORKERS])
+
+        if settings.SENTRY_DEV_PROCESS_SUBSCRIPTIONS:
+            if not settings.SENTRY_EVENTSTREAM == "sentry.eventstream.kafka.KafkaEventStream":
+                raise click.ClickException(
+                    "`SENTRY_DEV_PROCESS_SUBSCRIPTIONS` can only be used when "
+                    "`SENTRY_EVENTSTREAM=sentry.eventstream.kafka.KafkaEventStream`."
+                )
+            for name, topic in settings.KAFKA_SUBSCRIPTION_RESULT_TOPICS.items():
+                daemons += [_get_daemon("subscription-consumer", "--topic", topic, suffix=name)]
+
     if settings.SENTRY_USE_RELAY:
         daemons += [_get_daemon("ingest")]
 
     if needs_https and has_https:
-        https_port = six.text_type(parsed_url.port)
+        https_port = str(parsed_url.port)
         https_host = parsed_url.hostname
 
         # Determine a random port for the backend http server
@@ -226,11 +260,13 @@ def devserver(
     # A better log-format for local dev when running through honcho,
     # but if there aren't any other daemons, we don't want to override.
     if daemons:
-        uwsgi_overrides["log-format"] = '"%(method) %(status) %(uri) %(proto)" %(size)'
+        uwsgi_overrides["log-format"] = "%(method) %(status) %(uri) %(proto) %(size)"
     else:
-        uwsgi_overrides["log-format"] = '[%(ltime)] "%(method) %(status) %(uri) %(proto)" %(size)'
+        uwsgi_overrides["log-format"] = "[%(ltime)] %(method) %(status) %(uri) %(proto) %(size)"
 
-    server = SentryHTTPServer(host=host, port=port, workers=1, extra_options=uwsgi_overrides)
+    server = SentryHTTPServer(
+        host=host, port=port, workers=1, extra_options=uwsgi_overrides, debug=debug_server
+    )
 
     # If we don't need any other daemons, just launch a normal uwsgi webserver
     # and avoid dealing with subprocesses
@@ -239,25 +275,35 @@ def devserver(
 
     import sys
     from subprocess import list2cmdline
+
     from honcho.manager import Manager
     from honcho.printer import Printer
 
     os.environ["PYTHONUNBUFFERED"] = "true"
 
-    # Make sure that the environment is prepared before honcho takes over
-    # This sets all the appropriate uwsgi env vars, etc
-    server.prepare_environment()
-    daemons += [_get_daemon("server")]
+    if debug_server:
+        threading.Thread(target=server.run).start()
+    else:
+        # Make sure that the environment is prepared before honcho takes over
+        # This sets all the appropriate uwsgi env vars, etc
+        server.prepare_environment()
+        daemons += [_get_daemon("server")]
 
     if styleguide:
         daemons += [_get_daemon("storybook")]
 
     cwd = os.path.realpath(os.path.join(settings.PROJECT_ROOT, os.pardir, os.pardir))
 
-    manager = Manager(Printer(prefix=prefix))
+    honcho_printer = Printer(prefix=prefix)
+
+    if pretty:
+        from sentry.runner.formatting import monkeypatch_honcho_write
+
+        honcho_printer.write = types.MethodType(monkeypatch_honcho_write, honcho_printer)
+
+    manager = Manager(honcho_printer)
     for name, cmd in daemons:
-        if name not in skip_daemons:
-            manager.add_process(name, list2cmdline(cmd), quiet=False, cwd=cwd)
+        manager.add_process(name, list2cmdline(cmd), quiet=False, cwd=cwd)
 
     manager.loop()
     sys.exit(manager.returncode)

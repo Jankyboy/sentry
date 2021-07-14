@@ -1,21 +1,16 @@
-from __future__ import absolute_import
-
-import six
-import sentry_sdk
-
 from django.db import IntegrityError, transaction
 from django.db.models import Q
 from django.utils.translation import ugettext_lazy as _
 from rest_framework import serializers, status
 from rest_framework.response import Response
 
-from sentry.api.base import DocSection
 from sentry.api.bases.organization import OrganizationEndpoint, OrganizationPermission
 from sentry.api.paginator import OffsetPaginator
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models import team as team_serializers
 from sentry.models import (
     AuditLogEntryEvent,
+    ExternalActor,
     OrganizationMember,
     OrganizationMemberTeam,
     Team,
@@ -23,23 +18,8 @@ from sentry.models import (
 )
 from sentry.search.utils import tokenize_query
 from sentry.signals import team_created
-from sentry.utils.apidocs import scenario, attach_scenarios
 
 CONFLICTING_SLUG_ERROR = "A team with this slug already exists."
-
-
-@scenario("CreateNewTeam")
-def create_new_team_scenario(runner):
-    runner.request(
-        method="POST",
-        path="/organizations/%s/teams/" % runner.org.slug,
-        data={"name": "Ancient Gabelers"},
-    )
-
-
-@scenario("ListOrganizationTeams")
-def list_organization_teams_scenario(runner):
-    runner.request(method="GET", path="/organizations/%s/teams/" % runner.org.slug)
 
 
 # OrganizationPermission + team:write
@@ -75,9 +55,11 @@ class TeamSerializer(serializers.Serializer):
 
 class OrganizationTeamsEndpoint(OrganizationEndpoint):
     permission_classes = (OrganizationTeamsPermission,)
-    doc_section = DocSection.TEAMS
 
-    @attach_scenarios([list_organization_teams_scenario])
+    def team_serializer_for_post(self):
+        # allow child routes to supply own serializer, used in SCIM teams route
+        return team_serializers.TeamSerializer()
+
     def get(self, request, organization):
         """
         List an Organization's Teams
@@ -96,10 +78,9 @@ class OrganizationTeamsEndpoint(OrganizationEndpoint):
         if request.auth and hasattr(request.auth, "project"):
             return Response(status=403)
 
-        with sentry_sdk.start_span(op="PERF: OrgTeam.get - filter"):
-            queryset = Team.objects.filter(
-                organization=organization, status=TeamStatus.VISIBLE
-            ).order_by("slug")
+        queryset = Team.objects.filter(
+            organization=organization, status=TeamStatus.VISIBLE
+        ).order_by("slug")
 
         if request.GET.get("is_not_member", "0") == "1":
             user_teams = Team.objects.get_for_user(organization=organization, user=request.user)
@@ -107,26 +88,37 @@ class OrganizationTeamsEndpoint(OrganizationEndpoint):
 
         query = request.GET.get("query")
 
-        with sentry_sdk.start_span(op="PERF: OrgTeam.get - tokenize"):
-            if query:
-                tokens = tokenize_query(query)
-                for key, value in six.iteritems(tokens):
-                    if key == "query":
-                        value = " ".join(value)
+        if query:
+            tokens = tokenize_query(query)
+            for key, value in tokens.items():
+                if key == "hasExternalTeams":
+                    hasExternalTeams = "true" in value
+                    if hasExternalTeams:
                         queryset = queryset.filter(
-                            Q(name__icontains=value) | Q(slug__icontains=value)
+                            actor_id__in=ExternalActor.objects.filter(
+                                organization=organization
+                            ).values_list("actor_id")
                         )
                     else:
-                        queryset = queryset.none()
+                        queryset = queryset.exclude(
+                            actor_id__in=ExternalActor.objects.filter(
+                                organization=organization
+                            ).values_list("actor_id")
+                        )
+
+                elif key == "query":
+                    value = " ".join(value)
+                    queryset = queryset.filter(Q(name__icontains=value) | Q(slug__icontains=value))
+                else:
+                    queryset = queryset.none()
 
         is_detailed = request.GET.get("detailed", "1") != "0"
 
-        with sentry_sdk.start_span(op="PERF: OrgTeam.get - serialize"):
-            serializer = (
-                team_serializers.TeamWithProjectsSerializer
-                if is_detailed
-                else team_serializers.TeamSerializer
-            )
+        serializer = (
+            team_serializers.TeamWithProjectsSerializer
+            if is_detailed
+            else team_serializers.TeamSerializer
+        )
 
         return self.paginate(
             request=request,
@@ -136,8 +128,10 @@ class OrganizationTeamsEndpoint(OrganizationEndpoint):
             paginator_cls=OffsetPaginator,
         )
 
-    @attach_scenarios([create_new_team_scenario])
-    def post(self, request, organization):
+    def should_add_creator_to_team(self, request):
+        return request.user.is_authenticated
+
+    def post(self, request, organization, **kwargs):
         """
         Create a new Team
         ``````````````````
@@ -177,8 +171,7 @@ class OrganizationTeamsEndpoint(OrganizationEndpoint):
                 team_created.send_robust(
                     organization=organization, user=request.user, team=team, sender=self.__class__
                 )
-
-            if request.user.is_authenticated():
+            if self.should_add_creator_to_team(request):
                 try:
                     member = OrganizationMember.objects.get(
                         user=request.user, organization=organization
@@ -195,6 +188,8 @@ class OrganizationTeamsEndpoint(OrganizationEndpoint):
                 event=AuditLogEntryEvent.TEAM_ADD,
                 data=team.get_audit_log_data(),
             )
-
-            return Response(serialize(team, request.user), status=201)
+            return Response(
+                serialize(team, request.user, self.team_serializer_for_post()),
+                status=201,
+            )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

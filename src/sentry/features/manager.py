@@ -1,23 +1,21 @@
-from __future__ import absolute_import
-
 __all__ = ["FeatureManager"]
 
 from collections import defaultdict
-from django.conf import settings
 
 import sentry_sdk
+from django.conf import settings
 
 from .base import Feature
 from .exceptions import FeatureNotRegistered
 
 
-class RegisteredFeatureManager(object):
+class RegisteredFeatureManager:
     """
-        Feature functions that are built around the need to register feature
-        handlers
+    Feature functions that are built around the need to register feature
+    handlers
 
-        TODO: Once features have been audited and migrated to the entity
-        handler, remove this class entirely
+    TODO: Once features have been audited and migrated to the entity
+    handler, remove this class entirely
     """
 
     def __init__(self):
@@ -73,7 +71,7 @@ class RegisteredFeatureManager(object):
 
             with sentry_sdk.start_span(
                 op="feature.has_for_batch.handler",
-                description="{0} ({1})".format(type(handler).__name__, name),
+                description=f"{type(handler).__name__} ({name})",
             ) as span:
                 batch_size = len(remaining)
                 span.set_data("Batch Size", batch_size)
@@ -98,8 +96,9 @@ class RegisteredFeatureManager(object):
 # TODO: Change RegisteredFeatureManager back to object once it can be removed
 class FeatureManager(RegisteredFeatureManager):
     def __init__(self):
-        super(FeatureManager, self).__init__()
+        super().__init__()
         self._feature_registry = {}
+        self.entity_features = set()
         self._entity_handler = None
 
     def all(self, feature_type=Feature):
@@ -109,7 +108,7 @@ class FeatureManager(RegisteredFeatureManager):
         """
         return {k: v for k, v in self._feature_registry.items() if v == feature_type}
 
-    def add(self, name, cls=Feature):
+    def add(self, name, cls=Feature, entity_feature=False):
         """
         Register a feature.
 
@@ -118,6 +117,8 @@ class FeatureManager(RegisteredFeatureManager):
 
         >>> FeatureManager.has('my:feature', actor=request.user)
         """
+        if entity_feature:
+            self.entity_features.add(name)
         self._feature_registry[name] = cls
 
     def _get_feature_class(self, name):
@@ -126,7 +127,7 @@ class FeatureManager(RegisteredFeatureManager):
         except KeyError:
             raise FeatureNotRegistered(name)
 
-    def get(self, name, *args, **kwargs):
+    def get(self, name: str, *args, **kwargs):
         """
         Lookup a registered feature context scope given the feature name.
 
@@ -141,7 +142,7 @@ class FeatureManager(RegisteredFeatureManager):
         """
         self._entity_handler = handler
 
-    def has(self, name, *args, **kwargs):
+    def has(self, name: str, *args, **kwargs) -> bool:
         """
         Determine if a feature is enabled. If a handler returns None, then the next
         mechanism is used for feature checking.
@@ -181,7 +182,7 @@ class FeatureManager(RegisteredFeatureManager):
             return rv
 
         if self._entity_handler:
-            rv = self._entity_handler(feature, actor)
+            rv = self._entity_handler.has(feature, actor)
             if rv is not None:
                 return rv
 
@@ -192,8 +193,23 @@ class FeatureManager(RegisteredFeatureManager):
         # Features are by default disabled if no plugin or default enables them
         return False
 
+    def batch_has(self, feature_names, actor=None, projects=None, organization=None):
+        """
+        Determine if multiple features are enabled. Unhandled flags will not be in
+        the results if they cannot be handled.
 
-class FeatureCheckBatch(object):
+        Will only accept one type of feature, either all ProjectFeatures or all
+        OrganizationFeatures.
+        """
+        if self._entity_handler:
+            return self._entity_handler.batch_has(
+                feature_names, actor, projects=projects, organization=organization
+            )
+        else:
+            return None
+
+
+class FeatureCheckBatch:
     """
     A batch of objects to be checked for a feature flag.
 

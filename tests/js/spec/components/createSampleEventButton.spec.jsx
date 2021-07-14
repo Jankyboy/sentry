@@ -1,5 +1,4 @@
 import {browserHistory} from 'react-router';
-import React from 'react';
 import * as Sentry from '@sentry/react';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
@@ -11,7 +10,7 @@ import CreateSampleEventButton from 'app/views/onboarding/createSampleEventButto
 jest.useFakeTimers();
 jest.mock('app/utils/analytics');
 
-describe('CreateSampleEventButton', function() {
+describe('CreateSampleEventButton', function () {
   const {org, project, routerContext} = initializeOrg();
   const groupID = '123';
 
@@ -23,31 +22,25 @@ describe('CreateSampleEventButton', function() {
     routerContext
   );
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
   });
 
-  it('creates a sample event', async function() {
+  it('creates a sample event', async function () {
     const createRequest = MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/create-sample/`,
       method: 'POST',
       body: {groupID},
     });
 
-    wrapper
-      .find('[data-test-id="create-sample-event"]')
-      .first()
-      .simulate('click');
+    wrapper.find('[data-test-id="create-sample-event"]').first().simulate('click');
 
     // The button should be disabled while creating the event
     expect(
-      wrapper
-        .find('[data-test-id="create-sample-event"]')
-        .first()
-        .prop('disabled')
+      wrapper.find('[data-test-id="create-sample-event"]').first().prop('disabled')
     ).toBe(true);
 
-    // We have to await the API calls. We could norally do this using tick(),
+    // We have to await the API calls. We could normally do this using tick(),
     // however since we have enabled fake timers to handle the spin-wait on the
     // event creation, we cannot use tick.
     await Promise.resolve();
@@ -72,10 +65,7 @@ describe('CreateSampleEventButton', function() {
 
     wrapper.update();
     expect(
-      wrapper
-        .find('[data-test-id="create-sample-event"]')
-        .first()
-        .prop('disabled')
+      wrapper.find('[data-test-id="create-sample-event"]').first().prop('disabled')
     ).toBe(false);
 
     expect(browserHistory.push).toHaveBeenCalledWith(
@@ -83,17 +73,14 @@ describe('CreateSampleEventButton', function() {
     );
   });
 
-  it('waits for the latest event to be processed', async function() {
+  it('waits for the latest event to be processed', async function () {
     const createRequest = MockApiClient.addMockResponse({
       url: `/projects/${org.slug}/${project.slug}/create-sample/`,
       method: 'POST',
       body: {groupID},
     });
 
-    wrapper
-      .find('[data-test-id="create-sample-event"]')
-      .first()
-      .simulate('click');
+    wrapper.find('[data-test-id="create-sample-event"]').first().simulate('click');
 
     await Promise.resolve();
     expect(createRequest).toHaveBeenCalled();
@@ -137,7 +124,7 @@ describe('CreateSampleEventButton', function() {
         eventName: 'Sample Event Created',
         organization_id: org.id,
         project_id: project.id,
-        interval: 800,
+        interval: 1000,
         retries: 1,
         source: 'test',
         platform: 'javascript',

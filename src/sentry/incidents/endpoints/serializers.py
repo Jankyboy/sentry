@@ -1,22 +1,22 @@
-from __future__ import absolute_import
-
 import logging
 import operator
 from datetime import timedelta
 
-from rest_framework import serializers
-
 from django.db import transaction
 from django.utils import timezone
 from django.utils.encoding import force_text
+from rest_framework import serializers
 
-from sentry.api.event_search import InvalidSearchQuery
 from sentry.api.serializers.rest_framework.base import CamelSnakeModelSerializer
 from sentry.api.serializers.rest_framework.environment import EnvironmentField
 from sentry.api.serializers.rest_framework.project import ProjectField
+from sentry.exceptions import InvalidSearchQuery
 from sentry.incidents.logic import (
+    CRITICAL_TRIGGER_LABEL,
+    WARNING_TRIGGER_LABEL,
     AlertRuleNameAlreadyUsedError,
     AlertRuleTriggerLabelAlreadyUsedError,
+    ChannelLookupTimeoutError,
     InvalidTriggerActionError,
     check_aggregate_column_support,
     create_alert_rule,
@@ -24,6 +24,7 @@ from sentry.incidents.logic import (
     create_alert_rule_trigger_action,
     delete_alert_rule_trigger,
     delete_alert_rule_trigger_action,
+    rewrite_trigger_action_fields,
     translate_aggregate_field,
     update_alert_rule,
     update_alert_rule_trigger,
@@ -35,14 +36,16 @@ from sentry.incidents.models import (
     AlertRuleTrigger,
     AlertRuleTriggerAction,
 )
+from sentry.integrations.slack.utils import validate_channel_id
+from sentry.models import ActorTuple
 from sentry.models.organizationmember import OrganizationMember
 from sentry.models.team import Team
 from sentry.models.user import User
 from sentry.snuba.dataset import Dataset
-from sentry.snuba.models import QueryDatasets
+from sentry.snuba.models import QueryDatasets, SnubaQueryEventType
 from sentry.snuba.tasks import build_snuba_filter
-from sentry.utils.snuba import raw_query
 from sentry.utils.compat import zip
+from sentry.utils.snuba import raw_query
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +61,16 @@ action_target_type_to_string = {
     AlertRuleTriggerAction.TargetType.SENTRY_APP: "sentry_app",
 }
 string_to_action_target_type = {v: k for (k, v) in action_target_type_to_string.items()}
+dataset_valid_event_types = {
+    QueryDatasets.EVENTS: {
+        SnubaQueryEventType.EventType.ERROR,
+        SnubaQueryEventType.EventType.DEFAULT,
+    },
+    QueryDatasets.TRANSACTIONS: {SnubaQueryEventType.EventType.TRANSACTION},
+}
 
-CRITICAL_TRIGGER_LABEL = "critical"
-WARNING_TRIGGER_LABEL = "warning"
+# TODO(davidenwang): eventually we should pass some form of these to the event_search parser to raise an error
+unsupported_queries = {"release:latest"}
 
 
 class AlertRuleTriggerActionSerializer(CamelSnakeModelSerializer):
@@ -115,10 +125,8 @@ class AlertRuleTriggerActionSerializer(CamelSnakeModelSerializer):
             type_info = AlertRuleTriggerAction.get_registered_type(type)
             if target_type not in type_info.supported_target_types:
                 allowed_target_types = ",".join(
-                    [
-                        action_target_type_to_string[type_name]
-                        for type_name in type_info.supported_target_types
-                    ]
+                    action_target_type_to_string[type_name]
+                    for type_name in type_info.supported_target_types
                 )
                 raise serializers.ValidationError(
                     {
@@ -156,7 +164,12 @@ class AlertRuleTriggerActionSerializer(CamelSnakeModelSerializer):
                 raise serializers.ValidationError(
                     {"sentry_app": "SentryApp must be provided for sentry_app"}
                 )
-
+        attrs["use_async_lookup"] = self.context.get("use_async_lookup")
+        attrs["input_channel_id"] = self.context.get("input_channel_id")
+        should_validate_channel_id = self.context.get("validate_channel_id", True)
+        # validate_channel_id is assumed to be true unless explicitly passed as false
+        if attrs["input_channel_id"] and should_validate_channel_id:
+            validate_channel_id(identifier, attrs["integration"].id, attrs["input_channel_id"])
         return attrs
 
     def create(self, validated_data):
@@ -220,6 +233,7 @@ class AlertRuleTriggerSerializer(CamelSnakeModelSerializer):
             raise serializers.ValidationError("This label is already in use for this alert rule")
 
     def _handle_actions(self, alert_rule_trigger, actions):
+        channel_lookup_timeout_error = None
         if actions is not None:
             # Delete actions we don't have present in the updated data.
             action_ids = [x["id"] for x in actions if "id" in x]
@@ -230,12 +244,7 @@ class AlertRuleTriggerSerializer(CamelSnakeModelSerializer):
                 delete_alert_rule_trigger_action(action)
 
             for action_data in actions:
-                if "integration_id" in action_data:
-                    action_data["integration"] = action_data.pop("integration_id")
-
-                if "sentry_app_id" in action_data:
-                    action_data["sentry_app"] = action_data.pop("sentry_app_id")
-
+                action_data = rewrite_trigger_action_fields(action_data)
                 if "id" in action_data:
                     action_instance = AlertRuleTriggerAction.objects.get(
                         alert_rule_trigger=alert_rule_trigger, id=action_data["id"]
@@ -249,15 +258,24 @@ class AlertRuleTriggerSerializer(CamelSnakeModelSerializer):
                         "trigger": alert_rule_trigger,
                         "organization": self.context["organization"],
                         "access": self.context["access"],
+                        "use_async_lookup": self.context.get("use_async_lookup"),
+                        "validate_channel_id": self.context.get("validate_channel_id"),
+                        "input_channel_id": action_data.pop("input_channel_id", None),
                     },
                     instance=action_instance,
                     data=action_data,
                 )
 
                 if action_serializer.is_valid():
-                    action_serializer.save()
+                    try:
+                        action_serializer.save()
+                    except ChannelLookupTimeoutError as e:
+                        # raise the lookup error after the rest of the validation is complete
+                        channel_lookup_timeout_error = e
                 else:
                     raise serializers.ValidationError(action_serializer.errors)
+        if channel_lookup_timeout_error:
+            raise channel_lookup_timeout_error
 
 
 class ObjectField(serializers.Field):
@@ -275,21 +293,29 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
     environment = EnvironmentField(required=False, allow_null=True)
     # TODO: These might be slow for many projects, since it will query for each
     # individually. If we find this to be a problem then we can look into batching.
-    projects = serializers.ListField(child=ProjectField(), required=False)
-    excluded_projects = serializers.ListField(child=ProjectField(), required=False)
+    projects = serializers.ListField(child=ProjectField(scope="project:read"), required=False)
+    excluded_projects = serializers.ListField(
+        child=ProjectField(scope="project:read"), required=False
+    )
     triggers = serializers.ListField(required=True)
     dataset = serializers.CharField(required=False)
+    event_types = serializers.ListField(child=serializers.CharField(), required=False)
     query = serializers.CharField(required=True, allow_blank=True)
     time_window = serializers.IntegerField(
         required=True, min_value=1, max_value=int(timedelta(days=1).total_seconds() / 60)
     )
     threshold_period = serializers.IntegerField(default=1, min_value=1, max_value=20)
     aggregate = serializers.CharField(required=True, min_length=1)
+    owner = serializers.CharField(
+        required=False,
+        allow_null=True,
+    )  # This will be set to required=True once the frontend starts sending it.
 
     class Meta:
         model = AlertRule
         fields = [
             "name",
+            "owner",
             "dataset",
             "query",
             "time_window",
@@ -302,6 +328,7 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
             "include_all_projects",
             "excluded_projects",
             "triggers",
+            "event_types",
         ]
         extra_kwargs = {
             "name": {"min_length": 1, "max_length": 64},
@@ -310,6 +337,32 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
             "resolve_threshold": {"required": False},
         }
 
+    def validate_owner(self, owner):
+        # owner should be team:id or user:id
+        if owner is None:
+            return
+
+        try:
+            actor = ActorTuple.from_actor_identifier(owner)
+        except serializers.ValidationError:
+            raise serializers.ValidationError(
+                "Could not parse owner. Format should be `type:id` where type is `team` or `user`."
+            )
+        try:
+            if actor.resolve():
+                return actor
+        except (User.DoesNotExist, Team.DoesNotExist):
+            raise serializers.ValidationError("Could not resolve owner to existing team or user.")
+
+    def validate_query(self, query):
+        query_terms = query.split()
+        for query_term in query_terms:
+            if query_term in unsupported_queries:
+                raise serializers.ValidationError(
+                    f"Unsupported Query: We do not currently support the {query_term} query"
+                )
+        return query
+
     def validate_aggregate(self, aggregate):
         try:
             if not check_aggregate_column_support(aggregate):
@@ -317,7 +370,7 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
                     "Invalid Metric: We do not currently support this field."
                 )
         except InvalidSearchQuery as e:
-            raise serializers.ValidationError("Invalid Metric: {}".format(force_text(e)))
+            raise serializers.ValidationError(f"Invalid Metric: {e}")
         return translate_aggregate_field(aggregate)
 
     def validate_dataset(self, dataset):
@@ -326,6 +379,15 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
         except ValueError:
             raise serializers.ValidationError(
                 "Invalid dataset, valid values are %s" % [item.value for item in QueryDatasets]
+            )
+
+    def validate_event_types(self, event_types):
+        try:
+            return [SnubaQueryEventType.EventType[event_type.upper()] for event_type in event_types]
+        except KeyError:
+            raise serializers.ValidationError(
+                "Invalid event_type, valid values are %s"
+                % [item.name.lower() for item in SnubaQueryEventType.EventType]
             )
 
     def validate_threshold_type(self, threshold_type):
@@ -358,14 +420,17 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
                 data["query"],
                 data["aggregate"],
                 data.get("environment"),
+                data.get("event_types"),
                 params={
                     "project_id": [p.id for p in project_id],
                     "start": timezone.now() - timedelta(minutes=10),
                     "end": timezone.now(),
                 },
             )
+            if any(cond[0] == "project_id" for cond in snuba_filter.conditions):
+                raise serializers.ValidationError({"query": "Project is an invalid search term"})
         except (InvalidSearchQuery, ValueError) as e:
-            raise serializers.ValidationError("Invalid Query or Metric: {}".format(force_text(e)))
+            raise serializers.ValidationError(f"Invalid Query or Metric: {e}")
         else:
             if not snuba_filter.aggregations:
                 raise serializers.ValidationError(
@@ -399,12 +464,21 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
                 "Must send 1 or 2 triggers - A critical trigger, and an optional warning trigger"
             )
 
+        event_types = data.get("event_types")
+
+        valid_event_types = dataset_valid_event_types[data["dataset"]]
+        if event_types and set(event_types) - valid_event_types:
+            raise serializers.ValidationError(
+                "Invalid event types for this dataset. Valid event types are %s"
+                % sorted(et.name.lower() for et in valid_event_types)
+            )
+
         for i, (trigger, expected_label) in enumerate(
             zip(triggers, (CRITICAL_TRIGGER_LABEL, WARNING_TRIGGER_LABEL))
         ):
             if trigger.get("label", None) != expected_label:
                 raise serializers.ValidationError(
-                    'Trigger {} must be labeled "{}"'.format(i + 1, expected_label)
+                    f'Trigger {i + 1} must be labeled "{expected_label}"'
                 )
         critical = triggers[0]
         threshold_type = data["threshold_type"]
@@ -453,9 +527,7 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
 
         if alert_op(critical["alert_threshold"], warning["alert_threshold"]):
             raise serializers.ValidationError(
-                "Critical trigger must have an alert threshold {} warning trigger".format(
-                    threshold_type
-                )
+                f"Critical trigger must have an alert threshold {threshold_type} warning trigger"
             )
 
     def create(self, validated_data):
@@ -465,7 +537,7 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
                 alert_rule = create_alert_rule(
                     user=self.context.get("user", None),
                     organization=self.context["organization"],
-                    **validated_data
+                    **validated_data,
                 )
                 self._handle_triggers(alert_rule, triggers)
                 return alert_rule
@@ -485,6 +557,7 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
             raise serializers.ValidationError("This name is already in use for this organization")
 
     def _handle_triggers(self, alert_rule, triggers):
+        channel_lookup_timeout_error = None
         if triggers is not None:
             # Delete triggers we don't have present in the incoming data
             trigger_ids = [x["id"] for x in triggers if "id" in x]
@@ -507,12 +580,21 @@ class AlertRuleSerializer(CamelSnakeModelSerializer):
                         "alert_rule": alert_rule,
                         "organization": self.context["organization"],
                         "access": self.context["access"],
+                        "use_async_lookup": self.context.get("use_async_lookup"),
+                        "input_channel_id": self.context.get("input_channel_id"),
+                        "validate_channel_id": self.context.get("validate_channel_id"),
                     },
                     instance=trigger_instance,
                     data=trigger_data,
                 )
 
                 if trigger_serializer.is_valid():
-                    trigger_serializer.save()
+                    try:
+                        trigger_serializer.save()
+                    except ChannelLookupTimeoutError as e:
+                        # raise the lookup error after the rest of the validation is complete
+                        channel_lookup_timeout_error = e
                 else:
                     raise serializers.ValidationError(trigger_serializer.errors)
+        if channel_lookup_timeout_error:
+            raise channel_lookup_timeout_error

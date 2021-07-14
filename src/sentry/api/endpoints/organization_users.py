@@ -1,26 +1,14 @@
-from __future__ import absolute_import
-
+import sentry_sdk
 from rest_framework.response import Response
 
-import sentry_sdk
-
-from sentry.api.base import DocSection, EnvironmentMixin
+from sentry.api.base import EnvironmentMixin
 from sentry.api.bases.organization import OrganizationEndpoint
 from sentry.api.serializers import serialize
 from sentry.api.serializers.models import OrganizationMemberWithProjectsSerializer
-from sentry.models import OrganizationMember
-from sentry.utils.apidocs import scenario, attach_scenarios
-
-
-@scenario("ListOrganizationUsers")
-def list_organization_users_scenario(runner):
-    runner.request(method="GET", path="/organizations/%s/users/" % runner.org.slug)
+from sentry.models import OrganizationMember, OrganizationMemberTeam, ProjectTeam
 
 
 class OrganizationUsersEndpoint(OrganizationEndpoint, EnvironmentMixin):
-    doc_section = DocSection.ORGANIZATIONS
-
-    @attach_scenarios([list_organization_users_scenario])
     def get(self, request, organization):
         """
         List an Organization's Users
@@ -40,14 +28,17 @@ class OrganizationUsersEndpoint(OrganizationEndpoint, EnvironmentMixin):
                 OrganizationMember.objects.filter(
                     user__is_active=True,
                     organization=organization,
-                    teams__projectteam__project__in=projects,
+                    id__in=OrganizationMemberTeam.objects.filter(
+                        team_id__in=ProjectTeam.objects.filter(project_id__in=projects)
+                        .values_list("team_id", flat=True)
+                        .distinct(),
+                    ).values_list("organizationmember_id", flat=True),
                 )
                 .select_related("user")
                 .prefetch_related(
                     "teams", "teams__projectteam_set", "teams__projectteam_set__project"
                 )
                 .order_by("user__email")
-                .distinct()
             )
             organization_members = list(qs)
 

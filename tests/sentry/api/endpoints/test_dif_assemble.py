@@ -1,22 +1,20 @@
-from __future__ import absolute_import
-
-from sentry.utils.compat.mock import patch
 from hashlib import sha1
 
-from django.core.urlresolvers import reverse
 from django.core.files.base import ContentFile
+from django.urls import reverse
 
-from sentry.models import ApiToken, FileBlob, File, FileBlobIndex, FileBlobOwner
+from sentry.models import ApiToken, File, FileBlob, FileBlobIndex, FileBlobOwner
 from sentry.models.debugfile import ProjectDebugFile
-from sentry.testutils import APITestCase
 from sentry.tasks.assemble import (
+    AssembleTask,
+    ChunkFileState,
     assemble_dif,
     assemble_file,
     get_assemble_status,
     set_assemble_status,
-    AssembleTask,
-    ChunkFileState,
 )
+from sentry.testutils import APITestCase
+from sentry.utils.compat.mock import patch
 
 
 class DifAssembleEndpoint(APITestCase):
@@ -33,7 +31,7 @@ class DifAssembleEndpoint(APITestCase):
 
     def test_assemble_json_schema(self):
         response = self.client.post(
-            self.url, data={"lol": "test"}, HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token)
+            self.url, data={"lol": "test"}, HTTP_AUTHORIZATION=f"Bearer {self.token.token}"
         )
         assert response.status_code == 400, response.content
 
@@ -41,25 +39,25 @@ class DifAssembleEndpoint(APITestCase):
         response = self.client.post(
             self.url,
             data={checksum: "test"},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
         assert response.status_code == 400, response.content
 
         response = self.client.post(
-            self.url, data={checksum: {}}, HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token)
+            self.url, data={checksum: {}}, HTTP_AUTHORIZATION=f"Bearer {self.token.token}"
         )
         assert response.status_code == 400, response.content
 
         response = self.client.post(
             self.url,
             data={checksum: {"name": "dif", "chunks": []}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
         assert response.status_code == 200, response.content
         assert response.data[checksum]["state"] == ChunkFileState.NOT_FOUND
 
     def test_assemble_check(self):
-        content = "foo bar".encode("utf-8")
+        content = b"foo bar"
         fileobj = ContentFile(content)
         file1 = File.objects.create(name="baz.dSYM", type="default", size=7)
         file1.putfile(fileobj, 3)
@@ -75,7 +73,7 @@ class DifAssembleEndpoint(APITestCase):
         response = self.client.post(
             self.url,
             data={checksum: {"name": "dif", "chunks": checksums}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
         assert response.status_code == 200, response.content
@@ -85,13 +83,13 @@ class DifAssembleEndpoint(APITestCase):
         # Now we add ownership to the blob
         blobs = FileBlob.objects.all()
         for blob in blobs:
-            FileBlobOwner.objects.create(blob=blob, organization=self.organization)
+            FileBlobOwner.objects.create(blob=blob, organization_id=self.organization.id)
 
         # The request will start the job to assemble the file
         response = self.client.post(
             self.url,
             data={checksum: {"name": "dif", "chunks": checksums}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
         assert response.status_code == 200, response.content
@@ -101,9 +99,10 @@ class DifAssembleEndpoint(APITestCase):
         # Finally, we simulate a successful job
         ProjectDebugFile.objects.create(
             file=file1,
+            checksum=file1.checksum,
             object_name="baz.dSYM",
             cpu_name="x86_64",
-            project=self.project,
+            project_id=self.project.id,
             debug_id="df449af8-0dcd-4320-9943-ec192134d593",
             code_id="DF449AF80DCD43209943EC192134D593",
         )
@@ -113,7 +112,7 @@ class DifAssembleEndpoint(APITestCase):
         response = self.client.post(
             self.url,
             data={checksum: {"name": "dif", "chunks": checksums}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
         assert response.status_code == 200, response.content
@@ -125,24 +124,24 @@ class DifAssembleEndpoint(APITestCase):
         response = self.client.post(
             self.url,
             data={not_found_checksum: {"name": "dif", "chunks": [not_found_checksum]}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
         assert response.status_code == 200, response.content
         assert response.data[not_found_checksum]["state"] == ChunkFileState.NOT_FOUND
-        assert set(response.data[not_found_checksum]["missingChunks"]) == set([not_found_checksum])
+        assert set(response.data[not_found_checksum]["missingChunks"]) == {not_found_checksum}
 
     @patch("sentry.tasks.assemble.assemble_dif")
     def test_assemble(self, mock_assemble_dif):
-        content1 = "foo".encode("utf-8")
+        content1 = b"foo"
         fileobj1 = ContentFile(content1)
         checksum1 = sha1(content1).hexdigest()
 
-        content2 = "bar".encode("utf-8")
+        content2 = b"bar"
         fileobj2 = ContentFile(content2)
         checksum2 = sha1(content2).hexdigest()
 
-        content3 = "baz".encode("utf-8")
+        content3 = b"baz"
         fileobj3 = ContentFile(content3)
         checksum3 = sha1(content3).hexdigest()
 
@@ -150,29 +149,29 @@ class DifAssembleEndpoint(APITestCase):
 
         # The order here is on purpose because we check for the order of checksums
         blob1 = FileBlob.from_file(fileobj1)
-        FileBlobOwner.objects.get_or_create(organization=self.organization, blob=blob1)
+        FileBlobOwner.objects.get_or_create(organization_id=self.organization.id, blob=blob1)
         blob3 = FileBlob.from_file(fileobj3)
-        FileBlobOwner.objects.get_or_create(organization=self.organization, blob=blob3)
+        FileBlobOwner.objects.get_or_create(organization_id=self.organization.id, blob=blob3)
         blob2 = FileBlob.from_file(fileobj2)
 
         # we make a request now but we are missing ownership for chunk 2
         response = self.client.post(
             self.url,
             data={total_checksum: {"name": "test", "chunks": [checksum2, checksum1, checksum3]}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
         assert response.status_code == 200, response.content
         assert response.data[total_checksum]["state"] == ChunkFileState.NOT_FOUND
         assert response.data[total_checksum]["missingChunks"] == [checksum2]
 
         # we add ownership to chunk 2
-        FileBlobOwner.objects.get_or_create(organization=self.organization, blob=blob2)
+        FileBlobOwner.objects.get_or_create(organization_id=self.organization.id, blob=blob2)
 
         # new request, ownership for all chunks is there but file does not exist yet
         response = self.client.post(
             self.url,
             data={total_checksum: {"name": "test", "chunks": [checksum2, checksum1, checksum3]}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
         assert response.status_code == 200, response.content
         assert response.data[total_checksum]["state"] == ChunkFileState.CREATED
@@ -212,7 +211,7 @@ class DifAssembleEndpoint(APITestCase):
         response = self.client.post(
             self.url,
             data={total_checksum: {"name": "test.sym", "chunks": chunks}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
         assert response.status_code == 200, response.content
@@ -235,11 +234,9 @@ class DifAssembleEndpoint(APITestCase):
         response = self.client.post(
             self.url,
             data={total_checksum: {"name": "test.sym", "chunks": []}},
-            HTTP_AUTHORIZATION=u"Bearer {}".format(self.token.token),
+            HTTP_AUTHORIZATION=f"Bearer {self.token.token}",
         )
 
         assert response.status_code == 200, response.content
         assert response.data[total_checksum]["state"] == ChunkFileState.ERROR
-        assert response.data[total_checksum]["detail"].startswith(
-            "Unsupported debug information file"
-        )
+        assert "unsupported object file format" in response.data[total_checksum]["detail"]

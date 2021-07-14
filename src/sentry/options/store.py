@@ -1,15 +1,12 @@
-from __future__ import absolute_import, print_function
-
 import logging
-import six
-
 from collections import namedtuple
-from time import time
 from random import random
+from time import time
 
-from django.db.utils import ProgrammingError, OperationalError
+from django.db.utils import OperationalError, ProgrammingError
 from django.utils import timezone
 from django.utils.functional import cached_property
+
 from sentry.utils.hashlib import md5_text
 
 Key = namedtuple("Key", ("name", "default", "type", "flags", "ttl", "grace", "cache_key"))
@@ -29,7 +26,7 @@ def _make_cache_value(key, value):
     return (value, now + key.ttl, now + key.ttl + key.grace)
 
 
-class OptionsStore(object):
+class OptionsStore:
     """
     Abstraction for the Option storage logic that should be driven
     by the OptionsManager.
@@ -73,7 +70,7 @@ class OptionsStore(object):
 
     def get_cache(self, key, silent=False):
         """
-        First check agaist our local in-process cache, falling
+        First check against our local in-process cache, falling
         back to the network cache.
         """
         value = self.get_local_cache(key)
@@ -88,7 +85,7 @@ class OptionsStore(object):
             value = self.cache.get(cache_key)
         except Exception:
             if not silent:
-                logger.warn(CACHE_FETCH_ERR, key.name, extra={"key": key.name}, exc_info=True)
+                logger.warning(CACHE_FETCH_ERR, key.name, extra={"key": key.name}, exc_info=True)
             value = None
 
         if value is not None and key.ttl > 0:
@@ -170,7 +167,9 @@ class OptionsStore(object):
                 self.set_cache(key, value)
             except Exception:
                 if not silent:
-                    logger.warn(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
+                    logger.warning(
+                        CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True
+                    )
         return value
 
     def set(self, key, value):
@@ -205,7 +204,7 @@ class OptionsStore(object):
             self.cache.set(cache_key, value, self.ttl)
             return True
         except Exception:
-            logger.warn(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
+            logger.warning(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
             return False
 
     def delete(self, key):
@@ -234,7 +233,7 @@ class OptionsStore(object):
             self.cache.delete(cache_key)
             return True
         except Exception:
-            logger.warn(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
+            logger.warning(CACHE_UPDATE_ERR, key.name, extra={"key": key.name}, exc_info=True)
             return False
 
     def clean_local_cache(self):
@@ -246,7 +245,7 @@ class OptionsStore(object):
         now = int(time())
 
         try:
-            for k, (_, _, grace) in six.iteritems(self._local_cache):
+            for k, (_, _, grace) in self._local_cache.items():
                 if now > grace:
                     to_expire.append(k)
         except RuntimeError:

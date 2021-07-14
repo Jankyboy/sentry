@@ -1,37 +1,45 @@
-from __future__ import absolute_import, print_function
-
-import logging
-
-
+import copy
 import ipaddress
-import six
-
+import logging
+import random
+import time
 from datetime import datetime, timedelta
+from io import BytesIO
+
+import sentry_sdk
 from django.conf import settings
 from django.core.cache import cache
-from django.db import connection, IntegrityError, router, transaction
+from django.db import IntegrityError, OperationalError, connection, router, transaction
 from django.db.models import Func
 from django.utils.encoding import force_text
 from pytz import UTC
 
-from sentry import buffer, eventstore, eventtypes, eventstream, features, tsdb
+from sentry import buffer, eventstore, eventstream, eventtypes, features, options, quotas, tsdb
 from sentry.attachments import MissingAttachmentChunks, attachment_cache
 from sentry.constants import (
-    DataCategory,
     DEFAULT_STORE_NORMALIZER_ARGS,
     LOG_LEVELS_MAP,
     MAX_TAG_VALUE_LENGTH,
+    DataCategory,
 )
+from sentry.culprit import generate_culprit
+from sentry.eventstore.processing import event_processing_store
 from sentry.grouping.api import (
-    get_grouping_config_dict_for_project,
-    get_grouping_config_dict_for_event_data,
-    load_grouping_config,
+    BackgroundGroupingConfigLoader,
+    GroupingConfigNotFound,
+    SecondaryGroupingConfigLoader,
     apply_server_fingerprinting,
     get_fingerprinting_config_for_project,
-    GroupingConfigNotFound,
+    get_grouping_config_dict_for_event_data,
+    get_grouping_config_dict_for_project,
+    load_grouping_config,
 )
+from sentry.grouping.result import CalculatedHashes
+from sentry.ingest.inbound_filters import FilterStatKeys
+from sentry.killswitches import killswitch_matches_context
 from sentry.lang.native.utils import STORE_CRASH_REPORTS_ALL, convert_crashreport_count
 from sentry.models import (
+    CRASH_REPORT_TYPES,
     Activity,
     Environment,
     EventAttachment,
@@ -45,6 +53,7 @@ from sentry.models import (
     GroupRelease,
     GroupResolution,
     GroupStatus,
+    Organization,
     Project,
     ProjectKey,
     Release,
@@ -53,24 +62,22 @@ from sentry.models import (
     ReleaseProject,
     ReleaseProjectEnvironment,
     UserReport,
-    Organization,
-    CRASH_REPORT_TYPES,
     get_crashreport_key,
 )
 from sentry.plugins.base import plugins
-from sentry import quotas
-from sentry.signals import first_event_received
+from sentry.reprocessing2 import (
+    delete_old_primary_hash,
+    is_reprocessed_event,
+    save_unprocessed_event,
+)
+from sentry.signals import first_event_received, first_transaction_received, issue_unresolved
 from sentry.tasks.integrations import kick_off_status_syncs
 from sentry.utils import json, metrics
+from sentry.utils.cache import cache_key_for_event
 from sentry.utils.canonical import CanonicalKeyDict
-from sentry.ingest.inbound_filters import FilterStatKeys
-from sentry.utils.dates import to_timestamp, to_datetime
+from sentry.utils.dates import to_datetime, to_timestamp
 from sentry.utils.outcomes import Outcome, track_outcome
-from sentry.utils.safe import safe_execute, trim, get_path, setdefault_path
-from sentry.stacktraces.processing import normalize_stacktraces_for_grouping
-from sentry.culprit import generate_culprit
-from sentry.utils.compat import map
-from sentry.reprocessing2 import save_unprocessed_event
+from sentry.utils.safe import get_path, safe_execute, setdefault_path, trim
 
 logger = logging.getLogger("sentry.events")
 
@@ -169,7 +176,7 @@ class ScoreClause(Func):
         # times_seen is likely an F-object that needs the value extracted
         if hasattr(self.times_seen, "rhs"):
             self.times_seen = self.times_seen.rhs.value
-        super(ScoreClause, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def __int__(self):
         # Calculate the score manually when coercing to an int.
@@ -189,7 +196,7 @@ class ScoreClause(Func):
         return (sql, [])
 
 
-class EventManager(object):
+class EventManager:
     """
     Handles normalization in both the store endpoint and the save task. The
     intention is to swap this class out with a reimplementation in Rust.
@@ -253,14 +260,14 @@ class EventManager(object):
             project_id=self._project.id if self._project else project_id,
             client_ip=self._client_ip,
             client=self._auth.client if self._auth else None,
-            key_id=six.text_type(self._key.id) if self._key else None,
+            key_id=str(self._key.id) if self._key else None,
             grouping_config=self._grouping_config,
-            protocol_version=six.text_type(self.version) if self.version is not None else None,
+            protocol_version=str(self.version) if self.version is not None else None,
             is_renormalize=self._is_renormalize,
             remove_other=self._remove_other,
             normalize_user_agent=True,
             sent_at=self.sent_at.isoformat() if self.sent_at is not None else None,
-            **DEFAULT_STORE_NORMALIZER_ARGS
+            **DEFAULT_STORE_NORMALIZER_ARGS,
         )
 
         self._data = CanonicalKeyDict(rust_normalizer.normalize_event(dict(self._data)))
@@ -303,19 +310,32 @@ class EventManager(object):
             self._data["project"] = int(project_id)
             job = {"data": self._data, "start_time": start_time}
             jobs = save_transaction_events([job], projects)
+
+            if not project.flags.has_transactions:
+                first_transaction_received.send_robust(
+                    project=project, event=jobs[0]["event"], sender=Project
+                )
+
             return jobs[0]["event"]
 
         with metrics.timer("event_manager.save.organization.get_from_cache"):
-            project._organization_cache = Organization.objects.get_from_cache(
-                id=project.organization_id
+            project.set_cached_field_value(
+                "organization", Organization.objects.get_from_cache(id=project.organization_id)
             )
 
         job = {"data": self._data, "project_id": project_id, "raw": raw, "start_time": start_time}
         jobs = [job]
 
-        _pull_out_data(jobs, projects)
-        _get_or_create_release_many(jobs, projects)
-        _get_event_user_many(jobs, projects)
+        is_reprocessed = is_reprocessed_event(job["data"])
+
+        with sentry_sdk.start_span(op="event_manager.save.pull_out_data"):
+            _pull_out_data(jobs, projects)
+
+        with sentry_sdk.start_span(op="event_manager.save.get_or_create_release_many"):
+            _get_or_create_release_many(jobs, projects)
+
+        with sentry_sdk.start_span(op="event_manager.save.get_event_user_many"):
+            _get_event_user_many(jobs, projects)
 
         job["project_key"] = None
         if job["key_id"] is not None:
@@ -325,47 +345,53 @@ class EventManager(object):
                 except ProjectKey.DoesNotExist:
                     pass
 
-        with metrics.timer("event_manager.load_grouping_config"):
-            # At this point we want to normalize the in_app values in case the
-            # clients did not set this appropriately so far.
-            grouping_config = load_grouping_config(
-                get_grouping_config_dict_for_event_data(job["data"], project)
-            )
-
-        with metrics.timer("event_manager.normalize_stacktraces_for_grouping"):
-            normalize_stacktraces_for_grouping(job["data"], grouping_config)
-
         _derive_plugin_tags_many(jobs, projects)
         _derive_interface_tags_many(jobs)
 
-        with metrics.timer("event_manager.apply_server_fingerprinting"):
-            # The active grouping config was put into the event in the
-            # normalize step before.  We now also make sure that the
-            # fingerprint was set to `'{{ default }}' just in case someone
-            # removed it from the payload.  The call to get_hashes will then
-            # look at `grouping_config` to pick the right parameters.
-            job["data"]["fingerprint"] = job["data"].get("fingerprint") or ["{{ default }}"]
-            apply_server_fingerprinting(job["data"], get_fingerprinting_config_for_project(project))
+        do_background_grouping_before = options.get("store.background-grouping-before")
+        if do_background_grouping_before:
+            _run_background_grouping(project, job)
 
-        with metrics.timer("event_manager.event.get_hashes"):
-            # Here we try to use the grouping config that was requested in the
-            # event.  If that config has since been deleted (because it was an
-            # experimental grouping config) we fall back to the default.
-            try:
-                hashes = job["event"].get_hashes()
-            except GroupingConfigNotFound:
-                job["data"]["grouping_config"] = get_grouping_config_dict_for_project(project)
-                hashes = job["event"].get_hashes()
+        secondary_hashes = None
 
-        job["data"]["hashes"] = hashes
+        try:
+            if (project.get_option("sentry:secondary_grouping_expiry") or 0) >= time.time():
+                with metrics.timer("event_manager.secondary_grouping"):
+                    secondary_event = copy.deepcopy(job["event"])
+                    loader = SecondaryGroupingConfigLoader()
+                    secondary_grouping_config = loader.get_config_dict(project)
+                    secondary_hashes = _calculate_event_grouping(
+                        project, secondary_event, secondary_grouping_config
+                    )
+        except Exception:
+            sentry_sdk.capture_exception()
+
+        with metrics.timer("event_manager.load_grouping_config"):
+            # At this point we want to normalize the in_app values in case the
+            # clients did not set this appropriately so far.
+            grouping_config = get_grouping_config_dict_for_event_data(
+                job["event"].data.data, project
+            )
+
+        with sentry_sdk.start_span(op="event_manager.save.calculate_event_grouping"), metrics.timer(
+            "event_manager.calculate_event_grouping"
+        ):
+            hashes = _calculate_event_grouping(project, job["event"], grouping_config)
+
+        hashes = CalculatedHashes(
+            hashes=hashes.hashes + (secondary_hashes and secondary_hashes.hashes or []),
+            hierarchical_hashes=hashes.hierarchical_hashes,
+            tree_labels=hashes.tree_labels,
+        )
+
+        if not do_background_grouping_before:
+            _run_background_grouping(project, job)
+
+        if hashes.tree_labels:
+            job["finest_tree_label"] = hashes.finest_tree_label
 
         _materialize_metadata_many(jobs)
 
-        # The group gets the same metadata as the event when it's flushed but
-        # additionally the `last_received` key is set.  This key is used by
-        # _save_aggregate.
-        group_metadata = dict(job["materialized_metadata"])
-        group_metadata["last_received"] = job["received_timestamp"]
         kwargs = {
             "platform": job["platform"],
             "message": job["event"].search_message,
@@ -375,7 +401,6 @@ class EventManager(object):
             "last_seen": job["event"].datetime,
             "first_seen": job["event"].datetime,
             "active_at": job["event"].datetime,
-            "data": group_metadata,
         }
 
         if job["release"]:
@@ -386,12 +411,19 @@ class EventManager(object):
         # incremented for sure. Also wait for grouping to remove attachments
         # based on the group counter.
         with metrics.timer("event_manager.get_attachments"):
-            attachments = get_attachments(cache_key, job)
+            with sentry_sdk.start_span(op="event_manager.save.get_attachments"):
+                attachments = get_attachments(cache_key, job)
 
         try:
-            job["group"], job["is_new"], job["is_regression"] = _save_aggregate(
-                event=job["event"], hashes=hashes, release=job["release"], **kwargs
-            )
+            with sentry_sdk.start_span(op="event_manager.save.save_aggregate_fn"):
+                job["group"], job["is_new"], job["is_regression"] = _save_aggregate(
+                    event=job["event"],
+                    hashes=hashes,
+                    release=job["release"],
+                    metadata=dict(job["event_metadata"]),
+                    received_timestamp=job["received_timestamp"],
+                    **kwargs,
+                )
         except HashDiscarded:
             discard_event(job, attachments)
             raise
@@ -426,8 +458,8 @@ class EventManager(object):
         _tsdb_record_all_metrics(jobs)
 
         if job["group"]:
-            UserReport.objects.filter(project=project, event_id=job["event"].event_id).update(
-                group=job["group"], environment=job["environment"]
+            UserReport.objects.filter(project_id=project.id, event_id=job["event"].event_id).update(
+                group_id=job["group"].id, environment_id=job["environment"].id
             )
 
         with metrics.timer("event_manager.filter_attachments_for_group"):
@@ -437,12 +469,12 @@ class EventManager(object):
         _materialize_event_metrics(jobs)
 
         for attachment in attachments:
-            key = "bytes.stored.%s" % (attachment.type,)
+            key = f"bytes.stored.{attachment.type}"
             old_bytes = job["event_metrics"].get(key) or 0
             job["event_metrics"][key] = old_bytes + attachment.size
 
         _nodestore_save_many(jobs)
-        save_unprocessed_event(project, event_id=job["event"].event_id)
+        save_unprocessed_event(project, job["event"].event_id)
 
         if job["release"]:
             if job["is_new"]:
@@ -461,7 +493,6 @@ class EventManager(object):
                         "environment_id": job["environment"].id,
                     },
                 )
-
         if not raw:
             if not project.first_event:
                 project.update(first_event=job["event"].datetime)
@@ -469,12 +500,20 @@ class EventManager(object):
                     project=project, event=job["event"], sender=Project
                 )
 
+        if is_reprocessed:
+            safe_execute(delete_old_primary_hash, job["event"])
+
         _eventstream_insert_many(jobs)
 
         # Do this last to ensure signals get emitted even if connection to the
         # file store breaks temporarily.
-        with metrics.timer("event_manager.save_attachments"):
-            save_attachments(cache_key, attachments, job)
+        #
+        # We do not need this for reprocessed events as for those we update the
+        # group_id on existing models in post_process_group, which already does
+        # this because of indiv. attachments.
+        if not is_reprocessed:
+            with metrics.timer("event_manager.save_attachments"):
+                save_attachments(cache_key, attachments, job)
 
         metric_tags = {"from_relay": "_relay_processed" in job["data"]}
 
@@ -493,7 +532,29 @@ class EventManager(object):
         _track_outcome_accepted_many(jobs)
 
         self._data = job["event"].data.data
+
         return job["event"]
+
+
+@metrics.wraps("event_manager.background_grouping")
+def _calculate_background_grouping(project, event, config):
+    return _calculate_event_grouping(project, event, config)
+
+
+def _run_background_grouping(project, job):
+    """Optionally run a fraction of events with a third grouping config
+    This can be helpful to measure its performance impact.
+    This does not affect actual grouping.
+    """
+    try:
+        sample_rate = options.get("store.background-grouping-sample-rate")
+        if sample_rate and random.random() <= sample_rate:
+            config = BackgroundGroupingConfigLoader().get_config_dict(project)
+            if config["id"]:
+                copied_event = copy.deepcopy(job["event"])
+                _calculate_background_grouping(project, copied_event, config)
+    except Exception:
+        sentry_sdk.capture_exception()
 
 
 @metrics.wraps("save_event.pull_out_data")
@@ -508,7 +569,6 @@ def _pull_out_data(jobs, projects):
         data = job["data"]
 
         # Pull the toplevel data we're interested in
-        job["culprit"] = get_culprit(data)
 
         transaction_name = data.get("transaction")
         if transaction_name:
@@ -566,7 +626,7 @@ def _get_or_create_release_many(jobs, projects):
         if old_datetime is None or new_datetime > old_datetime:
             release_date_added[release_key] = new_datetime
 
-    for (project_id, version), jobs_to_update in six.iteritems(jobs_with_releases):
+    for (project_id, version), jobs_to_update in jobs_with_releases.items():
         release = Release.get_or_create(
             project=projects[project_id],
             version=version,
@@ -574,7 +634,7 @@ def _get_or_create_release_many(jobs, projects):
         )
 
         for job in jobs_to_update:
-            # dont allow a conflicting 'release' tag
+            # Don't allow a conflicting 'release' tag
             data = job["data"]
             pop_tag(data, "release")
             set_tag(data, "sentry:release", release.version)
@@ -605,9 +665,7 @@ def _get_event_user_many(jobs, projects):
 @metrics.wraps("save_event.derive_plugin_tags_many")
 def _derive_plugin_tags_many(jobs, projects):
     # XXX: We ought to inline or remove this one for sure
-    plugins_for_projects = {
-        p.id: plugins.for_project(p, version=None) for p in six.itervalues(projects)
-    }
+    plugins_for_projects = {p.id: plugins.for_project(p, version=None) for p in projects.values()}
 
     for job in jobs:
         for plugin in plugins_for_projects[job["project_id"]]:
@@ -625,7 +683,7 @@ def _derive_interface_tags_many(jobs):
     # XXX: We ought to inline or remove this one for sure
     for job in jobs:
         data = job["data"]
-        for path, iface in six.iteritems(job["event"].interfaces):
+        for path, iface in job["event"].interfaces.items():
             for k, v in iface.iter_tags():
                 set_tag(data, k, v)
 
@@ -643,10 +701,23 @@ def _materialize_metadata_many(jobs):
         # picks up the data right from the snuba topic.  For most usage
         # however the data is dynamically overridden by Event.title and
         # Event.location (See Event.as_dict)
+        #
+        # We also need to ensure the culprit is accurately reflected at
+        # the point of metadata materialization as we need to ensure that
+        # processing happens before.
         data = job["data"]
-        job["materialized_metadata"] = metadata = materialize_metadata(data)
-        data.update(metadata)
-        data["culprit"] = job["culprit"]
+        event_type = get_event_type(data)
+        event_metadata = event_type.get_metadata(data)
+        job["event_metadata"] = dict(event_metadata)
+
+        # In save_aggregate we store current_tree_label for the group metadata,
+        # and finest_tree_label for the event's own title.
+
+        if "finest_tree_label" in job:
+            event_metadata["finest_tree_label"] = job["finest_tree_label"]
+
+        data.update(materialize_metadata(data, event_type, event_metadata))
+        job["culprit"] = data["culprit"]
 
 
 @metrics.wraps("save_event.get_or_create_environment_many")
@@ -740,19 +811,36 @@ def _tsdb_record_all_metrics(jobs):
 def _nodestore_save_many(jobs):
     for job in jobs:
         # Write the event to Nodestore
-        job["event"].data.save()
+        subkeys = {}
+
+        if job["group"]:
+            event = job["event"]
+            data = event_processing_store.get(
+                cache_key_for_event({"project": event.project_id, "event_id": event.event_id}),
+                unprocessed=True,
+            )
+            if data is not None:
+                subkeys["unprocessed"] = data
+
+        job["event"].data.save(subkeys=subkeys)
 
 
 @metrics.wraps("save_event.eventstream_insert_many")
 def _eventstream_insert_many(jobs):
     for job in jobs:
+        if job["event"].project_id == settings.SENTRY_PROJECT:
+            metrics.incr(
+                "internal.captured.eventstream_insert",
+                tags={"event_type": job["event"].data.get("type") or "null"},
+            )
+
         eventstream.insert(
             group=job["group"],
             event=job["event"],
             is_new=job["is_new"],
             is_regression=job["is_regression"],
             is_new_group_environment=job["is_new_group_environment"],
-            primary_hash=job["data"]["hashes"][0] if "hashes" in job["data"] else "",
+            primary_hash=job["event"].get_primary_hash(),
             received_timestamp=job["received_timestamp"],
             # We are choosing to skip consuming the event back
             # in the eventstream if it's flagged as raw.
@@ -809,7 +897,7 @@ def _get_event_user_impl(project, data, metrics_tags):
 
     if ip_address:
         try:
-            ipaddress.ip_address(six.text_type(ip_address))
+            ipaddress.ip_address(str(ip_address))
         except ValueError:
             ip_address = None
 
@@ -825,7 +913,7 @@ def _get_event_user_impl(project, data, metrics_tags):
     if not euser.hash:
         return
 
-    cache_key = u"euserid:1:{}:{}".format(project.id, euser.hash)
+    cache_key = f"euserid:1:{project.id}:{euser.hash}"
     euser_id = cache.get(cache_key)
     if euser_id is None:
         metrics_tags["cache_hit"] = "false"
@@ -856,16 +944,19 @@ def get_event_type(data):
     return eventtypes.get(data.get("type", "default"))()
 
 
-def materialize_metadata(data):
+def materialize_metadata(data, event_type, event_metadata):
     """Returns the materialized metadata to be merged with group or
-    event data.  This currently produces the keys `type`, `metadata`,
-    `title` and `location`.  This should most likely also produce
-    `culprit` here.
+    event data.  This currently produces the keys `type`, `culprit`,
+    `metadata`, `title` and `location`.
+
     """
-    event_type = get_event_type(data)
-    event_metadata = event_type.get_metadata(data)
+
+    # XXX(markus): Ideally this wouldn't take data or event_type, and instead
+    # calculate culprit + type from event_metadata
+
     return {
         "type": event_type.key,
+        "culprit": get_culprit(data),
         "metadata": event_metadata,
         "title": event_type.get_title(event_metadata),
         "location": event_type.get_location(event_metadata),
@@ -879,34 +970,107 @@ def get_culprit(data):
     )
 
 
-def _save_aggregate(event, hashes, release, **kwargs):
+def _save_aggregate(event, hashes, release, metadata, received_timestamp, **kwargs):
     project = event.project
 
-    # attempt to find a matching hash
-    all_hashes = _find_hashes(project, hashes)
+    flat_grouphashes = [
+        GroupHash.objects.get_or_create(project=project, hash=hash)[0] for hash in hashes.hashes
+    ]
 
-    existing_group_id = None
-    for h in all_hashes:
-        if h.group_id is not None:
-            existing_group_id = h.group_id
-            break
-        if h.group_tombstone_id is not None:
-            raise HashDiscarded("Matches group tombstone %s" % h.group_tombstone_id)
+    # The root_hierarchical_hash is the least specific hash within the tree, so
+    # typically hierarchical_hashes[0], unless a hash `n` has been split in
+    # which case `root_hierarchical_hash = hierarchical_hashes[n + 1]`. Chosing
+    # this for select_for_update mostly provides sufficient synchronization
+    # when groups are created and also relieves contention by locking a more
+    # specific hash than `hierarchical_hashes[0]`.
+    existing_grouphash, root_hierarchical_hash = _find_existing_grouphash(
+        project, flat_grouphashes, hashes.hierarchical_hashes
+    )
 
-    # XXX(dcramer): this has the opportunity to create duplicate groups
-    # it should be resolved by the hash merging function later but this
-    # should be better tested/reviewed
-    if existing_group_id is None:
-        # it's possible the release was deleted between
-        # when we queried for the release and now, so
-        # make sure it still exists
-        first_release = kwargs.pop("first_release", None)
+    if root_hierarchical_hash is not None:
+        root_hierarchical_grouphash = GroupHash.objects.get_or_create(
+            project=project, hash=root_hierarchical_hash
+        )[0]
 
-        short_id = project.next_short_id()
+        metadata.update(
+            hashes.group_metadata_from_hash(
+                existing_grouphash.hash
+                if existing_grouphash is not None
+                else root_hierarchical_hash
+            )
+        )
 
-        with transaction.atomic():
-            group, group_is_new = (
-                Group.objects.create(
+    else:
+        root_hierarchical_grouphash = None
+
+    # In principle the group gets the same metadata as the event, so common
+    # attributes can be defined in eventtypes.
+    #
+    # Additionally the `last_received` key is set for group metadata, later in
+    # _save_aggregate
+    kwargs["data"] = materialize_metadata(
+        event.data,
+        get_event_type(event.data),
+        metadata,
+    )
+    kwargs["data"]["last_received"] = received_timestamp
+
+    if existing_grouphash is None:
+
+        if killswitch_matches_context(
+            "store.load-shed-group-creation-projects",
+            {
+                "project_id": project.id,
+                "platform": event.platform,
+            },
+        ):
+            raise HashDiscarded("Load shedding group creation")
+
+        with sentry_sdk.start_span(
+            op="event_manager.create_group_transaction"
+        ) as span, metrics.timer(
+            "event_manager.create_group_transaction"
+        ) as metric_tags, transaction.atomic():
+            span.set_tag("create_group_transaction.outcome", "no_group")
+            metric_tags["create_group_transaction.outcome"] = "no_group"
+
+            all_hash_ids = [h.id for h in flat_grouphashes]
+            if root_hierarchical_grouphash is not None:
+                all_hash_ids.append(root_hierarchical_grouphash.id)
+
+            all_hashes = list(GroupHash.objects.filter(id__in=all_hash_ids).select_for_update())
+
+            flat_grouphashes = [gh for gh in all_hashes if gh.hash in hashes.hashes]
+
+            existing_grouphash, root_hierarchical_hash = _find_existing_grouphash(
+                project, flat_grouphashes, hashes.hierarchical_hashes
+            )
+
+            if root_hierarchical_hash is not None:
+                root_hierarchical_grouphash = GroupHash.objects.get_or_create(
+                    project=project, hash=root_hierarchical_hash
+                )[0]
+            else:
+                root_hierarchical_grouphash = None
+
+            if existing_grouphash is None:
+
+                try:
+                    short_id = project.next_short_id()
+                except OperationalError:
+                    metrics.incr(
+                        "next_short_id.timeout",
+                        tags={"platform": event.platform or "unknown"},
+                    )
+                    sentry_sdk.capture_message("short_id.timeout")
+                    raise HashDiscarded("Timeout when getting next_short_id")
+
+                # it's possible the release was deleted between
+                # when we queried for the release and now, so
+                # make sure it still exists
+                first_release = kwargs.pop("first_release", None)
+
+                group = Group.objects.create(
                     project=project,
                     short_id=short_id,
                     first_release_id=Release.objects.filter(id=first_release.id)
@@ -914,50 +1078,139 @@ def _save_aggregate(event, hashes, release, **kwargs):
                     .first()
                     if first_release
                     else None,
-                    **kwargs
-                ),
-                True,
-            )
+                    **kwargs,
+                )
 
-        metrics.incr(
-            "group.created", skip_internal=True, tags={"platform": event.platform or "unknown"}
-        )
+                if root_hierarchical_grouphash is not None:
+                    new_hashes = [root_hierarchical_grouphash]
+                else:
+                    new_hashes = list(flat_grouphashes)
 
-    else:
-        group = Group.objects.get(id=existing_group_id)
+                GroupHash.objects.filter(id__in=[h.id for h in new_hashes]).exclude(
+                    state=GroupHash.State.LOCKED_IN_MIGRATION
+                ).update(group=group)
 
-        group_is_new = False
+                is_new = True
+                is_regression = False
 
-    group._project_cache = project
+                span.set_tag("create_group_transaction.outcome", "new_group")
+                metric_tags["create_group_transaction.outcome"] = "new_group"
 
-    # If all hashes are brand new we treat this event as new
+                metrics.incr(
+                    "group.created",
+                    skip_internal=True,
+                    tags={"platform": event.platform or "unknown"},
+                )
+
+                return group, is_new, is_regression
+
+    group = Group.objects.get(id=existing_grouphash.group_id)
+
     is_new = False
-    new_hashes = [h for h in all_hashes if h.group_id is None]
+
+    if root_hierarchical_hash is not None:
+        new_hashes = []
+    else:
+        new_hashes = [h for h in flat_grouphashes if h.group_id is None]
+
     if new_hashes:
-        # XXX: There is a race condition here wherein another process could
-        # create a new group that is associated with one of the new hashes,
-        # add some event(s) to it, and then subsequently have the hash
-        # "stolen" by this process. This then "orphans" those events from
-        # their "siblings" in the group we've created here. We don't have a
-        # way to fix this, since we can't update the group on those hashes
-        # without filtering on `group_id` (which we can't do due to query
-        # planner weirdness.) For more context, see 84c6f75a and d0e22787,
-        # as well as GH-5085.
+        # There may still be secondary hashes that we did not use to find an
+        # existing group. A classic example is when grouping makes changes to
+        # the app-hash (changes to in_app logic), but the system hash stays
+        # stable and is used to find an existing group. Associate any new
+        # hashes with the group such that event saving continues to be
+        # resilient against grouping algorithm changes.
+        #
+        # There is a race condition here where two processes could "steal"
+        # hashes from each other. In practice this should not be user-visible
+        # as group creation is synchronized. Meaning the only way hashes could
+        # jump between groups is if there were two processes that:
+        #
+        # 1) have BOTH found an existing group
+        #    (otherwise at least one of them would be in the group creation
+        #    codepath which has transaction isolation/acquires row locks)
+        # 2) AND are looking at the same set, or an overlapping set of hashes
+        #    (otherwise they would not operate on the same rows)
+        # 3) yet somehow also sort their event into two different groups each
+        #    (otherwise the update would not change anything)
+        #
+        # We think this is a very unlikely situation. A previous version of
+        # _save_aggregate had races around group creation which made this race
+        # more user visible. For more context, see 84c6f75a and d0e22787, as
+        # well as GH-5085.
         GroupHash.objects.filter(id__in=[h.id for h in new_hashes]).exclude(
             state=GroupHash.State.LOCKED_IN_MIGRATION
         ).update(group=group)
 
-        if group_is_new and len(new_hashes) == len(all_hashes):
-            is_new = True
-
-    if not is_new:
-        is_regression = _process_existing_aggregate(
-            group=group, event=event, data=kwargs, release=release
-        )
-    else:
-        is_regression = False
+    is_regression = _process_existing_aggregate(
+        group=group, event=event, data=kwargs, release=release
+    )
 
     return group, is_new, is_regression
+
+
+def _find_existing_grouphash(
+    project,
+    flat_grouphashes,
+    hierarchical_hashes,
+):
+    all_grouphashes = []
+    root_hierarchical_hash = None
+
+    found_split = False
+
+    if hierarchical_hashes:
+        hierarchical_grouphashes = {
+            h.hash: h
+            for h in GroupHash.objects.filter(project=project, hash__in=hierarchical_hashes)
+        }
+
+        for hash in reversed(hierarchical_hashes):
+            group_hash = hierarchical_grouphashes.get(hash)
+
+            if group_hash is not None and group_hash.state == GroupHash.State.SPLIT:
+                found_split = True
+                break
+
+            root_hierarchical_hash = hash
+
+            if group_hash is not None:
+                all_grouphashes.append(group_hash)
+
+        if root_hierarchical_hash is None:
+            # All hashes were split, so we group by most specific hash. This is
+            # a legitimate usecase when there are events whose stacktraces are
+            # suffixes of other event's stacktraces.
+            root_hierarchical_hash = hierarchical_hashes[-1]
+            group_hash = hierarchical_grouphashes.get(root_hierarchical_hash)
+
+            if group_hash is not None:
+                all_grouphashes.append(group_hash)
+
+    if not found_split:
+        # In case of a split we want to avoid accidentally finding the split-up
+        # group again via flat hashes, which are very likely associated with
+        # whichever group is attached to the split hash. This distinction will
+        # become irrelevant once we start moving existing events into child
+        # groups and delete the parent group.
+        all_grouphashes.extend(flat_grouphashes)
+
+    for group_hash in all_grouphashes:
+        if group_hash.group_id is not None:
+            return group_hash, root_hierarchical_hash
+
+        # When refactoring for hierarchical grouping, we noticed that a
+        # tombstone may get ignored entirely if there is another hash *before*
+        # that happens to have a group_id. This bug may not have been noticed
+        # for a long time because most events only ever have 1-2 hashes. It
+        # will definitely get more noticeable with hierarchical grouping and
+        # it's not clear what good behavior would look like. Do people want to
+        # be able to tombstone `hierarchical_hashes[4]` while still having a
+        # group attached to `hierarchical_hashes[0]`? Maybe.
+        if group_hash.group_tombstone_id is not None:
+            raise HashDiscarded("Matches group tombstone %s" % group_hash.group_tombstone_id)
+
+    return None, root_hierarchical_hash
 
 
 def _handle_regression(group, event, release):
@@ -997,6 +1250,13 @@ def _handle_regression(group, event, release):
             last_seen=date,
             status=GroupStatus.UNRESOLVED,
         )
+    )
+    issue_unresolved.send_robust(
+        project=group.project,
+        user=None,
+        group=group,
+        transition_type="automatic",
+        sender="handle_regression",
     )
 
     group.active_at = date
@@ -1127,7 +1387,9 @@ def discard_event(job, attachments):
         )
 
     metrics.incr(
-        "events.discarded", skip_internal=True, tags={"platform": job["platform"]},
+        "events.discarded",
+        skip_internal=True,
+        tags={"platform": job["platform"]},
     )
 
 
@@ -1297,14 +1559,14 @@ def save_attachment(
         type=attachment.type,
         headers={"Content-Type": attachment.content_type},
     )
-    file.putfile(six.BytesIO(data), blob_size=settings.SENTRY_ATTACHMENT_BLOB_SIZE)
+    file.putfile(BytesIO(data), blob_size=settings.SENTRY_ATTACHMENT_BLOB_SIZE)
 
     EventAttachment.objects.create(
         event_id=event_id,
         project_id=project.id,
         group_id=group_id,
         name=attachment.name,
-        file=file,
+        file_id=file.id,
         type=attachment.type,
     )
 
@@ -1331,6 +1593,7 @@ def save_attachments(cache_key, attachments, job):
     :param attachments: A filtered list of attachments to save.
     :param job:         The job context container.
     """
+
     event = job["event"]
 
     for attachment in attachments:
@@ -1343,12 +1606,6 @@ def save_attachments(cache_key, attachments, job):
             group_id=event.group_id,
             start_time=job["start_time"],
         )
-
-
-def _find_hashes(project, hash_list):
-    return map(
-        lambda hash: GroupHash.objects.get_or_create(project=project, hash=hash)[0], hash_list
-    )
 
 
 @metrics.wraps("event_manager.save_transactions.materialize_event_metrics")
@@ -1364,15 +1621,55 @@ def _materialize_event_metrics(jobs):
 
         for metric_name in ("flag.processing.error", "flag.processing.fatal"):
             if event_metrics.get(metric_name):
-                metrics.incr("event_manager.save.event_metrics.%s" % (metric_name,))
+                metrics.incr(f"event_manager.save.event_metrics.{metric_name}")
 
         job["event_metrics"] = event_metrics
+
+
+@metrics.wraps("save_event.calculate_event_grouping")
+def _calculate_event_grouping(project, event, grouping_config) -> CalculatedHashes:
+    """
+    Main entrypoint for modifying/enhancing and grouping an event, writes
+    hashes back into event payload.
+    """
+
+    with metrics.timer("event_manager.normalize_stacktraces_for_grouping"):
+        with sentry_sdk.start_span(op="event_manager.normalize_stacktraces_for_grouping"):
+            event.normalize_stacktraces_for_grouping(load_grouping_config(grouping_config))
+
+    with metrics.timer("event_manager.apply_server_fingerprinting"):
+        # The active grouping config was put into the event in the
+        # normalize step before.  We now also make sure that the
+        # fingerprint was set to `'{{ default }}' just in case someone
+        # removed it from the payload.  The call to get_hashes will then
+        # look at `grouping_config` to pick the right parameters.
+        event.data["fingerprint"] = event.data.data.get("fingerprint") or ["{{ default }}"]
+        apply_server_fingerprinting(
+            event.data.data,
+            get_fingerprinting_config_for_project(project),
+            allow_custom_title=features.has(
+                "organizations:custom-event-title", project.organization, actor=None
+            ),
+        )
+
+    with metrics.timer("event_manager.event.get_hashes"):
+        # Here we try to use the grouping config that was requested in the
+        # event.  If that config has since been deleted (because it was an
+        # experimental grouping config) we fall back to the default.
+        try:
+            hashes = event.get_hashes(grouping_config)
+        except GroupingConfigNotFound:
+            event.data["grouping_config"] = get_grouping_config_dict_for_project(project)
+            hashes = event.get_hashes()
+
+    hashes.write_to_event(event.data)
+    return hashes
 
 
 @metrics.wraps("event_manager.save_transaction_events")
 def save_transaction_events(jobs, projects):
     with metrics.timer("event_manager.save_transactions.collect_organization_ids"):
-        organization_ids = set(project.organization_id for project in six.itervalues(projects))
+        organization_ids = {project.organization_id for project in projects.values()}
 
     with metrics.timer("event_manager.save_transactions.fetch_organizations"):
         organizations = {
@@ -1380,9 +1677,11 @@ def save_transaction_events(jobs, projects):
         }
 
     with metrics.timer("event_manager.save_transactions.set_organization_cache"):
-        for project in six.itervalues(projects):
+        for project in projects.values():
             try:
-                project._organization_cache = organizations[project.organization_id]
+                project.set_cached_field_value(
+                    "organization", organizations[project.organization_id]
+                )
             except KeyError:
                 continue
 

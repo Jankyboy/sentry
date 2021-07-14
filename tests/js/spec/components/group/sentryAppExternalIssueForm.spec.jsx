@@ -1,11 +1,9 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
-import {selectByValue, changeInputValue} from 'sentry-test/select-new';
+import {changeInputValue, selectByValue} from 'sentry-test/select-new';
 
 import {Client} from 'app/api';
-import {addQueryParamsToExistingUrl} from 'app/utils/queryString';
 import SentryAppExternalIssueForm from 'app/components/group/sentryAppExternalIssueForm';
+import {addQueryParamsToExistingUrl} from 'app/utils/queryString';
 
 const optionLabelSelector = label => `[label="${label}"]`;
 
@@ -27,7 +25,7 @@ describe('SentryAppExternalIssueForm', () => {
     component = TestStubs.SentryAppComponent();
     sentryApp = TestStubs.SentryApp();
     sentryAppInstallation = TestStubs.SentryAppInstallation({sentryApp});
-    submitUrl = `/sentry-app-installations/${sentryAppInstallation.uuid}/external-issues/`;
+    submitUrl = `/sentry-app-installations/${sentryAppInstallation.uuid}/external-issue-actions/`;
     externalIssueRequest = Client.addMockResponse({
       url: submitUrl,
       method: 'POST',
@@ -163,11 +161,10 @@ describe('SentryAppExternalIssueForm Async Field', () => {
   });
 
   describe('renders', () => {
-    it('renders each required_fields field', async function() {
+    it('renders each required_fields field', async function () {
       const mockGetOptions = Client.addMockResponse({
         method: 'GET',
-        url:
-          '/sentry-app-installations/d950595e-cba2-46f6-8a94-b79e42806f98/external-requests/',
+        url: '/sentry-app-installations/d950595e-cba2-46f6-8a94-b79e42806f98/external-requests/',
         body: {
           choices: [
             [1, 'Issue 1'],
@@ -283,11 +280,11 @@ describe('SentryAppExternalIssueForm Dependent fields', () => {
       expect(wrapper.find(optionLabelSelector('project A')).exists()).toBe(true);
       expect(wrapper.find(optionLabelSelector('project B')).exists()).toBe(true);
 
-      //project select should be disabled and we shouldn't fetch the options yet
+      // project select should be disabled and we shouldn't fetch the options yet
       expect(wrapper.find('SelectControl#board_id').prop('disabled')).toBe(true);
       expect(boardMock).not.toHaveBeenCalled();
 
-      //when we set the value for project we should get the values for the board
+      // when we set the value for project we should get the values for the board
       selectByValue(wrapper, 'A', {name: 'project_id'});
       await tick();
       wrapper.update();

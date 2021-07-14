@@ -1,14 +1,13 @@
-from __future__ import absolute_import, print_function
+from enum import Enum
 
 from django.db import models
 from django.utils import timezone
-from enum import Enum
 
 from sentry.db.models import (
     BoundedPositiveIntegerField,
-    Model,
     FlexibleForeignKey,
     GzippedDictField,
+    Model,
     sane_repr,
 )
 from sentry.db.models.manager import BaseManager
@@ -16,7 +15,7 @@ from sentry.utils.cache import cache
 
 
 # TODO(dcramer): pull in enum library
-class RuleStatus(object):
+class RuleStatus:
     ACTIVE = 0
     INACTIVE = 1
     PENDING_DELETION = 2
@@ -24,7 +23,7 @@ class RuleStatus(object):
 
 
 class Rule(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     DEFAULT_CONDITION_MATCH = "all"  # any, all
     DEFAULT_FILTER_MATCH = "all"  # match to apply on filters
@@ -36,9 +35,10 @@ class Rule(Model):
     data = GzippedDictField()
     status = BoundedPositiveIntegerField(
         default=RuleStatus.ACTIVE,
-        choices=((RuleStatus.ACTIVE, u"Active"), (RuleStatus.INACTIVE, u"Inactive")),
+        choices=((RuleStatus.ACTIVE, "Active"), (RuleStatus.INACTIVE, "Inactive")),
         db_index=True,
     )
+    owner = FlexibleForeignKey("sentry.Actor", null=True)
 
     date_added = models.DateTimeField(default=timezone.now)
 
@@ -47,12 +47,13 @@ class Rule(Model):
     class Meta:
         db_table = "sentry_rule"
         app_label = "sentry"
+        index_together = (("project", "status", "owner"),)
 
     __repr__ = sane_repr("project_id", "label")
 
     @classmethod
     def get_for_project(cls, project_id):
-        cache_key = u"project:{}:rules".format(project_id)
+        cache_key = f"project:{project_id}:rules"
         rules_list = cache.get(cache_key)
         if rules_list is None:
             rules_list = list(cls.objects.filter(project=project_id, status=RuleStatus.ACTIVE))
@@ -72,14 +73,14 @@ class Rule(Model):
         return None
 
     def delete(self, *args, **kwargs):
-        rv = super(Rule, self).delete(*args, **kwargs)
-        cache_key = u"project:{}:rules".format(self.project_id)
+        rv = super().delete(*args, **kwargs)
+        cache_key = f"project:{self.project_id}:rules"
         cache.delete(cache_key)
         return rv
 
     def save(self, *args, **kwargs):
-        rv = super(Rule, self).save(*args, **kwargs)
-        cache_key = u"project:{}:rules".format(self.project_id)
+        rv = super().save(*args, **kwargs)
+        cache_key = f"project:{self.project_id}:rules"
         cache.delete(cache_key)
         return rv
 
@@ -96,10 +97,10 @@ class RuleActivityType(Enum):
 
 
 class RuleActivity(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     rule = FlexibleForeignKey("sentry.Rule")
-    user = FlexibleForeignKey("sentry.User", null=True)
+    user = FlexibleForeignKey("sentry.User", null=True, on_delete=models.SET_NULL)
     type = models.IntegerField()
     date_added = models.DateTimeField(default=timezone.now)
 

@@ -1,11 +1,9 @@
-import React from 'react';
-
-import {mountWithTheme, mount} from 'sentry-test/enzyme';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
 import MultipleCheckbox from 'app/views/settings/components/forms/controls/multipleCheckbox';
 
-describe('MultipleCheckbox', function() {
-  it('renders', function() {
+describe('MultipleCheckbox', function () {
+  it('renders', function () {
     const wrapper = mountWithTheme(
       <MultipleCheckbox
         choices={[
@@ -20,9 +18,9 @@ describe('MultipleCheckbox', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('unselects a checked input', function() {
+  it('unselects a checked input', function () {
     const onChange = jest.fn();
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <MultipleCheckbox
         choices={[
           [0, 'Choice A'],
@@ -41,9 +39,9 @@ describe('MultipleCheckbox', function() {
     expect(onChange).toHaveBeenCalledWith([], expect.anything());
   });
 
-  it('selects an unchecked input', function() {
+  it('selects an unchecked input', function () {
     const onChange = jest.fn();
-    const wrapper = mount(
+    const wrapper = mountWithTheme(
       <MultipleCheckbox
         choices={[
           [0, 'Choice A'],

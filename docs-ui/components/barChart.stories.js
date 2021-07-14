@@ -1,17 +1,18 @@
 import React from 'react';
-import {withInfo} from '@storybook/addon-info';
 
 import BarChart from 'app/components/charts/barChart';
 
 export default {
   title: 'DataVisualization/Charts/BarChart',
+  component: BarChart,
+  parameters: {
+    controls: {hideNoControlsWarning: true},
+  },
 };
 
-export const _BarChart = withInfo('Stacked & Unstacked Bar Charts')(() => {
+export const _BarChart = () => {
   return (
     <div>
-      <h2 style={{paddingLeft: '60px'}}>Stacked Bar Charts:</h2>
-
       <BarChart
         style={{height: 250}}
         stacked
@@ -142,8 +143,13 @@ export const _BarChart = withInfo('Stacked & Unstacked Bar Charts')(() => {
       />
     </div>
   );
-});
+};
 
-_BarChart.story = {
-  name: 'BarChart',
+_BarChart.storyName = 'BarChart';
+_BarChart.parameters = {
+  docs: {
+    description: {
+      story: 'Stacked & Unstacked Bar Charts',
+    },
+  },
 };

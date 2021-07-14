@@ -1,15 +1,13 @@
-from __future__ import absolute_import
-
-import six
 from datetime import timedelta
-from dateutil.parser import parse as parse_datetime
 from uuid import uuid4
 
-from django.core.urlresolvers import reverse
+from dateutil.parser import parse as parse_datetime
+from django.urls import reverse
 from django.utils import timezone
 
 from sentry import options
 from sentry.models import (
+    GROUP_OWNER_TYPE,
     Activity,
     ApiToken,
     ExternalIssue,
@@ -17,38 +15,45 @@ from sentry.models import (
     GroupAssignee,
     GroupBookmark,
     GroupHash,
+    GroupInbox,
+    GroupInboxReason,
     GroupLink,
+    GroupOwner,
+    GroupOwnerType,
+    GroupResolution,
     GroupSeen,
     GroupShare,
     GroupSnooze,
     GroupStatus,
-    GroupResolution,
     GroupSubscription,
     GroupTombstone,
     Integration,
     OrganizationIntegration,
-    UserOption,
     Release,
+    ReleaseProjectEnvironment,
+    UserOption,
+    add_group_to_inbox,
+    remove_group_from_inbox,
 )
-from sentry.utils import json
-from sentry.utils.compat.mock import patch, Mock
-
+from sentry.search.events.constants import RELEASE_STAGE_ALIAS, SEMVER_ALIAS, SEMVER_PACKAGE_ALIAS
 from sentry.testutils import APITestCase, SnubaTestCase
 from sentry.testutils.helpers import parse_link_header
 from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils import json
+from sentry.utils.compat.mock import Mock, patch
 
 
 class GroupListTest(APITestCase, SnubaTestCase):
     endpoint = "sentry-api-0-organization-group-index"
 
     def setUp(self):
-        super(GroupListTest, self).setUp()
+        super().setUp()
         self.min_ago = before_now(minutes=1)
 
     def _parse_links(self, header):
         # links come in {url: {...attrs}}, but we need {rel: {...attrs}}
         links = {}
-        for url, attrs in six.iteritems(parse_link_header(header)):
+        for url, attrs in parse_link_header(header).items():
             links[attrs["rel"]] = attrs
             attrs["href"] = url
         return links
@@ -58,7 +63,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
             org = self.project.organization.slug
         else:
             org = args[0]
-        return super(GroupListTest, self).get_response(org, **kwargs)
+        return super().get_response(org, **kwargs)
 
     def test_sort_by_date_with_tag(self):
         # XXX(dcramer): this tests a case where an ambiguous column name existed
@@ -71,7 +76,188 @@ class GroupListTest(APITestCase, SnubaTestCase):
 
         response = self.get_valid_response(sort_by="date", query="is:unresolved")
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(group.id)
+        assert response.data[0]["id"] == str(group.id)
+
+    def test_sort_by_trend(self):
+        group = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=10)),
+                "fingerprint": ["group-1"],
+            },
+            project_id=self.project.id,
+        ).group
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=10)),
+                "fingerprint": ["group-1"],
+            },
+            project_id=self.project.id,
+        )
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(hours=13)),
+                "fingerprint": ["group-1"],
+            },
+            project_id=self.project.id,
+        )
+
+        group_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=5)),
+                "fingerprint": ["group-2"],
+            },
+            project_id=self.project.id,
+        ).group
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(hours=13)),
+                "fingerprint": ["group-2"],
+            },
+            project_id=self.project.id,
+        )
+        self.login_as(user=self.user)
+
+        response = self.get_valid_response(
+            sort="trend",
+            query="is:unresolved",
+            limit=1,
+            start=iso_format(before_now(days=1)),
+            end=iso_format(before_now(seconds=1)),
+        )
+        assert len(response.data) == 1
+        assert [item["id"] for item in response.data] == [str(group.id)]
+
+        header_links = parse_link_header(response["Link"])
+        cursor = [link for link in header_links.values() if link["rel"] == "next"][0]["cursor"]
+        response = self.get_valid_response(
+            sort="trend",
+            query="is:unresolved",
+            limit=1,
+            start=iso_format(before_now(days=1)),
+            end=iso_format(before_now(seconds=1)),
+            cursor=cursor,
+        )
+        assert [item["id"] for item in response.data] == [str(group_2.id)]
+
+    def test_sort_by_inbox(self):
+        group_1 = self.store_event(
+            data={
+                "event_id": "a" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-1"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_1 = add_group_to_inbox(group_1, GroupInboxReason.NEW)
+        group_2 = self.store_event(
+            data={
+                "event_id": "a" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-2"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_2 = add_group_to_inbox(group_2, GroupInboxReason.NEW)
+        inbox_2.update(date_added=inbox_1.date_added - timedelta(hours=1))
+
+        self.login_as(user=self.user)
+        response = self.get_valid_response(
+            sort="inbox", query="is:unresolved is:for_review", limit=1
+        )
+        assert len(response.data) == 1
+        assert response.data[0]["id"] == str(group_1.id)
+
+        header_links = parse_link_header(response["Link"])
+        cursor = [link for link in header_links.values() if link["rel"] == "next"][0]["cursor"]
+        response = self.get_response(
+            sort="inbox", cursor=cursor, query="is:unresolved is:for_review", limit=1
+        )
+        assert [item["id"] for item in response.data] == [str(group_2.id)]
+
+    def test_sort_by_inbox_me_or_none(self):
+        group_1 = self.store_event(
+            data={
+                "event_id": "a" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-1"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_1 = add_group_to_inbox(group_1, GroupInboxReason.NEW)
+        group_2 = self.store_event(
+            data={
+                "event_id": "b" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-2"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_2 = add_group_to_inbox(group_2, GroupInboxReason.NEW)
+        inbox_2.update(date_added=inbox_1.date_added - timedelta(hours=1))
+        GroupOwner.objects.create(
+            group=group_2,
+            project=self.project,
+            organization=self.organization,
+            type=GroupOwnerType.OWNERSHIP_RULE.value,
+            user=self.user,
+        )
+        owner_by_other = self.store_event(
+            data={
+                "event_id": "c" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-3"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_3 = add_group_to_inbox(owner_by_other, GroupInboxReason.NEW)
+        inbox_3.update(date_added=inbox_1.date_added - timedelta(hours=1))
+        other_user = self.create_user()
+        GroupOwner.objects.create(
+            group=owner_by_other,
+            project=self.project,
+            organization=self.organization,
+            type=GroupOwnerType.OWNERSHIP_RULE.value,
+            user=other_user,
+        )
+
+        owned_me_assigned_to_other = self.store_event(
+            data={
+                "event_id": "d" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-4"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_4 = add_group_to_inbox(owned_me_assigned_to_other, GroupInboxReason.NEW)
+        inbox_4.update(date_added=inbox_1.date_added - timedelta(hours=1))
+        GroupAssignee.objects.assign(owned_me_assigned_to_other, other_user)
+        GroupOwner.objects.create(
+            group=owned_me_assigned_to_other,
+            project=self.project,
+            organization=self.organization,
+            type=GroupOwnerType.OWNERSHIP_RULE.value,
+            user=self.user,
+        )
+
+        unowned_assigned_to_other = self.store_event(
+            data={
+                "event_id": "e" * 32,
+                "timestamp": iso_format(before_now(seconds=1)),
+                "fingerprint": ["group-5"],
+            },
+            project_id=self.project.id,
+        ).group
+        inbox_5 = add_group_to_inbox(unowned_assigned_to_other, GroupInboxReason.NEW)
+        inbox_5.update(date_added=inbox_1.date_added - timedelta(hours=1))
+        GroupAssignee.objects.assign(unowned_assigned_to_other, other_user)
+
+        self.login_as(user=self.user)
+        response = self.get_valid_response(
+            sort="inbox",
+            query="is:unresolved is:for_review assigned_or_suggested:[me, none]",
+            limit=10,
+        )
+        assert [item["id"] for item in response.data] == [str(group_1.id), str(group_2.id)]
 
     def test_trace_search(self):
         event = self.store_event(
@@ -97,7 +283,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
             sort_by="date", query="is:unresolved trace:a7d67cf796774551a95be6543cacd459"
         )
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(event.group.id)
+        assert response.data[0]["id"] == str(event.group.id)
 
     def test_feature_gate(self):
         # ensure there are two or more projects
@@ -127,14 +313,14 @@ class GroupListTest(APITestCase, SnubaTestCase):
         assert response.status_code == 400
         assert (
             response.data["detail"]
-            == 'Your search query could not be parsed: Boolean statements containing "OR" or "AND" are not supported in this search'
+            == 'Error parsing search query: Boolean statements containing "OR" or "AND" are not supported in this search'
         )
 
         response = self.get_response(sort_by="date", query="title:hello AND title:goodbye")
         assert response.status_code == 400
         assert (
             response.data["detail"]
-            == 'Your search query could not be parsed: Boolean statements containing "OR" or "AND" are not supported in this search'
+            == 'Error parsing search query: Boolean statements containing "OR" or "AND" are not supported in this search'
         )
 
     def test_invalid_query(self):
@@ -142,9 +328,17 @@ class GroupListTest(APITestCase, SnubaTestCase):
         self.create_group(checksum="a" * 32, last_seen=now - timedelta(seconds=1))
         self.login_as(user=self.user)
 
-        response = self.get_response(sort_by="date", query="timesSeen:>1k")
+        response = self.get_response(sort_by="date", query="timesSeen:>1t")
         assert response.status_code == 400
-        assert "Invalid format for numeric search" in response.data["detail"]
+        assert "Invalid number" in response.data["detail"]
+
+    def test_valid_numeric_query(self):
+        now = timezone.now()
+        self.create_group(checksum="a" * 32, last_seen=now - timedelta(seconds=1))
+        self.login_as(user=self.user)
+
+        response = self.get_response(sort_by="date", query="timesSeen:>1k")
+        assert response.status_code == 200
 
     def test_invalid_sort_key(self):
         now = timezone.now()
@@ -168,7 +362,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
         self.login_as(user=self.user)
         response = self.get_valid_response(sort_by="date", limit=1)
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(group2.id)
+        assert response.data[0]["id"] == str(group2.id)
 
         links = self._parse_links(response["Link"])
 
@@ -178,7 +372,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
         response = self.client.get(links["next"]["href"], format="json")
         assert response.status_code == 200
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(group1.id)
+        assert response.data[0]["id"] == str(group1.id)
 
         links = self._parse_links(response["Link"])
 
@@ -242,7 +436,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
         self.login_as(user=self.user)
         response = self.get_valid_response()
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(group2.id)
+        assert response.data[0]["id"] == str(group2.id)
 
     def test_lookup_by_event_id(self):
         project = self.project
@@ -258,7 +452,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
         response = self.get_valid_response(query="c" * 32)
         assert response["X-Sentry-Direct-Hit"] == "1"
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(event.group.id)
+        assert response.data[0]["id"] == str(event.group.id)
         assert response.data[0]["matchingEventId"] == event_id
 
     def test_lookup_by_event_id_incorrect_project_id(self):
@@ -281,7 +475,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
             response = self.get_valid_response(query=event_id, project=[other_project.id])
         assert response["X-Sentry-Direct-Hit"] == "1"
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(event.group.id)
+        assert response.data[0]["id"] == str(event.group.id)
         assert response.data[0]["matchingEventId"] == event_id
 
     def test_lookup_by_event_id_with_whitespace(self):
@@ -297,7 +491,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
         response = self.get_valid_response(query="  {}  ".format("c" * 32))
         assert response["X-Sentry-Direct-Hit"] == "1"
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(event.group.id)
+        assert response.data[0]["id"] == str(event.group.id)
         assert response.data[0]["matchingEventId"] == event_id
 
     def test_lookup_by_unknown_event_id(self):
@@ -353,12 +547,10 @@ class GroupListTest(APITestCase, SnubaTestCase):
         self.login_as(user=self.user)
         response = self.get_valid_response(group=self.group.id)
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(self.group.id)
+        assert response.data[0]["id"] == str(self.group.id)
         group_2 = self.create_group()
         response = self.get_valid_response(group=[self.group.id, group_2.id])
-        assert set([g["id"] for g in response.data]) == set(
-            [six.text_type(self.group.id), six.text_type(group_2.id)]
-        )
+        assert {g["id"] for g in response.data} == {str(self.group.id), str(group_2.id)}
 
     def test_lookup_by_group_id_no_perms(self):
         organization = self.create_organization()
@@ -411,6 +603,24 @@ class GroupListTest(APITestCase, SnubaTestCase):
         assert len(issues) == 1
         assert int(issues[0]["id"]) == event.group.id
 
+    def test_lookup_by_release_wildcard(self):
+        self.login_as(self.user)
+        project = self.project
+        release = Release.objects.create(organization=project.organization, version="12345")
+        release.add_project(project)
+        event = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=1)),
+                "tags": {"sentry:release": release.version},
+            },
+            project_id=project.id,
+        )
+
+        response = self.get_valid_response(release=release.version[:3] + "*")
+        issues = json.loads(response.content)
+        assert len(issues) == 1
+        assert int(issues[0]["id"]) == event.group.id
+
     def test_pending_delete_pending_merge_excluded(self):
         events = []
         for i in "abcd":
@@ -432,7 +642,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
 
         response = self.get_valid_response()
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(events[1].group.id)
+        assert response.data[0]["id"] == str(events[1].group.id)
 
     def test_filters_based_on_retention(self):
         self.login_as(user=self.user)
@@ -464,7 +674,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
 
             response = self.get_valid_response(statsPeriod="6h")
             assert len(response.data) == 1
-            assert response.data[0]["id"] == six.text_type(group.id)
+            assert response.data[0]["id"] == str(group.id)
 
             response = self.get_valid_response(statsPeriod="1h")
             assert len(response.data) == 0
@@ -513,7 +723,7 @@ class GroupListTest(APITestCase, SnubaTestCase):
             group = self.store_event(
                 data={
                     "timestamp": iso_format(before_now(days=day)),
-                    "fingerprint": ["group-{}".format(day)],
+                    "fingerprint": [f"group-{day}"],
                 },
                 project_id=self.project.id,
             ).group
@@ -524,152 +734,749 @@ class GroupListTest(APITestCase, SnubaTestCase):
             ag.update(status=GroupStatus.RESOLVED, resolved_at=before_now(seconds=5))
             GroupAssignee.objects.assign(ag, self.user)
 
-        patched_params_update.side_effect = [
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id], "orderby": ["-last_seen"]}),
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id]}),
-            (self.organization.id, {"project": [self.project.id]}),
-        ]
+        # This side_effect is meant to override the `calculate_hits` snuba query specifically.
+        # If this test is failing it's because the -last_seen override is being applied to
+        # different snuba query.
+        def _my_patched_params(query_params, **kwargs):
+            if query_params.aggregations == [
+                ["uniq", "group_id", "total"],
+                ["multiply(toUInt64(max(timestamp)), 1000)", "", "last_seen"],
+            ]:
+                return (
+                    self.organization.id,
+                    {"project": [self.project.id], "orderby": ["-last_seen"]},
+                )
+            else:
+                return (self.organization.id, {"project": [self.project.id]})
 
-        response = self.get_response(limit=1, query="assigned:{}".format(self.user.email))
+        patched_params_update.side_effect = _my_patched_params
+
+        response = self.get_response(limit=1, query=f"assigned:{self.user.email}")
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(assigned_groups[1].id)
+        assert response.data[0]["id"] == str(assigned_groups[1].id)
 
         header_links = parse_link_header(response["Link"])
         cursor = [link for link in header_links.values() if link["rel"] == "next"][0]["cursor"]
-        response = self.get_response(
-            limit=1, cursor=cursor, query="assigned:{}".format(self.user.email)
-        )
+        response = self.get_response(limit=1, cursor=cursor, query=f"assigned:{self.user.email}")
         assert len(response.data) == 1
-        assert response.data[0]["id"] == six.text_type(assigned_groups[0].id)
+        assert response.data[0]["id"] == str(assigned_groups[0].id)
 
         assert options.set("snuba.search.hits-sample-size", old_sample_size)
 
+    def test_assigned_me_none(self):
+        self.login_as(user=self.user)
+        groups = []
+        for i in range(5):
+            group = self.store_event(
+                data={
+                    "timestamp": iso_format(before_now(minutes=10, days=i)),
+                    "fingerprint": [f"group-{i}"],
+                },
+                project_id=self.project.id,
+            ).group
+            groups.append(group)
+
+        assigned_groups = groups[:2]
+        for ag in assigned_groups:
+            GroupAssignee.objects.assign(ag, self.user)
+
+        response = self.get_response(limit=10, query="assigned:me")
+        assert [row["id"] for row in response.data] == [str(g.id) for g in assigned_groups]
+
+        response = self.get_response(limit=10, query="assigned:[me, none]")
+        assert len(response.data) == 5
+
+        GroupAssignee.objects.assign(assigned_groups[1], self.create_user("other@user.com"))
+        response = self.get_response(limit=10, query="assigned:[me, none]")
+        assert len(response.data) == 4
+
     def test_seen_stats(self):
-        with self.feature("organizations:dynamic-issue-counts"):
-            self.store_event(
-                data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
-                project_id=self.project.id,
-            )
-            before_now_300_seconds = iso_format(before_now(seconds=300))
-            event2 = self.store_event(
-                data={"timestamp": before_now_300_seconds, "fingerprint": ["group-2"]},
-                project_id=self.project.id,
-            )
-            group2 = event2.group
-            before_now_250_seconds = iso_format(before_now(seconds=250))
-            self.store_event(
-                data={
-                    "timestamp": before_now_250_seconds,
-                    "fingerprint": ["group-2"],
-                    "tags": {"server": "example.com", "trace": "meow", "message": "foo"},
-                },
-                project_id=self.project.id,
-            )
-            self.store_event(
-                data={
-                    "timestamp": iso_format(before_now(seconds=200)),
-                    "fingerprint": ["group-1"],
-                    "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
-                },
-                project_id=self.project.id,
-            )
-            before_now_150_seconds = iso_format(before_now(seconds=150))
-            self.store_event(
-                data={
-                    "timestamp": before_now_150_seconds,
-                    "fingerprint": ["group-2"],
-                    "tags": {"trace": "ribbit", "server": "example.com"},
-                },
-                project_id=self.project.id,
-            )
-            before_now_100_seconds = iso_format(before_now(seconds=100))
-            self.store_event(
-                data={
-                    "timestamp": before_now_100_seconds,
-                    "fingerprint": ["group-2"],
-                    "tags": {"message": "foo", "trace": "meow"},
-                },
-                project_id=self.project.id,
-            )
+        self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        before_now_300_seconds = iso_format(before_now(seconds=300))
+        before_now_350_seconds = iso_format(before_now(seconds=350))
+        event2 = self.store_event(
+            data={"timestamp": before_now_300_seconds, "fingerprint": ["group-2"]},
+            project_id=self.project.id,
+        )
+        group2 = event2.group
+        group2.first_seen = before_now_350_seconds
+        group2.times_seen = 55
+        group2.save()
+        before_now_250_seconds = iso_format(before_now(seconds=250))
+        self.store_event(
+            data={
+                "timestamp": before_now_250_seconds,
+                "fingerprint": ["group-2"],
+                "tags": {"server": "example.com", "trace": "meow", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=200)),
+                "fingerprint": ["group-1"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+        before_now_150_seconds = iso_format(before_now(seconds=150))
+        self.store_event(
+            data={
+                "timestamp": before_now_150_seconds,
+                "fingerprint": ["group-2"],
+                "tags": {"trace": "ribbit", "server": "example.com"},
+            },
+            project_id=self.project.id,
+        )
+        before_now_100_seconds = iso_format(before_now(seconds=100))
+        self.store_event(
+            data={
+                "timestamp": before_now_100_seconds,
+                "fingerprint": ["group-2"],
+                "tags": {"message": "foo", "trace": "meow"},
+            },
+            project_id=self.project.id,
+        )
 
-            self.login_as(user=self.user)
-            response = self.get_response(sort_by="date", limit=10, query="server:example.com")
-            assert response.status_code == 200
-            assert len(response.data) == 2
-            assert int(response.data[0]["id"]) == group2.id
-            assert response.data[0]["lifetime"] is not None
-            assert response.data[0]["filtered"] is not None
-            assert response.data[0]["filtered"]["stats"] is not None
-            assert response.data[0]["lifetime"]["stats"] is None
-            assert response.data[0]["filtered"]["stats"] != response.data[0]["stats"]
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query="server:example.com")
 
-            assert response.data[0]["lifetime"]["count"] == "4"
-            assert response.data[0]["lifetime"]["firstSeen"] == parse_datetime(
-                before_now_300_seconds
-            ).replace(tzinfo=timezone.utc)
-            assert response.data[0]["lifetime"]["lastSeen"] == parse_datetime(
-                before_now_100_seconds
-            ).replace(tzinfo=timezone.utc)
+        assert response.status_code == 200
+        assert len(response.data) == 2
+        assert int(response.data[0]["id"]) == group2.id
+        assert response.data[0]["lifetime"] is not None
+        assert response.data[0]["filtered"] is not None
+        assert response.data[0]["filtered"]["stats"] is not None
+        assert response.data[0]["lifetime"]["stats"] is None
+        assert response.data[0]["filtered"]["stats"] != response.data[0]["stats"]
 
-            assert response.data[0]["filtered"]["count"] == "2"
-            assert response.data[0]["filtered"]["firstSeen"] == parse_datetime(
-                before_now_250_seconds
-            ).replace(tzinfo=timezone.utc)
-            assert response.data[0]["filtered"]["lastSeen"] == parse_datetime(
-                before_now_150_seconds
-            ).replace(tzinfo=timezone.utc)
+        assert response.data[0]["lifetime"]["firstSeen"] == parse_datetime(
+            before_now_350_seconds  # Should match overridden value, not event value
+        ).replace(tzinfo=timezone.utc)
+        assert response.data[0]["lifetime"]["lastSeen"] == parse_datetime(
+            before_now_100_seconds
+        ).replace(tzinfo=timezone.utc)
+        assert response.data[0]["lifetime"]["count"] == "55"
 
-            # Empty filter test:
-            response = self.get_response(sort_by="date", limit=10, query="")
-            assert response.status_code == 200
-            assert len(response.data) == 2
-            assert int(response.data[0]["id"]) == group2.id
-            assert response.data[0]["lifetime"] is not None
-            assert response.data[0]["filtered"] is None
-            assert response.data[0]["lifetime"]["stats"] is None
+        assert response.data[0]["filtered"]["count"] == "2"
+        assert response.data[0]["filtered"]["firstSeen"] == parse_datetime(
+            before_now_250_seconds
+        ).replace(tzinfo=timezone.utc)
+        assert response.data[0]["filtered"]["lastSeen"] == parse_datetime(
+            before_now_150_seconds
+        ).replace(tzinfo=timezone.utc)
 
-            assert response.data[0]["lifetime"]["count"] == "4"
-            assert response.data[0]["lifetime"]["firstSeen"] == parse_datetime(
-                before_now_300_seconds
-            ).replace(tzinfo=timezone.utc)
-            assert response.data[0]["lifetime"]["lastSeen"] == parse_datetime(
-                before_now_100_seconds
-            ).replace(tzinfo=timezone.utc)
+        # Empty filter test:
+        response = self.get_response(sort_by="date", limit=10, query="")
+        assert response.status_code == 200
+        assert len(response.data) == 2
+        assert int(response.data[0]["id"]) == group2.id
+        assert response.data[0]["lifetime"] is not None
+        assert response.data[0]["filtered"] is None
+        assert response.data[0]["lifetime"]["stats"] is None
+
+        assert response.data[0]["lifetime"]["count"] == "55"
+        assert response.data[0]["lifetime"]["firstSeen"] == parse_datetime(
+            before_now_350_seconds  # Should match overridden value, not event value
+        ).replace(tzinfo=timezone.utc)
+        assert response.data[0]["lifetime"]["lastSeen"] == parse_datetime(
+            before_now_100_seconds
+        ).replace(tzinfo=timezone.utc)
+
+    def test_inbox_search(self):
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=200)),
+                "fingerprint": ["group-1"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+
+        event = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=200)),
+                "fingerprint": ["group-2"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=200)),
+                "fingerprint": ["group-3"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+
+        add_group_to_inbox(event.group, GroupInboxReason.NEW)
+
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved is:for_review", expand=["inbox"]
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["inbox"] is not None
+        assert response.data[0]["inbox"]["reason"] == GroupInboxReason.NEW.value
+
+    def test_inbox_search_outside_retention(self):
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort="inbox",
+            limit=10,
+            query="is:unresolved is:for_review",
+            collapse="stats",
+            expand=["inbox", "owners"],
+            start=iso_format(before_now(days=20)),
+            end=iso_format(before_now(days=15)),
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 0
+
+    def test_assigned_or_suggested_search(self):
+        event = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=180)),
+                "fingerprint": ["group-1"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+        event1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=185)),
+                "fingerprint": ["group-2"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+        event2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=190)),
+                "fingerprint": ["group-3"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
+
+        assigned_event = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=195)),
+                "fingerprint": ["group-4"],
+            },
+            project_id=self.project.id,
+        )
+
+        assigned_to_other_event = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=195)),
+                "fingerprint": ["group-5"],
+            },
+            project_id=self.project.id,
+        )
+
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query="assigned_or_suggested:me")
+        assert response.status_code == 200
+        assert len(response.data) == 0
+
+        GroupOwner.objects.create(
+            group=assigned_to_other_event.group,
+            project=assigned_to_other_event.group.project,
+            organization=assigned_to_other_event.group.project.organization,
+            type=0,
+            team_id=None,
+            user_id=self.user.id,
+        )
+        GroupOwner.objects.create(
+            group=event.group,
+            project=event.group.project,
+            organization=event.group.project.organization,
+            type=0,
+            team_id=None,
+            user_id=self.user.id,
+        )
+
+        response = self.get_response(sort_by="date", limit=10, query="assigned_or_suggested:me")
+        assert response.status_code == 200
+        assert len(response.data) == 2
+        assert int(response.data[0]["id"]) == event.group.id
+        assert int(response.data[1]["id"]) == assigned_to_other_event.group.id
+
+        # Because assigned_to_other_event is assigned to self.other_user, it should not show up in assigned_or_suggested search for anyone but self.other_user. (aka. they are now the only owner)
+        other_user = self.create_user("other@user.com", is_superuser=False)
+        GroupAssignee.objects.create(
+            group=assigned_to_other_event.group,
+            project=assigned_to_other_event.group.project,
+            user=other_user,
+        )
+        response = self.get_response(sort_by="date", limit=10, query="assigned_or_suggested:me")
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"assigned_or_suggested:{other_user.email}"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == assigned_to_other_event.group.id
+
+        GroupAssignee.objects.create(
+            group=assigned_event.group, project=assigned_event.group.project, user=self.user
+        )
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"assigned_or_suggested:{self.user.email}"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 2
+        assert int(response.data[0]["id"]) == event.group.id
+        assert int(response.data[1]["id"]) == assigned_event.group.id
+
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"assigned_or_suggested:#{self.team.slug}"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 0
+        GroupOwner.objects.create(
+            group=event.group,
+            project=event.group.project,
+            organization=event.group.project.organization,
+            type=0,
+            team_id=self.team.id,
+            user_id=None,
+        )
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"assigned_or_suggested:#{self.team.slug}"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+
+        response = self.get_response(
+            sort_by="date", limit=10, query="assigned_or_suggested:[me, none]"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 4
+        assert int(response.data[0]["id"]) == event.group.id
+        assert int(response.data[1]["id"]) == event1.group.id
+        assert int(response.data[2]["id"]) == event2.group.id
+        assert int(response.data[3]["id"]) == assigned_event.group.id
+
+        not_me = self.create_user(email="notme@sentry.io")
+        GroupOwner.objects.create(
+            group=event2.group,
+            project=event2.group.project,
+            organization=event2.group.project.organization,
+            type=0,
+            team_id=None,
+            user_id=not_me.id,
+        )
+        response = self.get_response(
+            sort_by="date", limit=10, query="assigned_or_suggested:[me, none]"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 3
+        assert int(response.data[0]["id"]) == event.group.id
+        assert int(response.data[1]["id"]) == event1.group.id
+        assert int(response.data[2]["id"]) == assigned_event.group.id
+
+        GroupOwner.objects.create(
+            group=event2.group,
+            project=event2.group.project,
+            organization=event2.group.project.organization,
+            type=0,
+            team_id=None,
+            user_id=self.user.id,
+        )
+        # Should now include event2 as it has shared ownership.
+        response = self.get_response(
+            sort_by="date", limit=10, query="assigned_or_suggested:[me, none]"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 4
+        assert int(response.data[0]["id"]) == event.group.id
+        assert int(response.data[1]["id"]) == event1.group.id
+        assert int(response.data[2]["id"]) == event2.group.id
+        assert int(response.data[3]["id"]) == assigned_event.group.id
+
+        # Assign group to another user and now it shouldn't show up in owner search for this team.
+        GroupAssignee.objects.create(
+            group=event.group,
+            project=event.group.project,
+            user=other_user,
+        )
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"assigned_or_suggested:#{self.team.slug}"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 0
+
+    def test_semver(self):
+        release_1 = self.create_release(version="test@1.2.3")
+        release_2 = self.create_release(version="test@1.2.4")
+        release_3 = self.create_release(version="test@1.2.5")
+
+        release_1_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=1)),
+                "fingerprint": ["group-1"],
+                "release": release_1.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_1_g_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=2)),
+                "fingerprint": ["group-2"],
+                "release": release_1.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_2_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=3)),
+                "fingerprint": ["group-3"],
+                "release": release_2.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_2_g_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=4)),
+                "fingerprint": ["group-4"],
+                "release": release_2.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_3_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=5)),
+                "fingerprint": ["group-5"],
+                "release": release_3.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_3_g_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=6)),
+                "fingerprint": ["group-6"],
+                "release": release_3.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query=f"{SEMVER_ALIAS}:>1.2.3")
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            release_2_g_1,
+            release_2_g_2,
+            release_3_g_1,
+            release_3_g_2,
+        ]
+
+        response = self.get_response(sort_by="date", limit=10, query=f"{SEMVER_ALIAS}:>=1.2.3")
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            release_1_g_1,
+            release_1_g_2,
+            release_2_g_1,
+            release_2_g_2,
+            release_3_g_1,
+            release_3_g_2,
+        ]
+
+        response = self.get_response(sort_by="date", limit=10, query=f"{SEMVER_ALIAS}:<1.2.4")
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [release_1_g_1, release_1_g_2]
+
+        response = self.get_response(sort_by="date", limit=10, query=f"{SEMVER_ALIAS}:<1.0")
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == []
+
+    def test_release_stage(self):
+        replaced_release = self.create_release(version="replaced_release")
+        adopted_release = self.create_release(version="adopted_release")
+        not_adopted_release = self.create_release(version="not_adopted_release")
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=adopted_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=replaced_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+            unadopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=not_adopted_release.id,
+            environment_id=self.environment.id,
+        )
+
+        adopted_release_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=1)),
+                "fingerprint": ["group-1"],
+                "release": adopted_release.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        adopted_release_g_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=2)),
+                "fingerprint": ["group-2"],
+                "release": adopted_release.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        replaced_release_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=3)),
+                "fingerprint": ["group-3"],
+                "release": replaced_release.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        replaced_release_g_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=4)),
+                "fingerprint": ["group-4"],
+                "release": replaced_release.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"{RELEASE_STAGE_ALIAS}:adopted"
+        )
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            adopted_release_g_1,
+            adopted_release_g_2,
+        ]
+
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"!{RELEASE_STAGE_ALIAS}:not_adopted"
+        )
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            adopted_release_g_1,
+            adopted_release_g_2,
+            replaced_release_g_1,
+            replaced_release_g_2,
+        ]
+
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"{RELEASE_STAGE_ALIAS}:[adopted, replaced]"
+        )
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            adopted_release_g_1,
+            adopted_release_g_2,
+            replaced_release_g_1,
+            replaced_release_g_2,
+        ]
+
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"!{RELEASE_STAGE_ALIAS}:[not_adopted, replaced]"
+        )
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            adopted_release_g_1,
+            adopted_release_g_2,
+        ]
+
+    def test_semver_package(self):
+        release_1 = self.create_release(version="test@1.2.3")
+        release_2 = self.create_release(version="test2@1.2.4")
+
+        release_1_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=1)),
+                "fingerprint": ["group-1"],
+                "release": release_1.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_1_g_2 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=2)),
+                "fingerprint": ["group-2"],
+                "release": release_1.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        release_2_g_1 = self.store_event(
+            data={
+                "timestamp": iso_format(before_now(minutes=3)),
+                "fingerprint": ["group-3"],
+                "release": release_2.version,
+            },
+            project_id=self.project.id,
+        ).group.id
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query=f"{SEMVER_PACKAGE_ALIAS}:test")
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            release_1_g_1,
+            release_1_g_2,
+        ]
+
+        response = self.get_response(
+            sort_by="date", limit=10, query=f"{SEMVER_PACKAGE_ALIAS}:test2"
+        )
+        assert response.status_code == 200, response.content
+        assert [int(r["id"]) for r in response.json()] == [
+            release_2_g_1,
+        ]
+
+    def test_aggregate_stats_regression_test(self):
+        self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="times_seen:>0 last_seen:-1h date:-1h"
+        )
+
+        assert response.status_code == 200
+        assert len(response.data) == 1
 
     def test_skipped_fields(self):
-        with self.feature("organizations:dynamic-issue-counts"):
-            event = self.store_event(
-                data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
-                project_id=self.project.id,
-            )
-            self.store_event(
-                data={
-                    "timestamp": iso_format(before_now(seconds=200)),
-                    "fingerprint": ["group-1"],
-                    "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
-                },
-                project_id=self.project.id,
-            )
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        self.store_event(
+            data={
+                "timestamp": iso_format(before_now(seconds=200)),
+                "fingerprint": ["group-1"],
+                "tags": {"server": "example.com", "trace": "woof", "message": "foo"},
+            },
+            project_id=self.project.id,
+        )
 
-            query = u"server:example.com"
-            query += u" status:unresolved"
-            query += u" active_at:" + iso_format(before_now(seconds=350))
-            query += u" first_seen:" + iso_format(before_now(seconds=500))
+        query = "server:example.com"
+        query += " status:unresolved"
+        query += " active_at:" + iso_format(before_now(seconds=350))
+        query += " first_seen:" + iso_format(before_now(seconds=500))
 
-            self.login_as(user=self.user)
-            response = self.get_response(sort_by="date", limit=10, query=query)
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query=query)
 
-            assert response.status_code == 200
-            assert len(response.data) == 1
-            assert int(response.data[0]["id"]) == event.group.id
-            assert response.data[0]["lifetime"] is not None
-            assert response.data[0]["filtered"] is not None
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["lifetime"] is not None
+        assert response.data[0]["filtered"] is not None
+
+    def test_inbox_fields(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        add_group_to_inbox(event.group, GroupInboxReason.NEW)
+        query = "status:unresolved"
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query=query, expand=["inbox"])
+
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["inbox"] is not None
+        assert response.data[0]["inbox"]["reason"] == GroupInboxReason.NEW.value
+        assert response.data[0]["inbox"]["reason_details"] is None
+        remove_group_from_inbox(event.group)
+        snooze_details = {
+            "until": None,
+            "count": 3,
+            "window": None,
+            "user_count": None,
+            "user_window": 5,
+        }
+        add_group_to_inbox(event.group, GroupInboxReason.UNIGNORED, snooze_details)
+        response = self.get_response(sort_by="date", limit=10, query=query, expand=["inbox"])
+
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["inbox"] is not None
+        assert response.data[0]["inbox"]["reason"] == GroupInboxReason.UNIGNORED.value
+        assert response.data[0]["inbox"]["reason_details"] == snooze_details
+
+    def test_expand_string(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        add_group_to_inbox(event.group, GroupInboxReason.NEW)
+        query = "status:unresolved"
+        self.login_as(user=self.user)
+        response = self.get_response(sort_by="date", limit=10, query=query, expand="inbox")
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["inbox"] is not None
+        assert response.data[0]["inbox"]["reason"] == GroupInboxReason.NEW.value
+        assert response.data[0]["inbox"]["reason_details"] is None
+
+    def test_expand_owners(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        query = "status:unresolved"
+        self.login_as(user=self.user)
+        # Test with no owner
+        response = self.get_response(sort_by="date", limit=10, query=query, expand="owners")
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["owners"] is None
+
+        # Test with owners
+        GroupOwner.objects.create(
+            group=event.group,
+            project=event.project,
+            organization=event.project.organization,
+            type=GroupOwnerType.SUSPECT_COMMIT.value,
+            user=self.user,
+        )
+        GroupOwner.objects.create(
+            group=event.group,
+            project=event.project,
+            organization=event.project.organization,
+            type=GroupOwnerType.OWNERSHIP_RULE.value,
+            team=self.team,
+        )
+        response = self.get_response(sort_by="date", limit=10, query=query, expand="owners")
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert response.data[0]["owners"] is not None
+        assert len(response.data[0]["owners"]) == 2
+        assert response.data[0]["owners"][0]["owner"] == f"user:{self.user.id}"
+        assert response.data[0]["owners"][1]["owner"] == f"team:{self.team.id}"
+        assert (
+            response.data[0]["owners"][0]["type"] == GROUP_OWNER_TYPE[GroupOwnerType.SUSPECT_COMMIT]
+        )
+        assert (
+            response.data[0]["owners"][1]["type"] == GROUP_OWNER_TYPE[GroupOwnerType.OWNERSHIP_RULE]
+        )
 
     @patch(
         "sentry.api.helpers.group_index.ratelimiter.is_limited", autospec=True, return_value=True
@@ -678,13 +1485,139 @@ class GroupListTest(APITestCase, SnubaTestCase):
         self.login_as(user=self.user)
         self.get_valid_response(sort_by="date", limit=1, status_code=429)
 
+    def test_collapse_stats(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        self.create_group(checksum="a" * 32, status=GroupStatus.UNRESOLVED)
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved", expand="inbox", collapse="stats"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert "stats" not in response.data[0]
+        assert "firstSeen" not in response.data[0]
+        assert "lastSeen" not in response.data[0]
+        assert "count" not in response.data[0]
+        assert "lifetime" not in response.data[0]
+        assert "filtered" not in response.data[0]
+
+    def test_collapse_lifetime(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        self.create_group(checksum="a" * 32, status=GroupStatus.UNRESOLVED)
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved", collapse="lifetime"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert "stats" in response.data[0]
+        assert "firstSeen" in response.data[0]
+        assert "lastSeen" in response.data[0]
+        assert "count" in response.data[0]
+        assert "lifetime" not in response.data[0]
+        assert "filtered" in response.data[0]
+
+    def test_collapse_filtered(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        self.create_group(checksum="a" * 32, status=GroupStatus.UNRESOLVED)
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved", collapse="filtered"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert "stats" in response.data[0]
+        assert "firstSeen" in response.data[0]
+        assert "lastSeen" in response.data[0]
+        assert "count" in response.data[0]
+        assert "lifetime" in response.data[0]
+        assert "filtered" not in response.data[0]
+
+    def test_collapse_lifetime_and_filtered(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        self.create_group(checksum="a" * 32, status=GroupStatus.UNRESOLVED)
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved", collapse=["filtered", "lifetime"]
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert "stats" in response.data[0]
+        assert "firstSeen" in response.data[0]
+        assert "lastSeen" in response.data[0]
+        assert "count" in response.data[0]
+        assert "lifetime" not in response.data[0]
+        assert "filtered" not in response.data[0]
+
+    def test_collapse_base(self):
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        self.create_group(checksum="a" * 32, status=GroupStatus.UNRESOLVED)
+        self.login_as(user=self.user)
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved", collapse=["base"]
+        )
+
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+        assert "title" not in response.data[0]
+        assert "hasSeen" not in response.data[0]
+        assert "stats" in response.data[0]
+        assert "firstSeen" in response.data[0]
+        assert "lastSeen" in response.data[0]
+        assert "count" in response.data[0]
+        assert "lifetime" in response.data[0]
+        assert "filtered" in response.data[0]
+
+    def test_collapse_stats_group_snooze_bug(self):
+        # There was a bug where we tried to access attributes on seen_stats if this feature is active
+        # but seen_stats could be null when we collapse stats.
+        event = self.store_event(
+            data={"timestamp": iso_format(before_now(seconds=500)), "fingerprint": ["group-1"]},
+            project_id=self.project.id,
+        )
+        GroupSnooze.objects.create(
+            group=event.group,
+            user_count=10,
+            until=timezone.now() + timedelta(days=1),
+            count=10,
+            state={"times_seen": 0},
+        )
+        self.login_as(user=self.user)
+        # The presence of the group above with attached GroupSnooze would have previously caused this error.
+        response = self.get_response(
+            sort_by="date", limit=10, query="is:unresolved", expand="inbox", collapse="stats"
+        )
+        assert response.status_code == 200
+        assert len(response.data) == 1
+        assert int(response.data[0]["id"]) == event.group.id
+
 
 class GroupUpdateTest(APITestCase, SnubaTestCase):
     endpoint = "sentry-api-0-organization-group-index"
     method = "put"
 
     def setUp(self):
-        super(GroupUpdateTest, self).setUp()
+        super().setUp()
         self.min_ago = timezone.now() - timedelta(minutes=1)
 
     def get_response(self, *args, **kwargs):
@@ -692,7 +1625,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
             org = self.project.organization.slug
         else:
             org = args[0]
-        return super(GroupUpdateTest, self).get_response(org, **kwargs)
+        return super().get_response(org, **kwargs)
 
     def assertNoResolution(self, group):
         assert not GroupResolution.objects.filter(group=group).exists()
@@ -711,7 +1644,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         response = self.get_valid_response(
             qs_params={"status": "unresolved", "project": self.project.id}, status="resolved"
         )
-        assert response.data == {"status": "resolved", "statusDetails": {}}
+        assert response.data == {"status": "resolved", "statusDetails": {}, "inbox": None}
 
         # the previously resolved entry should not be included
         new_group1 = Group.objects.get(id=group1.id)
@@ -753,7 +1686,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         response = self.get_valid_response(
             qs_params={"status": "unresolved", "project": self.project.id}, status="resolved"
         )
-        assert response.data == {"status": "resolved", "statusDetails": {}}
+        assert response.data == {"status": "resolved", "statusDetails": {}, "inbox": None}
         assert response.status_code == 200
 
     def test_bulk_resolve(self):
@@ -772,7 +1705,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         assert len(response.data) == 100
 
         response = self.get_valid_response(qs_params={"status": "unresolved"}, status="resolved")
-        assert response.data == {"status": "resolved", "statusDetails": {}}
+        assert response.data == {"status": "resolved", "statusDetails": {}, "inbox": None}
 
         response = self.get_valid_response(query="is:unresolved", sort_by="date", method="get")
         assert len(response.data) == 0
@@ -824,7 +1757,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
                 group = Group.objects.get(id=group.id)
                 assert group.status == GroupStatus.RESOLVED
 
-                assert response.data == {"status": "resolved", "statusDetails": {}}
+                assert response.data == {"status": "resolved", "statusDetails": {}, "inbox": None}
                 mock_sync_status_outbound.assert_called_once_with(
                     external_issue, True, group.project_id
                 )
@@ -891,7 +1824,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
 
         self.login_as(user=user)
         response = self.get_valid_response(qs_params={"id": group.id}, status="resolved")
-        assert response.data["assignedTo"]["id"] == six.text_type(user.id)
+        assert response.data["assignedTo"]["id"] == str(user.id)
         assert response.data["assignedTo"]["type"] == "user"
         assert response.data["status"] == "resolved"
 
@@ -918,7 +1851,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inNextRelease"]
-        assert response.data["assignedTo"]["id"] == six.text_type(self.user.id)
+        assert response.data["assignedTo"]["id"] == str(self.user.id)
         assert response.data["assignedTo"]["type"] == "user"
 
         group = Group.objects.get(id=group.id)
@@ -949,7 +1882,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
             response = self.get_valid_response(
                 qs_params={"id": [group1.id, group2.id], "group4": group4.id}, status="resolved"
             )
-        assert response.data == {"status": "resolved", "statusDetails": {}}
+        assert response.data == {"status": "resolved", "statusDetails": {}, "inbox": None}
 
         new_group1 = Group.objects.get(id=group1.id)
         assert new_group1.resolved_at is not None
@@ -984,7 +1917,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inRelease"] == release.version
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.RESOLVED
@@ -1019,7 +1952,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inRelease"] == release.version
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.RESOLVED
@@ -1050,7 +1983,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inNextRelease"]
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.RESOLVED
@@ -1081,7 +2014,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inNextRelease"]
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.RESOLVED
@@ -1113,7 +2046,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inCommit"]["id"] == commit.key
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.RESOLVED
@@ -1146,7 +2079,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         )
         assert response.data["status"] == "resolved"
         assert response.data["statusDetails"]["inCommit"]["id"] == commit.key
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.RESOLVED
@@ -1231,7 +2164,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         group = Group.objects.get(id=group.id)
         assert group.status == GroupStatus.IGNORED
 
-        assert response.data == {"status": "ignored", "statusDetails": {}}
+        assert response.data == {"status": "ignored", "statusDetails": {}, "inbox": None}
 
     def test_snooze_duration(self):
         group = self.create_group(checksum="a" * 32, status=GroupStatus.RESOLVED)
@@ -1263,7 +2196,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         assert response.data["statusDetails"]["ignoreUserCount"] == snooze.user_count
         assert response.data["statusDetails"]["ignoreUserWindow"] == snooze.user_window
         assert response.data["statusDetails"]["ignoreUntil"] == snooze.until
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
     def test_snooze_count(self):
         group = self.create_group(checksum="a" * 32, status=GroupStatus.RESOLVED, times_seen=1)
@@ -1287,14 +2220,14 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         assert response.data["statusDetails"]["ignoreUserCount"] == snooze.user_count
         assert response.data["statusDetails"]["ignoreUserWindow"] == snooze.user_window
         assert response.data["statusDetails"]["ignoreUntil"] == snooze.until
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
     def test_snooze_user_count(self):
         for i in range(10):
             event = self.store_event(
                 data={
                     "fingerprint": ["put-me-in-group-1"],
-                    "user": {"id": six.text_type(i)},
+                    "user": {"id": str(i)},
                     "timestamp": iso_format(self.min_ago + timedelta(seconds=i)),
                 },
                 project_id=self.project.id,
@@ -1323,7 +2256,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         assert response.data["statusDetails"]["ignoreUserCount"] == snooze.user_count
         assert response.data["statusDetails"]["ignoreUserWindow"] == snooze.user_window
         assert response.data["statusDetails"]["ignoreUntil"] == snooze.until
-        assert response.data["statusDetails"]["actor"]["id"] == six.text_type(self.user.id)
+        assert response.data["statusDetails"]["actor"]["id"] == str(self.user.id)
 
     def test_set_bookmarked(self):
         group1 = self.create_group(checksum="a" * 32, status=GroupStatus.RESOLVED)
@@ -1461,10 +2394,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         eventstream_state = object()
         mock_eventstream.start_merge = Mock(return_value=eventstream_state)
 
-        class uuid(object):
-            hex = "abc123"
-
-        mock_uuid4.return_value = uuid
+        mock_uuid4.return_value = self.get_mock_uuid()
         group1 = self.create_group(checksum="a" * 32, times_seen=1)
         group2 = self.create_group(checksum="b" * 32, times_seen=50)
         group3 = self.create_group(checksum="c" * 32, times_seen=2)
@@ -1474,9 +2404,9 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         response = self.get_valid_response(
             qs_params={"id": [group1.id, group2.id, group3.id]}, merge="1"
         )
-        assert response.data["merge"]["parent"] == six.text_type(group2.id)
+        assert response.data["merge"]["parent"] == str(group2.id)
         assert sorted(response.data["merge"]["children"]) == sorted(
-            [six.text_type(group1.id), six.text_type(group3.id)]
+            [str(group1.id), str(group3.id)]
         )
 
         mock_eventstream.start_merge.assert_called_once_with(
@@ -1498,7 +2428,7 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
 
         self.login_as(user=user)
         response = self.get_valid_response(qs_params={"id": group1.id}, assignedTo=user.username)
-        assert response.data["assignedTo"]["id"] == six.text_type(user.id)
+        assert response.data["assignedTo"]["id"] == str(user.id)
         assert response.data["assignedTo"]["type"] == "user"
         assert GroupAssignee.objects.filter(group=group1, user=user).exists()
 
@@ -1534,10 +2464,8 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
 
         group.project.add_team(team)
 
-        response = self.get_valid_response(
-            qs_params={"id": group.id}, assignedTo=u"team:{}".format(team.id)
-        )
-        assert response.data["assignedTo"]["id"] == six.text_type(team.id)
+        response = self.get_valid_response(qs_params={"id": group.id}, assignedTo=f"team:{team.id}")
+        assert response.data["assignedTo"]["id"] == str(team.id)
         assert response.data["assignedTo"]["type"] == "team"
         assert GroupAssignee.objects.filter(group=group, team=team).exists()
 
@@ -1578,6 +2506,37 @@ class GroupUpdateTest(APITestCase, SnubaTestCase):
         self.login_as(user=self.user)
         self.get_valid_response(sort_by="date", limit=1, status_code=429)
 
+    def test_set_inbox(self):
+        group1 = self.create_group(checksum="a" * 32)
+        group2 = self.create_group(checksum="b" * 32)
+
+        self.login_as(user=self.user)
+        response = self.get_valid_response(qs_params={"id": [group1.id, group2.id]}, inbox="true")
+        assert response.data == {"inbox": True}
+        assert GroupInbox.objects.filter(group=group1).exists()
+        assert GroupInbox.objects.filter(group=group2).exists()
+
+        response = self.get_valid_response(qs_params={"id": [group2.id]}, inbox="false")
+        assert response.data == {"inbox": False}
+        assert GroupInbox.objects.filter(group=group1).exists()
+        assert not GroupInbox.objects.filter(group=group2).exists()
+
+    def test_set_resolved_inbox(self):
+        group1 = self.create_group(checksum="a" * 32)
+        group2 = self.create_group(checksum="b" * 32)
+
+        self.login_as(user=self.user)
+        response = self.get_valid_response(
+            qs_params={"id": [group1.id, group2.id]}, status="resolved"
+        )
+        assert response.data["inbox"] is None
+        assert not GroupInbox.objects.filter(group=group1).exists()
+        assert not GroupInbox.objects.filter(group=group2).exists()
+
+        response = self.get_valid_response(qs_params={"id": [group2.id]}, status="unresolved")
+        assert not GroupInbox.objects.filter(group=group1).exists()
+        assert not GroupInbox.objects.filter(group=group2).exists()
+
 
 class GroupDeleteTest(APITestCase, SnubaTestCase):
     endpoint = "sentry-api-0-organization-group-index"
@@ -1588,7 +2547,7 @@ class GroupDeleteTest(APITestCase, SnubaTestCase):
             org = self.project.organization.slug
         else:
             org = args[0]
-        return super(GroupDeleteTest, self).get_response(org, **kwargs)
+        return super().get_response(org, **kwargs)
 
     @patch("sentry.api.helpers.group_index.eventstream")
     @patch("sentry.eventstream")
@@ -1665,7 +2624,7 @@ class GroupDeleteTest(APITestCase, SnubaTestCase):
             groups.append(
                 self.create_group(
                     project=self.project,
-                    checksum=six.text_type(i).encode("utf-8") * 16,
+                    checksum=str(i).encode("utf-8") * 16,
                     status=GroupStatus.RESOLVED,
                 )
             )

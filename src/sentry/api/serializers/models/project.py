@@ -1,18 +1,14 @@
-from __future__ import absolute_import
-
-import six
-
 from collections import defaultdict
 from datetime import timedelta
+from typing import Any, List, MutableMapping, Optional, Sequence
+
+import sentry_sdk
 from django.db import connection
-from django.db.models import Q
 from django.db.models.aggregates import Count
 from django.utils import timezone
 
-import sentry_sdk
-
-from sentry import options, roles, tsdb, projectoptions, features
-from sentry.api.serializers import register, serialize, Serializer
+from sentry import features, options, projectoptions, roles
+from sentry.api.serializers import Serializer, register, serialize
 from sentry.api.serializers.models.plugin import PluginSerializer
 from sentry.api.serializers.models.team import get_org_roles, get_team_memberships
 from sentry.app import env
@@ -21,9 +17,11 @@ from sentry.constants import StatsPeriod
 from sentry.digests import backend as digests
 from sentry.eventstore.models import DEFAULT_SUBJECT_TEMPLATE
 from sentry.features.base import ProjectFeature
+from sentry.ingest.inbound_filters import FilterTypes
 from sentry.lang.native.utils import convert_crashreport_count
 from sentry.models import (
     EnvironmentProject,
+    NotificationSetting,
     Project,
     ProjectAvatar,
     ProjectBookmark,
@@ -32,10 +30,14 @@ from sentry.models import (
     ProjectStatus,
     ProjectTeam,
     Release,
-    UserOption,
+    User,
     UserReport,
 )
-from sentry.ingest.inbound_filters import FilterTypes
+from sentry.notifications.helpers import transform_to_notification_settings_by_parent_id
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
+from sentry.snuba import discover
+from sentry.snuba.sessions import check_has_health_data, get_current_and_previous_crash_free_rates
+from sentry.types.integrations import ExternalProviders
 from sentry.utils.compat import zip
 
 STATUS_LABELS = {
@@ -48,10 +50,98 @@ STATUS_LABELS = {
 STATS_PERIOD_CHOICES = {
     "30d": StatsPeriod(30, timedelta(hours=24)),
     "14d": StatsPeriod(14, timedelta(hours=24)),
+    "7d": StatsPeriod(7, timedelta(hours=24)),
     "24h": StatsPeriod(24, timedelta(hours=1)),
+    "1h": StatsPeriod(60, timedelta(minutes=1)),
 }
 
 _PROJECT_SCOPE_PREFIX = "projects:"
+
+LATEST_DEPLOYS_KEY = "latestDeploys"
+
+
+def get_access_by_project(
+    projects: Sequence[Project], user: User
+) -> MutableMapping[Project, MutableMapping[str, Any]]:
+    request = env.request
+
+    project_teams = list(ProjectTeam.objects.filter(project__in=projects).select_related("team"))
+
+    project_team_map = defaultdict(list)
+
+    for pt in project_teams:
+        project_team_map[pt.project_id].append(pt.team)
+
+    team_memberships = get_team_memberships([pt.team for pt in project_teams], user)
+    org_roles = get_org_roles({i.organization_id for i in projects}, user)
+
+    is_superuser = request and is_active_superuser(request) and request.user == user
+    result = {}
+    for project in projects:
+        is_member = any(t.id in team_memberships for t in project_team_map.get(project.id, []))
+        org_role = org_roles.get(project.organization_id)
+        if is_member:
+            has_access = True
+        elif is_superuser:
+            has_access = True
+        elif project.organization.flags.allow_joinleave:
+            has_access = True
+        elif org_role and roles.get(org_role).is_global:
+            has_access = True
+        else:
+            has_access = False
+        result[project] = {"is_member": is_member, "has_access": has_access}
+    return result
+
+
+def get_features_for_projects(
+    all_projects: Sequence[Project], user: User
+) -> MutableMapping[Project, List[str]]:
+    # Arrange to call features.has_for_batch rather than features.has
+    # for performance's sake
+    projects_by_org = defaultdict(list)
+    for project in all_projects:
+        projects_by_org[project.organization].append(project)
+
+    features_by_project = defaultdict(list)
+    project_features = [
+        feature
+        for feature in features.all(feature_type=ProjectFeature).keys()
+        if feature.startswith(_PROJECT_SCOPE_PREFIX)
+    ]
+
+    batch_checked = set()
+    for (organization, projects) in projects_by_org.items():
+        batch_features = features.batch_has(
+            project_features, actor=user, projects=projects, organization=organization
+        )
+
+        # batch_has has found some features
+        if batch_features:
+            for project in projects:
+                for feature_name, active in batch_features.get(f"project:{project.id}", {}).items():
+                    if active:
+                        features_by_project[project].append(
+                            feature_name[len(_PROJECT_SCOPE_PREFIX) :]
+                        )
+
+                    batch_checked.add(feature_name)
+
+    for feature_name in project_features:
+        if feature_name in batch_checked:
+            continue
+        abbreviated_feature = feature_name[len(_PROJECT_SCOPE_PREFIX) :]
+        for (organization, projects) in projects_by_org.items():
+            result = features.has_for_batch(feature_name, organization, projects, user)
+            for (project, flag) in result.items():
+                if flag:
+                    features_by_project[project].append(abbreviated_feature)
+
+    for project in all_projects:
+        if project.flags.has_releases:
+            features_by_project[project].append("releases")
+
+    return features_by_project
 
 
 @register(Project)
@@ -61,147 +151,185 @@ class ProjectSerializer(Serializer):
     such as "show all projects for this organization", and its attributes be kept to a minimum.
     """
 
-    def __init__(self, environment_id=None, stats_period=None):
+    def __init__(
+        self,
+        environment_id: Optional[str] = None,
+        stats_period: Optional[str] = None,
+        transaction_stats: Optional[str] = None,
+        session_stats: Optional[str] = None,
+    ) -> None:
         if stats_period is not None:
             assert stats_period in STATS_PERIOD_CHOICES
 
         self.environment_id = environment_id
         self.stats_period = stats_period
+        self.transaction_stats = transaction_stats
+        self.session_stats = session_stats
 
-    def get_access_by_project(self, item_list, user):
-        request = env.request
-
-        project_teams = list(
-            ProjectTeam.objects.filter(project__in=item_list).select_related("team")
-        )
-
-        project_team_map = defaultdict(list)
-
-        for pt in project_teams:
-            project_team_map[pt.project_id].append(pt.team)
-
-        team_memberships = get_team_memberships([pt.team for pt in project_teams], user)
-        org_roles = get_org_roles([i.organization_id for i in item_list], user)
-
-        is_superuser = request and is_active_superuser(request) and request.user == user
-        result = {}
-        for project in item_list:
-            is_member = any(t.id in team_memberships for t in project_team_map.get(project.id, []))
-            org_role = org_roles.get(project.organization_id)
-            if is_member:
-                has_access = True
-            elif is_superuser:
-                has_access = True
-            elif project.organization.flags.allow_joinleave:
-                has_access = True
-            elif org_role and roles.get(org_role).is_global:
-                has_access = True
-            else:
-                has_access = False
-            result[project] = {"is_member": is_member, "has_access": has_access}
-        return result
-
-    def get_attrs(self, item_list, user):
+    def get_attrs(
+        self, item_list: Sequence[Project], user: User, **kwargs: Any
+    ) -> MutableMapping[Project, MutableMapping[str, Any]]:
         def measure_span(op_tag):
-            span = sentry_sdk.start_span(op="serialize.get_attrs.project.{}".format(op_tag))
+            span = sentry_sdk.start_span(op=f"serialize.get_attrs.project.{op_tag}")
             span.set_data("Object Count", len(item_list))
             return span
 
         with measure_span("preamble"):
             project_ids = [i.id for i in item_list]
-            if user.is_authenticated() and item_list:
+            if user.is_authenticated and item_list:
                 bookmarks = set(
                     ProjectBookmark.objects.filter(
                         user=user, project_id__in=project_ids
                     ).values_list("project_id", flat=True)
                 )
-                user_options = {
-                    (u.project_id, u.key): u.value
-                    for u in UserOption.objects.filter(
-                        Q(user=user, project__in=item_list, key="mail:alert")
-                        | Q(user=user, key="subscribe_by_default", project__isnull=True)
-                    )
-                }
-                default_subscribe = user_options.get("subscribe_by_default", "1") == "1"
+
+                notification_settings = NotificationSetting.objects.get_for_user_by_projects(
+                    NotificationSettingTypes.ISSUE_ALERTS,
+                    user,
+                    item_list,
+                )
+                (
+                    notification_settings_by_project_id_by_provider,
+                    default_subscribe_by_provider,
+                ) = transform_to_notification_settings_by_parent_id(notification_settings)
+                notification_settings_by_project_id = (
+                    notification_settings_by_project_id_by_provider.get(ExternalProviders.EMAIL, {})
+                )
+                default_subscribe = default_subscribe_by_provider.get(ExternalProviders.EMAIL)
             else:
                 bookmarks = set()
-                user_options = {}
-                default_subscribe = False
+                notification_settings_by_project_id = {}
+                default_subscribe = None
 
-            if self.stats_period:
-                # we need to compute stats at 1d (1h resolution), and 14d
-                project_ids = [o.id for o in item_list]
+        with measure_span("stats"):
+            stats = None
+            transaction_stats = None
+            session_stats = None
+            project_ids = [o.id for o in item_list]
+            if self.transaction_stats and self.stats_period:
+                stats = self.get_stats(project_ids, "!event.type:transaction")
+                transaction_stats = self.get_stats(project_ids, "event.type:transaction")
+            elif self.stats_period:
+                stats = self.get_stats(project_ids, "!event.type:transaction")
+            if self.session_stats:
+                session_stats = self.get_session_stats(project_ids)
 
-                segments, interval = STATS_PERIOD_CHOICES[self.stats_period]
-                now = timezone.now()
-                stats = tsdb.get_range(
-                    model=tsdb.models.project,
-                    keys=project_ids,
-                    end=now,
-                    start=now - ((segments - 1) * interval),
-                    rollup=int(interval.total_seconds()),
-                    environment_ids=self.environment_id and [self.environment_id],
-                )
-            else:
-                stats = None
-
-            avatars = {a.project_id: a for a in ProjectAvatar.objects.filter(project__in=item_list)}
-            project_ids = [i.id for i in item_list]
-            platforms = ProjectPlatform.objects.filter(project_id__in=project_ids).values_list(
-                "project_id", "platform"
-            )
-            platforms_by_project = defaultdict(list)
-            for project_id, platform in platforms:
-                platforms_by_project[project_id].append(platform)
+        avatars = {a.project_id: a for a in ProjectAvatar.objects.filter(project__in=item_list)}
+        project_ids = [i.id for i in item_list]
+        platforms = ProjectPlatform.objects.filter(project_id__in=project_ids).values_list(
+            "project_id", "platform"
+        )
+        platforms_by_project = defaultdict(list)
+        for project_id, platform in platforms:
+            platforms_by_project[project_id].append(platform)
 
         with measure_span("access"):
-            result = self.get_access_by_project(item_list, user)
+            result = get_access_by_project(item_list, user)
 
         with measure_span("features"):
-            features_by_project = self._get_features_for_projects(item_list, user)
+            features_by_project = get_features_for_projects(item_list, user)
             for project, serialized in result.items():
                 serialized["features"] = features_by_project[project]
 
         with measure_span("other"):
             for project, serialized in result.items():
+                is_subscribed = (
+                    notification_settings_by_project_id.get(project.id, default_subscribe)
+                    == NotificationSettingOptionValues.ALWAYS
+                )
                 serialized.update(
                     {
                         "is_bookmarked": project.id in bookmarks,
-                        "is_subscribed": bool(
-                            user_options.get((project.id, "mail:alert"), default_subscribe)
-                        ),
+                        "is_subscribed": is_subscribed,
                         "avatar": avatars.get(project.id),
                         "platforms": platforms_by_project[project.id],
                     }
                 )
                 if stats:
                     serialized["stats"] = stats[project.id]
+                if transaction_stats:
+                    serialized["transactionStats"] = transaction_stats[project.id]
+                if session_stats:
+                    serialized["sessionStats"] = session_stats[project.id]
         return result
 
-    @staticmethod
-    def _get_features_for_projects(all_projects, user):
-        # Arrange to call features.has_for_batch rather than features.has
-        # for performance's sake
-        projects_by_org = defaultdict(list)
-        for project in all_projects:
-            projects_by_org[project.organization].append(project)
+    def get_stats(self, project_ids, query):
+        # we need to compute stats at 1d (1h resolution), and 14d
+        segments, interval = STATS_PERIOD_CHOICES[self.stats_period]
+        now = timezone.now()
 
-        features_by_project = defaultdict(list)
-        for feature_name in features.all(feature_type=ProjectFeature).keys():
-            if not feature_name.startswith(_PROJECT_SCOPE_PREFIX):
-                continue
-            abbreviated_feature = feature_name[len(_PROJECT_SCOPE_PREFIX) :]
-            for (organization, projects) in projects_by_org.items():
-                result = features.has_for_batch(feature_name, organization, projects, user)
-                for (project, flag) in result.items():
-                    if flag:
-                        features_by_project[project].append(abbreviated_feature)
+        params = {
+            "project_id": project_ids,
+            "start": now - ((segments - 1) * interval),
+            "end": now,
+        }
+        if self.environment_id:
+            query = f"{query} environment:{self.environment_id}"
 
-        for project in all_projects:
-            if project.flags.has_releases:
-                features_by_project[project].append("releases")
+        # Generate a query result to skip the top_events.find query
+        top_events = {"data": [{"project_id": p} for p in project_ids]}
+        stats = discover.top_events_timeseries(
+            timeseries_columns=["count()"],
+            selected_columns=["project_id"],
+            user_query=query,
+            params=params,
+            orderby="project_id",
+            rollup=int(interval.total_seconds()),
+            limit=10000,
+            organization=None,
+            referrer="api.serializer.projects.get_stats",
+            top_events=top_events,
+        )
+        results = {}
+        for project_id in project_ids:
+            serialized = []
+            str_id = str(project_id)
+            if str_id in stats:
+                for item in stats[str_id].data["data"]:
+                    serialized.append((item["time"], item.get("count", 0)))
+            results[project_id] = serialized
+        return results
 
-        return features_by_project
+    def get_session_stats(self, project_ids):
+        segments, interval = STATS_PERIOD_CHOICES[self.stats_period]
+
+        now = timezone.now()
+        current_interval_start = now - (segments * interval)
+        previous_interval_start = now - (2 * segments * interval)
+
+        project_health_data_dict = get_current_and_previous_crash_free_rates(
+            project_ids=project_ids,
+            current_start=current_interval_start,
+            current_end=now,
+            previous_start=previous_interval_start,
+            previous_end=current_interval_start,
+            rollup=int(interval.total_seconds()),
+        )
+
+        # list that contains ids of projects that has both `currentCrashFreeRate` and
+        # `previousCrashFreeRate` set to None and so we are not sure if they have health data or
+        # not and so we add those ids to this list to check later
+        check_has_health_data_ids = []
+
+        for project_id in project_ids:
+            current_crash_free_rate = project_health_data_dict[project_id]["currentCrashFreeRate"]
+            previous_crash_free_rate = project_health_data_dict[project_id]["previousCrashFreeRate"]
+
+            if [current_crash_free_rate, previous_crash_free_rate] != [None, None]:
+                project_health_data_dict[project_id]["hasHealthData"] = True
+            else:
+                project_health_data_dict[project_id]["hasHealthData"] = False
+                check_has_health_data_ids.append(project_id)
+
+        # For project ids we are not sure if they have health data in the last 90 days we
+        # call -> check_has_data with those ids and then update our `project_health_data_dict`
+        # accordingly
+        if check_has_health_data_ids:
+            projects_with_health_data = check_has_health_data(check_has_health_data_ids)
+            for project_id in projects_with_health_data:
+                project_health_data_dict[project_id]["hasHealthData"] = True
+
+        return project_health_data_dict
 
     def serialize(self, obj, attrs, user):
         status_label = STATUS_LABELS.get(obj.status, "unknown")
@@ -215,7 +343,7 @@ class ProjectSerializer(Serializer):
             avatar = {"avatarType": "letter_avatar", "avatarUuid": None}
 
         context = {
-            "id": six.text_type(obj.id),
+            "id": str(obj.id),
             "slug": obj.slug,
             "name": obj.name,
             "isPublic": obj.public,
@@ -234,27 +362,35 @@ class ProjectSerializer(Serializer):
         }
         if "stats" in attrs:
             context["stats"] = attrs["stats"]
+        if "transactionStats" in attrs:
+            context["transactionStats"] = attrs["transactionStats"]
+        if "sessionStats" in attrs:
+            context["sessionStats"] = attrs["sessionStats"]
         return context
 
 
 class ProjectWithOrganizationSerializer(ProjectSerializer):
-    def get_attrs(self, item_list, user):
-        attrs = super(ProjectWithOrganizationSerializer, self).get_attrs(item_list, user)
+    def get_attrs(
+        self, item_list: Sequence[Project], user: User, **kwargs: Any
+    ) -> MutableMapping[Project, MutableMapping[str, Any]]:
+        attrs = super().get_attrs(item_list, user)
 
-        orgs = {d["id"]: d for d in serialize(list(set(i.organization for i in item_list)), user)}
+        orgs = {d["id"]: d for d in serialize(list({i.organization for i in item_list}), user)}
         for item in item_list:
-            attrs[item]["organization"] = orgs[six.text_type(item.organization_id)]
+            attrs[item]["organization"] = orgs[str(item.organization_id)]
         return attrs
 
     def serialize(self, obj, attrs, user):
-        data = super(ProjectWithOrganizationSerializer, self).serialize(obj, attrs, user)
+        data = super().serialize(obj, attrs, user)
         data["organization"] = attrs["organization"]
         return data
 
 
 class ProjectWithTeamSerializer(ProjectSerializer):
-    def get_attrs(self, item_list, user):
-        attrs = super(ProjectWithTeamSerializer, self).get_attrs(item_list, user)
+    def get_attrs(
+        self, item_list: Sequence[Project], user: User, **kwargs: Any
+    ) -> MutableMapping[Project, MutableMapping[str, Any]]:
+        attrs = super().get_attrs(item_list, user)
 
         project_teams = list(
             ProjectTeam.objects.filter(project__in=item_list).select_related("team")
@@ -262,7 +398,7 @@ class ProjectWithTeamSerializer(ProjectSerializer):
 
         teams = {
             pt.team_id: {
-                "id": six.text_type(pt.team.id),
+                "id": str(pt.team.id),
                 "slug": pt.team.slug,
                 "name": pt.team.name,
             }
@@ -278,7 +414,7 @@ class ProjectWithTeamSerializer(ProjectSerializer):
         return attrs
 
     def serialize(self, obj, attrs, user):
-        data = super(ProjectWithTeamSerializer, self).serialize(obj, attrs, user)
+        data = super().serialize(obj, attrs, user)
         # TODO(jess): remove this when this is deprecated
         try:
             data["team"] = attrs["teams"][0]
@@ -289,34 +425,25 @@ class ProjectWithTeamSerializer(ProjectSerializer):
 
 
 class ProjectSummarySerializer(ProjectWithTeamSerializer):
-    def get_attrs(self, item_list, user):
-        attrs = super(ProjectSummarySerializer, self).get_attrs(item_list, user)
-
-        projects_with_user_reports = set(
-            UserReport.objects.filter(project_id__in=item_list).values_list("project", flat=True)
+    def __init__(
+        self,
+        environment_id=None,
+        stats_period=None,
+        transaction_stats=None,
+        session_stats=None,
+        collapse=None,
+    ):
+        super(ProjectWithTeamSerializer, self).__init__(
+            environment_id, stats_period, transaction_stats, session_stats
         )
+        self.collapse = collapse
 
-        project_envs = (
-            EnvironmentProject.objects.filter(
-                project_id__in=[i.id for i in item_list],
-                # Including the organization_id is necessary for postgres to use indexes
-                # efficiently.
-                environment__organization_id=item_list[0].organization_id,
-            )
-            .exclude(
-                is_hidden=True,
-                # HACK(lb): avoiding the no environment value
-            )
-            .exclude(environment__name="")
-            .values("project_id", "environment__name")
-        )
+    def _collapse(self, key):
+        if self.collapse is None:
+            return False
+        return key in self.collapse
 
-        environments_by_project = defaultdict(list)
-        for project_env in project_envs:
-            environments_by_project[project_env["project_id"]].append(
-                project_env["environment__name"]
-            )
-
+    def get_deploys_by_project(self, item_list):
         cursor = connection.cursor()
         cursor.execute(
             """
@@ -359,15 +486,52 @@ class ProjectSummarySerializer(ProjectWithTeamSerializer):
                 "dateFinished": date_finished,
             }
 
+        return deploys_by_project
+
+    def get_attrs(
+        self, item_list: Sequence[Project], user: User, **kwargs: Any
+    ) -> MutableMapping[Project, MutableMapping[str, Any]]:
+        attrs = super().get_attrs(item_list, user)
+
+        projects_with_user_reports = set(
+            UserReport.objects.filter(project_id__in=[item.id for item in item_list]).values_list(
+                "project_id", flat=True
+            )
+        )
+
+        project_envs = (
+            EnvironmentProject.objects.filter(
+                project_id__in=[i.id for i in item_list],
+                # Including the organization_id is necessary for postgres to use indexes
+                # efficiently.
+                environment__organization_id=item_list[0].organization_id,
+            )
+            .exclude(
+                is_hidden=True,
+                # HACK(lb): avoiding the no environment value
+            )
+            .exclude(environment__name="")
+            .values("project_id", "environment__name")
+        )
+
+        environments_by_project = defaultdict(list)
+        for project_env in project_envs:
+            environments_by_project[project_env["project_id"]].append(
+                project_env["environment__name"]
+            )
+
         # We just return the version key here so that we cut down on response size
         latest_release_versions = {
             release.actual_project_id: {"version": release.version}
             for release in bulk_fetch_project_latest_releases(item_list)
         }
 
+        if not self._collapse(LATEST_DEPLOYS_KEY):
+            deploys_by_project = self.get_deploys_by_project(item_list)
         for item in item_list:
             attrs[item]["latest_release"] = latest_release_versions.get(item.id)
-            attrs[item]["deploys"] = deploys_by_project.get(item.id)
+            if not self._collapse(LATEST_DEPLOYS_KEY):
+                attrs[item]["deploys"] = deploys_by_project.get(item.id)
             attrs[item]["environments"] = environments_by_project.get(item.id, [])
             attrs[item]["has_user_reports"] = item.id in projects_with_user_reports
 
@@ -377,7 +541,7 @@ class ProjectSummarySerializer(ProjectWithTeamSerializer):
         context = {
             "team": attrs["teams"][0] if attrs["teams"] else None,
             "teams": attrs["teams"],
-            "id": six.text_type(obj.id),
+            "id": str(obj.id),
             "name": obj.name,
             "slug": obj.slug,
             "isBookmarked": attrs["is_bookmarked"],
@@ -390,12 +554,18 @@ class ProjectSummarySerializer(ProjectWithTeamSerializer):
             "firstTransactionEvent": True if obj.flags.has_transactions else False,
             "platform": obj.platform,
             "platforms": attrs["platforms"],
-            "latestDeploys": attrs["deploys"],
             "latestRelease": attrs["latest_release"],
             "hasUserReports": attrs["has_user_reports"],
         }
+        if not self._collapse(LATEST_DEPLOYS_KEY):
+            context[LATEST_DEPLOYS_KEY] = attrs["deploys"]
         if "stats" in attrs:
             context["stats"] = attrs["stats"]
+        if "transactionStats" in attrs:
+            context["transactionStats"] = attrs["transactionStats"]
+        if "sessionStats" in attrs:
+            context["sessionStats"] = attrs["sessionStats"]
+
         return context
 
 
@@ -425,13 +595,13 @@ def bulk_fetch_project_latest_releases(projects):
 
     return list(
         Release.objects.raw(
-            u"""
+            f"""
         SELECT lr.project_id as actual_project_id, r.*
         FROM (
             SELECT (
                 SELECT lrr.id
                 FROM sentry_release lrr
-                {}
+                {release_project_join_sql}
                 WHERE lrp.project_id = p.id
                 ORDER BY COALESCE(lrr.date_released, lrr.date_added) DESC
                 LIMIT 1
@@ -442,11 +612,9 @@ def bulk_fetch_project_latest_releases(projects):
         ) as lr
         JOIN sentry_release r
         ON r.id = lr.release_id
-            """.format(
-                release_project_join_sql
-            ),
+            """,
             # formatting tuples works specifically in psycopg2
-            (tuple(six.text_type(i.id) for i in projects),),
+            (tuple(str(i.id) for i in projects),),
         )
     )
 
@@ -482,6 +650,8 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
             "sentry:grouping_enhancements_base",
             "sentry:fingerprinting_rules",
             "sentry:relay_pii_config",
+            "sentry:dynamic_sampling",
+            "sentry:breakdowns",
             "feedback:branding",
             "digests:mail:minimum_delay",
             "digests:mail:maximum_delay",
@@ -490,8 +660,10 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
         ]
     )
 
-    def get_attrs(self, item_list, user):
-        attrs = super(DetailedProjectSerializer, self).get_attrs(item_list, user)
+    def get_attrs(
+        self, item_list: Sequence[Project], user: User, **kwargs: Any
+    ) -> MutableMapping[Project, MutableMapping[str, Any]]:
+        attrs = super().get_attrs(item_list, user)
 
         project_ids = [i.id for i in item_list]
 
@@ -510,7 +682,7 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
         for option in queryset.iterator():
             options_by_project[option.project_id][option.key] = option.value
 
-        orgs = {d["id"]: d for d in serialize(list(set(i.organization for i in item_list)), user)}
+        orgs = {d["id"]: d for d in serialize(list({i.organization for i in item_list}), user)}
 
         latest_release_list = bulk_fetch_project_latest_releases(item_list)
         latest_releases = {
@@ -522,7 +694,7 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
             attrs[item].update(
                 {
                     "latest_release": latest_releases.get(item.id),
-                    "org": orgs[six.text_type(item.organization_id)],
+                    "org": orgs[str(item.organization_id)],
                     "options": options_by_project[item.id],
                     "processing_issues": processing_issues_by_project.get(item.id, 0),
                 }
@@ -540,7 +712,7 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
                 key, epoch=attrs["options"].get("sentry:option-epoch")
             )
 
-        data = super(DetailedProjectSerializer, self).serialize(obj, attrs, user)
+        data = super().serialize(obj, attrs, user)
         data.update(
             {
                 "latestRelease": attrs["latest_release"],
@@ -557,11 +729,11 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
                     "filters:blacklisted_ips": "\n".join(
                         attrs["options"].get("sentry:blacklisted_ips", [])
                     ),
-                    u"filters:{}".format(FilterTypes.RELEASES): "\n".join(
-                        attrs["options"].get(u"sentry:{}".format(FilterTypes.RELEASES), [])
+                    f"filters:{FilterTypes.RELEASES}": "\n".join(
+                        attrs["options"].get(f"sentry:{FilterTypes.RELEASES}", [])
                     ),
-                    u"filters:{}".format(FilterTypes.ERROR_MESSAGES): "\n".join(
-                        attrs["options"].get(u"sentry:{}".format(FilterTypes.ERROR_MESSAGES), [])
+                    f"filters:{FilterTypes.ERROR_MESSAGES}": "\n".join(
+                        attrs["options"].get(f"sentry:{FilterTypes.ERROR_MESSAGES}", [])
                     ),
                     "feedback:branding": attrs["options"].get("feedback:branding", "1") == "1",
                 },
@@ -595,6 +767,12 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
                 "groupingEnhancementsBase": get_value_with_default(
                     "sentry:grouping_enhancements_base"
                 ),
+                "secondaryGroupingExpiry": get_value_with_default(
+                    "sentry:secondary_grouping_expiry"
+                ),
+                "secondaryGroupingConfig": get_value_with_default(
+                    "sentry:secondary_grouping_config"
+                ),
                 "fingerprintingRules": get_value_with_default("sentry:fingerprinting_rules"),
                 "organization": attrs["org"],
                 "plugins": serialize(
@@ -612,6 +790,7 @@ class DetailedProjectSerializer(ProjectWithTeamSerializer):
                 "relayPiiConfig": attrs["options"].get("sentry:relay_pii_config"),
                 "builtinSymbolSources": get_value_with_default("sentry:builtin_symbol_sources"),
                 "symbolSources": attrs["options"].get("sentry:symbol_sources"),
+                "dynamicSampling": get_value_with_default("sentry:dynamic_sampling"),
             }
         )
         return data

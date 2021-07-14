@@ -1,5 +1,3 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import ConfigStore from 'app/stores/configStore';
@@ -9,8 +7,8 @@ jest.mock('app/stores/configStore', () => ({
   get: jest.fn(),
 }));
 
-describe('InstallWizard', function() {
-  beforeAll(function() {
+describe('InstallWizard', function () {
+  beforeAll(function () {
     ConfigStore.get.mockImplementation(key => {
       if (key === 'version') {
         return {
@@ -25,14 +23,14 @@ describe('InstallWizard', function() {
     });
   });
 
-  beforeEach(function() {});
+  beforeEach(function () {});
 
-  it('renders', function() {
+  it('renders', function () {
     const wrapper = mountWithTheme(<InstallWizard onConfigured={jest.fn()} />);
     expect(wrapper).toSnapshot();
   });
 
-  it('has no option selected when beacon.anonymous is unset', function() {
+  it('has no option selected when beacon.anonymous is unset', function () {
     MockApiClient.addMockResponse({
       url: '/internal/options/?query=is:required',
       body: TestStubs.InstallWizard({
@@ -60,7 +58,7 @@ describe('InstallWizard', function() {
     ).toBe(false);
   });
 
-  it('has no option selected even when beacon.anonymous is set', function() {
+  it('has no option selected even when beacon.anonymous is set', function () {
     MockApiClient.addMockResponse({
       url: '/internal/options/?query=is:required',
       body: TestStubs.InstallWizard({

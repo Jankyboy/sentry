@@ -1,10 +1,13 @@
-import * as OrganizationsActionCreator from 'app/actionCreators/organizations';
 import {fetchOrganizationDetails} from 'app/actionCreators/organization';
-import TeamStore from 'app/stores/teamStore';
-import ProjectsStore from 'app/stores/projectsStore';
+import * as OrganizationsActionCreator from 'app/actionCreators/organizations';
 import OrganizationActions from 'app/actions/organizationActions';
+import ProjectActions from 'app/actions/projectActions';
+import TeamActions from 'app/actions/teamActions';
+import OrganizationStore from 'app/stores/organizationStore';
+import ProjectsStore from 'app/stores/projectsStore';
+import TeamStore from 'app/stores/teamStore';
 
-describe('OrganizationActionCreator', function() {
+describe('OrganizationActionCreator', function () {
   const detailedOrg = TestStubs.Organization({
     teams: [TestStubs.Team()],
     projects: [TestStubs.Project()],
@@ -16,22 +19,24 @@ describe('OrganizationActionCreator', function() {
 
   const api = new MockApiClient();
 
-  beforeEach(function() {
+  beforeEach(function () {
     MockApiClient.clearMockResponses();
     jest.spyOn(TeamStore, 'loadInitialData');
+    jest.spyOn(TeamActions, 'loadTeams');
     jest.spyOn(ProjectsStore, 'loadInitialData');
+    jest.spyOn(ProjectActions, 'loadProjects');
     jest.spyOn(OrganizationActions, 'fetchOrg');
     jest.spyOn(OrganizationActions, 'update');
     jest.spyOn(OrganizationActions, 'fetchOrgError');
     jest.spyOn(OrganizationsActionCreator, 'setActiveOrganization');
   });
 
-  afterEach(function() {
+  afterEach(function () {
     jest.restoreAllMocks();
     MockApiClient.clearMockResponses();
   });
 
-  it('fetches heavyweight organization details', async function() {
+  it('fetches heavyweight organization details', async function () {
     const getOrgMock = MockApiClient.addMockResponse({
       url: `/organizations/${detailedOrg.slug}/`,
       body: detailedOrg,
@@ -52,21 +57,22 @@ describe('OrganizationActionCreator', function() {
     expect(ProjectsStore.loadInitialData).toHaveBeenCalledWith(detailedOrg.projects);
   });
 
-  it('fetches lightweight organization details', async function() {
+  it('fetches lightweight organization details', async function () {
     const getOrgMock = MockApiClient.addMockResponse({
       url: `/organizations/${lightOrg.slug}/`,
       body: lightOrg,
     });
     const getProjectsMock = MockApiClient.addMockResponse({
       url: `/organizations/${lightOrg.slug}/projects/`,
-      body: [],
+      body: detailedOrg.projects,
     });
     const getTeamsMock = MockApiClient.addMockResponse({
       url: `/organizations/${lightOrg.slug}/teams/`,
-      body: [],
+      body: detailedOrg.teams,
     });
 
     fetchOrganizationDetails(api, lightOrg.slug, false);
+    await tick();
     await tick();
     expect(OrganizationActions.fetchOrg).toHaveBeenCalled();
 
@@ -87,9 +93,18 @@ describe('OrganizationActionCreator', function() {
 
     expect(TeamStore.loadInitialData).not.toHaveBeenCalled();
     expect(ProjectsStore.loadInitialData).not.toHaveBeenCalled();
+
+    expect(TeamActions.loadTeams).toHaveBeenCalledWith(detailedOrg.teams);
+    expect(ProjectActions.loadProjects).toHaveBeenCalledWith(detailedOrg.projects);
+
+    expect(OrganizationStore.organization).toEqual({
+      ...lightOrg,
+      teams: detailedOrg.teams,
+      projects: detailedOrg.projects,
+    });
   });
 
-  it('silently fetches organization details', async function() {
+  it('silently fetches organization details', async function () {
     const getOrgMock = MockApiClient.addMockResponse({
       url: `/organizations/${detailedOrg.slug}/`,
       body: detailedOrg,
@@ -110,7 +125,7 @@ describe('OrganizationActionCreator', function() {
     expect(ProjectsStore.loadInitialData).toHaveBeenCalledWith(detailedOrg.projects);
   });
 
-  it('errors out correctly', async function() {
+  it('errors out correctly', async function () {
     const getOrgMock = MockApiClient.addMockResponse({
       url: `/organizations/${detailedOrg.slug}/`,
       statusCode: 400,

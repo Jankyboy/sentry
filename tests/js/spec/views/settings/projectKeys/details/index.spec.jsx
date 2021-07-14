@@ -1,11 +1,11 @@
 import PropTypes from 'prop-types';
-import React from 'react';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
+import {mountGlobalModal} from 'sentry-test/modal';
 
 import ProjectKeyDetails from 'app/views/settings/project/projectKeys/details';
 
-describe('ProjectKeyDetails', function() {
+describe('ProjectKeyDetails', function () {
   let org;
   let project;
   let wrapper;
@@ -14,7 +14,7 @@ describe('ProjectKeyDetails', function() {
   let putMock;
   let projectKeys;
 
-  beforeEach(function() {
+  beforeEach(function () {
     org = TestStubs.Organization();
     project = TestStubs.Project();
     projectKeys = TestStubs.ProjectKeys();
@@ -95,12 +95,12 @@ describe('ProjectKeyDetails', function() {
     );
   });
 
-  it('has stats box', function() {
+  it('has stats box', function () {
     expect(wrapper.find('KeyStats')).toHaveLength(1);
     expect(statsMock).toHaveBeenCalled();
   });
 
-  it('changes name', function() {
+  it('changes name', function () {
     wrapper
       .find('input[name="name"]')
       .simulate('change', {target: {value: 'New Name'}})
@@ -116,7 +116,7 @@ describe('ProjectKeyDetails', function() {
     );
   });
 
-  it('disable and enables key', function() {
+  it('disable and enables key', function () {
     wrapper.find('Switch[name="isActive"]').simulate('click');
 
     expect(putMock).toHaveBeenCalledWith(
@@ -136,14 +136,13 @@ describe('ProjectKeyDetails', function() {
     );
   });
 
-  it('revokes a key', function() {
+  it('revokes a key', async function () {
     wrapper
       .find('Button[priority="danger"]')
       .simulate('click', {preventDefault: () => {}});
 
-    wrapper.find('ModalDialog Button[priority="danger"]').simulate('click');
-
-    wrapper.update();
+    const modal = await mountGlobalModal();
+    modal.find('Button[priority="danger"]').simulate('click');
 
     expect(deleteMock).toHaveBeenCalled();
   });

@@ -1,9 +1,7 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import EventDataSection from 'app/components/events/eventDataSection';
-import KeyValueList from 'app/components/events/interfaces/keyValueList/keyValueList';
+import KeyValueList from 'app/components/events/interfaces/keyValueList';
 
 const data = {
   metadata: {
@@ -17,7 +15,7 @@ const data = {
   culprit: 'culprit',
 };
 
-describe('EventDataSection', function() {
+describe('EventDataSection', function () {
   const groupData = {
     ...data,
     level: 'error',
@@ -30,7 +28,7 @@ describe('EventDataSection', function() {
     groupID: 'groupID',
     culprit: undefined,
   };
-  it('renders formatted', function() {
+  it('renders formatted', function () {
     const component = mountWithTheme(
       <EventDataSection
         group={groupData}
@@ -44,7 +42,7 @@ describe('EventDataSection', function() {
     expect(component).toSnapshot();
   });
 
-  it('renders raw', function() {
+  it('renders raw', function () {
     const component = mountWithTheme(
       <EventDataSection
         group={groupData}
@@ -58,15 +56,20 @@ describe('EventDataSection', function() {
   });
 });
 
-describe('KeyValueList', function() {
+describe('KeyValueList', function () {
   const context = {
     somestuff: {andsomeotherstuff: 'here'},
     plussomeotherstuff: 'here',
     andthis: 0,
   };
-  const extraDataArray = Object.entries(context);
 
-  it('renders formatted', function() {
+  const extraDataArray = Object.entries(context).map(([key, value]) => ({
+    key,
+    value,
+    subject: key,
+  }));
+
+  it('renders formatted', function () {
     const component = mountWithTheme(
       <KeyValueList data={extraDataArray} isContextData raw={false} />
     );
@@ -74,7 +77,7 @@ describe('KeyValueList', function() {
     expect(component).toSnapshot();
   });
 
-  it('renders raw', function() {
+  it('renders raw', function () {
     const component = mountWithTheme(
       <KeyValueList data={extraDataArray} isContextData raw />
     );

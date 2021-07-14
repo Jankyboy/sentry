@@ -1,6 +1,4 @@
-from __future__ import absolute_import, print_function
-
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 
 from sentry.auth.helper import AuthHelper
 from sentry.web.frontend.base import BaseView

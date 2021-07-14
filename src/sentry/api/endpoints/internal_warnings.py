@@ -1,7 +1,4 @@
-from __future__ import absolute_import
-
 import functools
-import six
 from collections import defaultdict
 
 from rest_framework.response import Response
@@ -25,15 +22,15 @@ class InternalWarningsEndpoint(Endpoint):
         for warning in seen_warnings:
             cls = type(warning)
             if cls in groupings:
-                groups[cls].append(six.text_type(warning))
+                groups[cls].append(str(warning))
             else:
-                warnings.append(six.text_type(warning))
+                warnings.append(str(warning))
 
-        sort_by_message = functools.partial(sorted, key=six.binary_type)
+        sort_by_message = functools.partial(sorted, key=str)
 
         data = {
             "groups": sorted(
-                [(groupings[key], sort_by_message(values)) for key, values in groups.items()]
+                (groupings[key], sort_by_message(values)) for key, values in groups.items()
             ),
             "warnings": sort_by_message(warnings),
         }

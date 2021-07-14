@@ -1,9 +1,7 @@
-from __future__ import absolute_import
-
-from six.moves.urllib.parse import quote
-from sentry_plugins.client import ApiClient
+from urllib.parse import quote
 
 from sentry.shared_integrations.exceptions import ApiError
+from sentry_plugins.client import ApiClient
 
 
 class GitLabClient(ApiClient):
@@ -11,7 +9,7 @@ class GitLabClient(ApiClient):
     plugin_name = "gitlab"
 
     def __init__(self, url, token):
-        super(GitLabClient, self).__init__()
+        super().__init__()
         self.base_url = url
         self.token = token
 

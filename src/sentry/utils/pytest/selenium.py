@@ -1,30 +1,32 @@
-from __future__ import absolute_import
-
 # TODO(dcramer): this heavily inspired by pytest-selenium, and it's possible
 # we could simply inherit from the plugin at this point
 
 import logging
 import os
 import sys
-import pytest
-
 from contextlib import contextmanager
 from datetime import datetime
+from urllib.parse import urlparse
+
+import pytest
 from django.utils.text import slugify
 from selenium import webdriver
-from selenium.common.exceptions import NoSuchElementException, WebDriverException
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    SessionNotCreatedException,
+    WebDriverException,
+)
 from selenium.webdriver.common.action_chains import ActionChains
-from six.moves.urllib.parse import urlparse
+from selenium.webdriver.support import expected_conditions
+from selenium.webdriver.support.ui import WebDriverWait
 
-from sentry.utils.retries import TimedRetryPolicy
 from sentry.utils.compat import map
+from sentry.utils.retries import TimedRetryPolicy
 
 logger = logging.getLogger("sentry.testutils")
 
 
-class Browser(object):
+class Browser:
     def __init__(self, driver, live_server):
         self.driver = driver
         self.live_server_url = live_server.url
@@ -38,7 +40,7 @@ class Browser(object):
         """
         Return the absolute URI for a given route in Sentry.
         """
-        return u"{}/{}".format(self.live_server_url, path.lstrip("/").format(*args, **kwargs))
+        return "{}/{}".format(self.live_server_url, path.lstrip("/").format(*args, **kwargs))
 
     def get(self, path, *args, **kwargs):
         self.driver.get(self.route(path), *args, **kwargs)
@@ -184,6 +186,9 @@ class Browser(object):
 
         return self
 
+    def find_element_by_name(self, name):
+        return self.driver.find_element_by_name(name)
+
     def move_to(self, selector=None):
         """
         Mouse move to ``selector``
@@ -299,49 +304,56 @@ class Browser(object):
         """
         # TODO(dcramer): ideally this would take the executing test package
         # into account for duplicate names
-        if os.environ.get("SENTRY_SCREENSHOT") == "open":
-            import tempfile
-            import click
-            import time
+        if os.environ.get("VISUAL_SNAPSHOT_ENABLE") != "1":
+            return self
 
-            with tempfile.NamedTemporaryFile("wb", suffix=".png") as tf:
-                tf.write(self.driver.get_screenshot_as_png())
-                tf.flush()
-                click.launch(tf.name)
-                time.sleep(1)
+        self.wait_for_images_loaded()
+        self.wait_for_fonts_loaded()
 
-        if os.environ.get("VISUAL_SNAPSHOT_ENABLE") == "1":
-            # wait for external assets to be loaded
-            self.wait_for_images_loaded()
-            self.wait_for_fonts_loaded()
+        # XXX: We assume we're relative to gitroot here.
+        snapshot_dir = os.environ.get(
+            "PYTEST_SNAPSHOTS_DIR", ".artifacts/visual-snapshots/acceptance"
+        )
+        # TODO(py3): Pass exist_ok=True here.
+        # Technically there's a race condition here with makedirs failing, but
+        # this is fine (practically) in this context.
+        if not os.path.exists(snapshot_dir):
+            os.makedirs(snapshot_dir)
 
-            snapshot_dir = os.environ.get(
-                "PYTEST_SNAPSHOTS_DIR", ".artifacts/visual-snapshots/acceptance"
-            )
-            # Note: below will fail if these directories do not exist
+        filename = slugify(name)
 
-            if not mobile_only:
+        # XXX: Unfortunately order matters here else snapshots in CI will be a tiny bit different.
+        #      Otherwise we could do mobile_viewport first and early return if mobile_only.
+        #      But to truly fix this, I think the driver needs to be refreshed.
+        if not mobile_only:
+            with self.full_viewport():
+                screenshot_path = f"{snapshot_dir}/{filename}.png"
                 # This will make sure we resize viewport height to fit contents
-                with self.full_viewport():
-                    self.driver.find_element_by_tag_name("body").screenshot(
-                        u"{}/{}.png".format(snapshot_dir, slugify(name))
-                    )
-                    has_tooltips = self.driver.execute_script(
-                        "return window.__openAllTooltips && window.__openAllTooltips()"
-                    )
-                    if has_tooltips:
-                        self.driver.find_element_by_tag_name("body").screenshot(
-                            u"{}-tooltips/{}.png".format(snapshot_dir, slugify(name))
-                        )
-                        self.driver.execute_script(
-                            "window.__closeAllTooltips && window.__closeAllTooltips()"
-                        )
+                self.driver.find_element_by_tag_name("body").screenshot(screenshot_path)
 
-            with self.mobile_viewport():
-                # switch to a mobile sized viewport
-                self.driver.find_element_by_tag_name("body").screenshot(
-                    u"{}-mobile/{}.png".format(snapshot_dir, slugify(name))
+                if os.environ.get("SENTRY_SCREENSHOT"):
+                    import click
+
+                    click.launch(screenshot_path)
+
+                has_tooltips = self.driver.execute_script(
+                    "return window.__openAllTooltips && window.__openAllTooltips()"
                 )
+                if has_tooltips:
+                    screenshot_path = f"{snapshot_dir}-tooltips/{filename}.png"
+                    self.driver.find_element_by_tag_name("body").screenshot(screenshot_path)
+                    self.driver.execute_script(
+                        "window.__closeAllTooltips && window.__closeAllTooltips()"
+                    )
+
+        with self.mobile_viewport():
+            screenshot_path = f"{snapshot_dir}-mobile/{filename}.png"
+            self.driver.find_element_by_tag_name("body").screenshot(screenshot_path)
+
+            if os.environ.get("SENTRY_SCREENSHOT"):
+                import click
+
+                click.launch(screenshot_path)
 
         return self
 
@@ -359,7 +371,7 @@ class Browser(object):
         Retrieve key from local storage, this will fail if you use single quotes in your keys.
         """
 
-        return self.driver.execute_script(u"window.localStorage.getItem('{}')".format(key))
+        return self.driver.execute_script(f"window.localStorage.getItem('{key}')")
 
     def save_cookie(
         self,
@@ -398,10 +410,10 @@ class Browser(object):
         # http://stackoverflow.com/questions/37103621/adding-cookies-working-with-firefox-webdriver-but-not-in-phantomjs
 
         # TODO(dcramer): this should be escaped, but idgaf
-        logger.info(u"selenium.set-cookie.{}".format(name), extra={"value": value})
+        logger.info(f"selenium.set-cookie.{name}", extra={"value": value})
         if isinstance(self.driver, webdriver.PhantomJS):
             self.driver.execute_script(
-                u"document.cookie = '{name}={value}; path={path}; domain={domain}; expires={expires}'; max-age={max_age}\n".format(
+                "document.cookie = '{name}={value}; path={path}; domain={domain}; expires={expires}'; max-age={max_age}\n".format(
                     **cookie
                 )
             )
@@ -445,7 +457,16 @@ def pytest_configure(config):
 
 @TimedRetryPolicy.wrap(timeout=15, exceptions=(WebDriverException,), log_original_error=True)
 def start_chrome(**chrome_args):
-    return webdriver.Chrome(**chrome_args)
+    try:
+        return webdriver.Chrome(**chrome_args)
+    except SessionNotCreatedException as e:
+        if "This version of ChromeDriver only supports Chrome version" in e.msg:
+            raise Exception(
+                """ChromeDriver version does not match Chrome version, update ChromeDriver (e.g. if you use `homebrew`):
+
+    brew upgrade --cask chromedriver
+    """
+            )
 
 
 @pytest.fixture(scope="function")
@@ -460,7 +481,7 @@ def browser(request, live_server):
         options.add_argument("no-sandbox")
         options.add_argument("disable-gpu")
         options.add_argument("disable-dev-shm-usage")
-        options.add_argument(u"window-size={}".format(window_size))
+        options.add_argument(f"window-size={window_size}")
         if headless:
             options.add_argument("headless")
         chrome_path = request.config.getoption("chrome_path")
@@ -510,13 +531,6 @@ def browser(request, live_server):
     return driver
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _environment(request):
-    config = request.config
-    # add environment details to the pytest-html plugin
-    config._metadata.update({"Driver": config.option.selenium_driver})
-
-
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     outcome = yield
@@ -538,20 +552,20 @@ def _gather_url(item, report, driver, summary, extra):
     try:
         url = driver.current_url
     except Exception as e:
-        summary.append(u"WARNING: Failed to gather URL: {0}".format(e))
+        summary.append(f"WARNING: Failed to gather URL: {e}")
         return
     pytest_html = item.config.pluginmanager.getplugin("html")
     if pytest_html is not None:
         # add url to the html report
         extra.append(pytest_html.extras.url(url))
-    summary.append(u"URL: {0}".format(url))
+    summary.append(f"URL: {url}")
 
 
 def _gather_screenshot(item, report, driver, summary, extra):
     try:
         screenshot = driver.get_screenshot_as_base64()
     except Exception as e:
-        summary.append(u"WARNING: Failed to gather screenshot: {0}".format(e))
+        summary.append(f"WARNING: Failed to gather screenshot: {e}")
         return
     pytest_html = item.config.pluginmanager.getplugin("html")
     if pytest_html is not None:
@@ -563,7 +577,7 @@ def _gather_html(item, report, driver, summary, extra):
     try:
         html = driver.page_source.encode("utf-8")
     except Exception as e:
-        summary.append(u"WARNING: Failed to gather HTML: {0}".format(e))
+        summary.append(f"WARNING: Failed to gather HTML: {e}")
         return
     pytest_html = item.config.pluginmanager.getplugin("html")
     if pytest_html is not None:
@@ -576,13 +590,13 @@ def _gather_logs(item, report, driver, summary, extra):
         types = driver.log_types
     except Exception as e:
         # note that some drivers may not implement log types
-        summary.append(u"WARNING: Failed to gather log types: {0}".format(e))
+        summary.append(f"WARNING: Failed to gather log types: {e}")
         return
     for name in types:
         try:
             log = driver.get_log(name)
         except Exception as e:
-            summary.append(u"WARNING: Failed to gather {0} log: {1}".format(name, e))
+            summary.append(f"WARNING: Failed to gather {name} log: {e}")
             return
         pytest_html = item.config.pluginmanager.getplugin("html")
         if pytest_html is not None:
@@ -592,7 +606,7 @@ def _gather_logs(item, report, driver, summary, extra):
 def format_log(log):
     timestamp_format = "%Y-%m-%d %H:%M:%S.%f"
     entries = [
-        u"{0} {1[level]} - {1[message]}".format(
+        "{0} {1[level]} - {1[message]}".format(
             datetime.utcfromtimestamp(entry["timestamp"] / 1000.0).strftime(timestamp_format), entry
         ).rstrip()
         for entry in log

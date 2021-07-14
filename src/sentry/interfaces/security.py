@@ -1,8 +1,6 @@
-from __future__ import absolute_import
-
 __all__ = ("Csp", "Hpkp", "ExpectCT", "ExpectStaple")
 
-from six.moves.urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from sentry.interfaces.base import Interface
 from sentry.utils import json
@@ -18,6 +16,7 @@ DEFAULT_DISALLOWED_SOURCES = (
     "chrome-extension://*",
     "chromeinvokeimmediate://*",
     "chromenull://*",
+    "data:text/html,chromewebdata",
     "safari-extension://*",
     "mxaddon-pkg://*",
     "jar://*",
@@ -166,12 +165,12 @@ class Csp(SecurityReport):
     title = "CSP Report"
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data, **kwargs):
         data.setdefault("document_uri", None)
         data.setdefault("violated_directive", None)
         data.setdefault("blocked_uri", None)
         data.setdefault("effective_directive", None)
-        return cls(**data)
+        return super().to_python(data, **kwargs)
 
     def to_string(self, is_public=False, **kwargs):
         return json.dumps({"csp-report": self.get_api_context()}, indent=2)

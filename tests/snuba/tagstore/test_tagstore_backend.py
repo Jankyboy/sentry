@@ -1,15 +1,10 @@
-from __future__ import absolute_import
-
-import calendar
 from datetime import timedelta
-import pytest
-import requests
-import six
 
-from django.conf import settings
+import pytest
 from django.utils import timezone
 
-from sentry.models import GroupHash, EventUser
+from sentry.models import Environment, EventUser, Release, ReleaseProjectEnvironment
+from sentry.search.events.constants import RELEASE_STAGE_ALIAS, SEMVER_ALIAS, SEMVER_PACKAGE_ALIAS
 from sentry.tagstore.exceptions import (
     GroupTagKeyNotFound,
     GroupTagValueNotFound,
@@ -17,117 +12,114 @@ from sentry.tagstore.exceptions import (
     TagValueNotFound,
 )
 from sentry.tagstore.snuba.backend import SnubaTagStorage
+from sentry.tagstore.types import TagValue
 from sentry.testutils import SnubaTestCase, TestCase
-from sentry.utils import json
+from sentry.testutils.helpers.datetime import iso_format
 
 
 class TagStorageTest(TestCase, SnubaTestCase):
     def setUp(self):
-        super(TagStorageTest, self).setUp()
+        super().setUp()
 
         self.ts = SnubaTagStorage()
 
         self.proj1 = self.create_project()
-        self.proj1env1 = self.create_environment(project=self.proj1, name="test")
-        self.proj1env2 = self.create_environment(project=self.proj1, name="test2")
-
-        self.proj1group1 = self.create_group(self.proj1)
-        self.proj1group2 = self.create_group(self.proj1)
-
-        hash1 = "1" * 32
-        hash2 = "2" * 32
-        GroupHash.objects.create(project=self.proj1, group=self.proj1group1, hash=hash1)
-        GroupHash.objects.create(project=self.proj1, group=self.proj1group2, hash=hash2)
-
+        env1 = "test"
+        env2 = "test2"
+        self.env3 = Environment.objects.create(
+            organization_id=self.proj1.organization_id, name="test3"
+        )
         self.now = timezone.now().replace(microsecond=0)
-        data = json.dumps(
-            [
-                (
-                    2,
-                    "insert",
-                    {
-                        "event_id": six.text_type(r) * 32,
-                        "primary_hash": hash1,
-                        "group_id": self.proj1group1.id,
-                        "project_id": self.proj1.id,
-                        "message": "message 1",
-                        "platform": "python",
-                        "datetime": (self.now - timedelta(seconds=r)).strftime(
-                            "%Y-%m-%dT%H:%M:%S.%fZ"
-                        ),
-                        "data": {
-                            "received": calendar.timegm(self.now.timetuple()) - r,
-                            "tags": {
-                                "foo": "bar",
-                                "baz": "quux",
-                                "environment": self.proj1env1.name,
-                                "sentry:release": 100 * r,
-                                "sentry:user": u"id:user{}".format(r),
-                            },
-                            "user": {
-                                "id": u"user{}".format(r),
-                                "email": u"user{}@sentry.io".format(r),
-                            },
-                            "exception": {"values": [{"stacktrace": {"frames": [{"lineno": 29}]}}]},
-                        },
+
+        exception = {
+            "values": [
+                {
+                    "type": "ValidationError",
+                    "value": "Bad request",
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "function": "?",
+                                "filename": "http://localhost:1337/error.js",
+                                "lineno": 29,
+                                "colno": 3,
+                                "in_app": False,
+                            }
+                        ]
                     },
-                )
-                for r in [1, 2]
+                }
             ]
-            + [
-                (
-                    2,
-                    "insert",
-                    {
-                        "event_id": "3" * 32,
-                        "primary_hash": hash2,
-                        "group_id": self.proj1group2.id,
-                        "project_id": self.proj1.id,
-                        "message": "message 2",
-                        "platform": "python",
-                        "datetime": (self.now - timedelta(seconds=2)).strftime(
-                            "%Y-%m-%dT%H:%M:%S.%fZ"
-                        ),
-                        "data": {
-                            "received": calendar.timegm(self.now.timetuple()) - 2,
-                            "tags": {
-                                "browser": "chrome",
-                                "environment": self.proj1env1.name,
-                                "sentry:user": "id:user1",
-                            },
-                            "user": {"id": "user1"},
-                        },
-                    },
-                )
-            ]
-            + [
-                (
-                    2,
-                    "insert",
-                    {
-                        "event_id": "4" * 32,
-                        "primary_hash": hash2,
-                        "group_id": self.proj1group1.id,
-                        "project_id": self.proj1.id,
-                        "message": "message 2",
-                        "platform": "python",
-                        "datetime": (self.now - timedelta(seconds=2)).strftime(
-                            "%Y-%m-%dT%H:%M:%S.%fZ"
-                        ),
-                        "data": {
-                            "received": calendar.timegm(self.now.timetuple()) - 2,
-                            "tags": {"foo": "bar", "environment": self.proj1env2.name},
-                            "user": {"id": "user1"},
-                        },
-                    },
-                )
-            ]
+        }
+
+        self.store_event(
+            data={
+                "event_id": "1" * 32,
+                "message": "message 1",
+                "platform": "python",
+                "environment": env1,
+                "fingerprint": ["group-1"],
+                "timestamp": iso_format(self.now - timedelta(seconds=1)),
+                "tags": {
+                    "foo": "bar",
+                    "baz": "quux",
+                    "sentry:release": 100,
+                    "sentry:user": "id:user1",
+                },
+                "user": {"id": "user1"},
+                "exception": exception,
+            },
+            project_id=self.proj1.id,
         )
 
-        assert (
-            requests.post(settings.SENTRY_SNUBA + "/tests/events/insert", data=data).status_code
-            == 200
+        self.proj1group1 = self.store_event(
+            data={
+                "event_id": "2" * 32,
+                "message": "message 1",
+                "platform": "python",
+                "environment": env1,
+                "fingerprint": ["group-1"],
+                "timestamp": iso_format(self.now - timedelta(seconds=2)),
+                "tags": {
+                    "foo": "bar",
+                    "baz": "quux",
+                    "sentry:release": 200,
+                    "sentry:user": "id:user2",
+                },
+                "user": {"id": "user2"},
+                "exception": exception,
+            },
+            project_id=self.proj1.id,
+        ).group
+
+        self.proj1group2 = self.store_event(
+            data={
+                "event_id": "3" * 32,
+                "message": "message 2",
+                "platform": "python",
+                "environment": env1,
+                "fingerprint": ["group-2"],
+                "timestamp": iso_format(self.now - timedelta(seconds=2)),
+                "tags": {"browser": "chrome", "sentry:user": "id:user1"},
+                "user": {"id": "user1"},
+            },
+            project_id=self.proj1.id,
+        ).group
+
+        self.store_event(
+            data={
+                "event_id": "4" * 32,
+                "message": "message2",
+                "platform": "python",
+                "environment": env2,
+                "fingerprint": ["group-1"],
+                "timestamp": iso_format(self.now - timedelta(seconds=2)),
+                "tags": {"foo": "bar"},
+            },
+            project_id=self.proj1.id,
         )
+
+        self.proj1env1 = Environment.objects.get(name=env1)
+        self.proj1env2 = Environment.objects.get(name=env2)
 
     def test_get_group_tag_keys_and_top_values(self):
         result = list(
@@ -136,18 +128,18 @@ class TagStorageTest(TestCase, SnubaTestCase):
             )
         )
         tags = [r.key for r in result]
-        assert set(tags) == set(["foo", "baz", "environment", "sentry:release", "sentry:user"])
+        assert set(tags) == {"foo", "baz", "environment", "sentry:release", "sentry:user", "level"}
 
         result.sort(key=lambda r: r.key)
         assert result[0].key == "baz"
         assert result[0].top_values[0].value == "quux"
         assert result[0].count == 2
 
-        assert result[3].key == "sentry:release"
-        assert result[3].count == 2
-        top_release_values = result[3].top_values
+        assert result[4].key == "sentry:release"
+        assert result[4].count == 2
+        top_release_values = result[4].top_values
         assert len(top_release_values) == 2
-        assert set(v.value for v in top_release_values) == set(["100", "200"])
+        assert {v.value for v in top_release_values} == {"100", "200"}
         assert all(v.times_seen == 1 for v in top_release_values)
 
         # Now with only a specific set of keys,
@@ -160,7 +152,7 @@ class TagStorageTest(TestCase, SnubaTestCase):
             )
         )
         tags = [r.key for r in result]
-        assert set(tags) == set(["environment", "sentry:release"])
+        assert set(tags) == {"environment", "sentry:release"}
 
         result.sort(key=lambda r: r.key)
         assert result[0].key == "environment"
@@ -169,7 +161,7 @@ class TagStorageTest(TestCase, SnubaTestCase):
         assert result[1].key == "sentry:release"
         top_release_values = result[1].top_values
         assert len(top_release_values) == 2
-        assert set(v.value for v in top_release_values) == set(["100", "200"])
+        assert {v.value for v in top_release_values} == {"100", "200"}
         assert all(v.times_seen == 1 for v in top_release_values)
 
     def test_get_top_group_tag_values(self):
@@ -191,9 +183,15 @@ class TagStorageTest(TestCase, SnubaTestCase):
         )
 
     def test_get_tag_keys(self):
-        expected_keys = set(
-            ["baz", "browser", "environment", "foo", "sentry:release", "sentry:user"]
-        )
+        expected_keys = {
+            "baz",
+            "browser",
+            "environment",
+            "foo",
+            "sentry:release",
+            "sentry:user",
+            "level",
+        }
         keys = {
             k.key: k
             for k in self.ts.get_tag_keys(
@@ -236,7 +234,7 @@ class TagStorageTest(TestCase, SnubaTestCase):
                 environment_ids=[self.proj1env1.id],
             )
         }
-        assert set(keys) == set(["baz", "environment", "foo", "sentry:release", "sentry:user"])
+        assert set(keys) == {"baz", "environment", "foo", "sentry:release", "sentry:user", "level"}
 
     def test_get_group_tag_value(self):
         with pytest.raises(GroupTagValueNotFound):
@@ -248,12 +246,15 @@ class TagStorageTest(TestCase, SnubaTestCase):
                 value="notreal",
             )
 
-        assert self.ts.get_group_tag_values(
-            project_id=self.proj1.id,
-            group_id=self.proj1group1.id,
-            environment_id=self.proj1env1.id,
-            key="notreal",
-        ) == set([])
+        assert (
+            self.ts.get_group_tag_values(
+                project_id=self.proj1.id,
+                group_id=self.proj1group1.id,
+                environment_id=self.proj1env1.id,
+                key="notreal",
+            )
+            == set()
+        )
 
         assert (
             list(
@@ -302,11 +303,14 @@ class TagStorageTest(TestCase, SnubaTestCase):
         assert self.ts.get_tag_value_label("sentry:user", "ip:stuff") == "stuff"
 
     def test_get_groups_user_counts(self):
-        assert self.ts.get_groups_user_counts(
-            project_ids=[self.proj1.id],
-            group_ids=[self.proj1group1.id, self.proj1group2.id],
-            environment_ids=[self.proj1env1.id],
-        ) == {self.proj1group1.id: 2, self.proj1group2.id: 1}
+        assert (
+            self.ts.get_groups_user_counts(
+                project_ids=[self.proj1.id],
+                group_ids=[self.proj1group1.id, self.proj1group2.id],
+                environment_ids=[self.proj1env1.id],
+            )
+            == {self.proj1group1.id: 2, self.proj1group2.id: 1}
+        )
 
         # test filtering by date range where there shouldn't be results
         assert (
@@ -320,44 +324,25 @@ class TagStorageTest(TestCase, SnubaTestCase):
             == {}
         )
 
-    def test_get_releases(self):
-        assert (
-            self.ts.get_first_release(project_id=self.proj1.id, group_id=self.proj1group1.id)
-            == "200"
-        )
-
-        assert (
-            self.ts.get_first_release(project_id=self.proj1.id, group_id=self.proj1group2.id)
-            is None
-        )
-
-        assert (
-            self.ts.get_last_release(project_id=self.proj1.id, group_id=self.proj1group1.id)
-            == "100"
-        )
-
-        assert (
-            self.ts.get_last_release(project_id=self.proj1.id, group_id=self.proj1group2.id) is None
-        )
-
     def test_get_group_ids_for_users(self):
         assert self.ts.get_group_ids_for_users(
             [self.proj1.id], [EventUser(project_id=self.proj1.id, ident="user1")]
-        ) == set([self.proj1group1.id, self.proj1group2.id])
+        ) == {self.proj1group1.id, self.proj1group2.id}
 
         assert self.ts.get_group_ids_for_users(
             [self.proj1.id], [EventUser(project_id=self.proj1.id, ident="user2")]
-        ) == set([self.proj1group1.id])
+        ) == {self.proj1group1.id}
 
     def test_get_group_tag_values_for_users(self):
         result = self.ts.get_group_tag_values_for_users(
             [EventUser(project_id=self.proj1.id, ident="user1")]
         )
         assert len(result) == 2
-        assert set(v.group_id for v in result) == set([self.proj1group1.id, self.proj1group2.id])
-        assert set(v.last_seen for v in result) == set(
-            [self.now - timedelta(seconds=1), self.now - timedelta(seconds=2)]
-        )
+        assert {v.group_id for v in result} == {self.proj1group1.id, self.proj1group2.id}
+        assert {v.last_seen for v in result} == {
+            self.now - timedelta(seconds=1),
+            self.now - timedelta(seconds=2),
+        }
         result.sort(key=lambda x: x.last_seen)
         assert result[0].last_seen == self.now - timedelta(seconds=2)
         assert result[1].last_seen == self.now - timedelta(seconds=1)
@@ -372,7 +357,9 @@ class TagStorageTest(TestCase, SnubaTestCase):
         assert result[0].last_seen == self.now - timedelta(seconds=2)
 
     def test_get_release_tags(self):
-        tags = list(self.ts.get_release_tags([self.proj1.id], None, ["100"]))
+        tags = list(
+            self.ts.get_release_tags(self.proj1.organization_id, [self.proj1.id], None, ["100"])
+        )
 
         assert len(tags) == 1
         one_second_ago = self.now - timedelta(seconds=1)
@@ -381,55 +368,129 @@ class TagStorageTest(TestCase, SnubaTestCase):
         assert tags[0].times_seen == 1
         assert tags[0].key == "sentry:release"
 
+    def test_get_release_tags_uses_release_project_environment(self):
+        tags = list(
+            self.ts.get_release_tags(self.proj1.organization_id, [self.proj1.id], None, ["100"])
+        )
+
+        assert len(tags) == 1
+        one_second_ago = self.now - timedelta(seconds=1)
+        assert tags[0].last_seen == one_second_ago
+        assert tags[0].first_seen == one_second_ago
+        assert tags[0].times_seen == 1
+
+        one_day_ago = self.now - timedelta(days=1)
+        two_days_ago = self.now - timedelta(days=2)
+        self.store_event(
+            data={
+                "event_id": "5" * 32,
+                "message": "message3",
+                "platform": "python",
+                "environment": None,
+                "fingerprint": ["group-1"],
+                "timestamp": iso_format(one_day_ago),
+                "tags": {
+                    "sentry:release": 100,
+                },
+            },
+            project_id=self.proj1.id,
+        )
+
+        release = Release.objects.create(version="100", organization=self.organization)
+        ReleaseProjectEnvironment.objects.create(
+            release_id=release.id,
+            project_id=self.proj1.id,
+            environment_id=self.env3.id,
+            first_seen=one_day_ago,
+        )
+
+        self.store_event(
+            data={
+                "event_id": "6" * 32,
+                "message": "message3",
+                "platform": "python",
+                "environment": None,
+                "fingerprint": ["group-1"],
+                "timestamp": iso_format(two_days_ago),
+                "tags": {
+                    "sentry:release": 100,
+                },
+            },
+            project_id=self.proj1.id,
+        )
+        tags = list(
+            self.ts.get_release_tags(self.proj1.organization_id, [self.proj1.id], None, ["100"])
+        )
+        assert tags[0].last_seen == one_second_ago
+        assert tags[0].first_seen == one_day_ago
+        assert (
+            tags[0].times_seen == 2
+        )  # Isn't 3 because start was limited by the ReleaseProjectEnvironment entry
+
     def test_get_group_event_filter(self):
         assert self.ts.get_group_event_filter(
             self.proj1.id, self.proj1group1.id, [self.proj1env1.id], {"foo": "bar"}, None, None
-        ) == {"event_id__in": set(["1" * 32, "2" * 32])}
+        ) == {"event_id__in": {"1" * 32, "2" * 32}}
 
-        assert self.ts.get_group_event_filter(
-            self.proj1.id,
-            self.proj1group1.id,
-            [self.proj1env1.id],
-            {"foo": "bar"},
-            (self.now - timedelta(seconds=1)),
-            None,
-        ) == {"event_id__in": set(["1" * 32])}
+        assert (
+            self.ts.get_group_event_filter(
+                self.proj1.id,
+                self.proj1group1.id,
+                [self.proj1env1.id],
+                {"foo": "bar"},
+                (self.now - timedelta(seconds=1)),
+                None,
+            )
+            == {"event_id__in": {"1" * 32}}
+        )
 
-        assert self.ts.get_group_event_filter(
-            self.proj1.id,
-            self.proj1group1.id,
-            [self.proj1env1.id],
-            {"foo": "bar"},
-            None,
-            (self.now - timedelta(seconds=1)),
-        ) == {"event_id__in": set(["2" * 32])}
+        assert (
+            self.ts.get_group_event_filter(
+                self.proj1.id,
+                self.proj1group1.id,
+                [self.proj1env1.id],
+                {"foo": "bar"},
+                None,
+                (self.now - timedelta(seconds=1)),
+            )
+            == {"event_id__in": {"2" * 32}}
+        )
 
-        assert self.ts.get_group_event_filter(
-            self.proj1.id,
-            self.proj1group1.id,
-            [self.proj1env1.id, self.proj1env2.id],
-            {"foo": "bar"},
-            None,
-            None,
-        ) == {"event_id__in": set(["1" * 32, "2" * 32, "4" * 32])}
+        assert (
+            self.ts.get_group_event_filter(
+                self.proj1.id,
+                self.proj1group1.id,
+                [self.proj1env1.id, self.proj1env2.id],
+                {"foo": "bar"},
+                None,
+                None,
+            )
+            == {"event_id__in": {"1" * 32, "2" * 32, "4" * 32}}
+        )
 
-        assert self.ts.get_group_event_filter(
-            self.proj1.id,
-            self.proj1group1.id,
-            [self.proj1env1.id],
-            {"foo": "bar", "sentry:release": "200"},  # AND
-            None,
-            None,
-        ) == {"event_id__in": set(["2" * 32])}
+        assert (
+            self.ts.get_group_event_filter(
+                self.proj1.id,
+                self.proj1group1.id,
+                [self.proj1env1.id],
+                {"foo": "bar", "sentry:release": "200"},  # AND
+                None,
+                None,
+            )
+            == {"event_id__in": {"2" * 32}}
+        )
 
-        assert self.ts.get_group_event_filter(
-            self.proj1.id,
-            self.proj1group2.id,
-            [self.proj1env1.id],
-            {"browser": "chrome"},
-            None,
-            None,
-        ) == {"event_id__in": set(["3" * 32])}
+        assert (
+            self.ts.get_group_event_filter(
+                self.proj1.id,
+                self.proj1group2.id,
+                [self.proj1env1.id],
+                {"browser": "chrome"},
+                None,
+                None,
+            )
+            == {"event_id__in": {"3" * 32}}
+        )
 
         assert (
             self.ts.get_group_event_filter(
@@ -622,3 +683,196 @@ class TagStorageTest(TestCase, SnubaTestCase):
             )
             == {}
         )
+
+
+class BaseSemverTest:
+    KEY = None
+
+    def setUp(self):
+        super().setUp()
+        self.ts = SnubaTagStorage()
+
+    def run_test(self, query, expected_versions, environment=None, project=None):
+        if project is None:
+            project = self.project
+        assert list(
+            self.ts.get_tag_value_paginator(
+                project.id,
+                environment.id if environment else None,
+                self.KEY,
+                query=query,
+            ).get_result(10)
+        ) == [
+            TagValue(
+                key=self.KEY,
+                value=v,
+                times_seen=None,
+                first_seen=None,
+                last_seen=None,
+            )
+            for v in expected_versions
+        ]
+
+
+class GetTagValuePaginatorForProjectsSemverTest(BaseSemverTest, TestCase, SnubaTestCase):
+    KEY = SEMVER_ALIAS
+
+    def test_semver(self):
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+        self.create_release(version="test@1.0.0.0+123", additional_projects=[project_2])
+        self.create_release(version="test@1.2.0.0-alpha", environments=[self.environment])
+        self.create_release(version="test@1.2.3.0-beta+789", environments=[env_2])
+        self.create_release(version="test@1.2.3.4", environments=[env_2])
+        self.create_release(version="test2@2.0.0.0+456", environments=[self.environment, env_2])
+        self.create_release(version="z_test@1.0.0.0")
+        self.create_release(version="z_test@2.0.0.0+456", additional_projects=[project_2])
+
+        self.run_test(
+            None,
+            [
+                "test@1.0.0.0",
+                "z_test@1.0.0.0",
+                "test@1.2.0.0-alpha",
+                "test@1.2.3.0-beta",
+                "test@1.2.3.4",
+                "test2@2.0.0.0",
+                "z_test@2.0.0.0",
+            ],
+        )
+        self.run_test(
+            "",
+            [
+                "test@1.0.0.0",
+                "z_test@1.0.0.0",
+                "test@1.2.0.0-alpha",
+                "test@1.2.3.0-beta",
+                "test@1.2.3.4",
+                "test2@2.0.0.0",
+                "z_test@2.0.0.0",
+            ],
+        )
+
+        # These should all be equivalent
+        self.run_test("1", ["1.0.0.0", "1.2.0.0-alpha", "1.2.3.0-beta", "1.2.3.4"])
+        self.run_test("1.", ["1.0.0.0", "1.2.0.0-alpha", "1.2.3.0-beta", "1.2.3.4"])
+        self.run_test("1.*", ["1.0.0.0", "1.2.0.0-alpha", "1.2.3.0-beta", "1.2.3.4"])
+
+        self.run_test("1.*", ["1.0.0.0"], project=project_2)
+
+        self.run_test("1.2", ["1.2.0.0-alpha", "1.2.3.0-beta", "1.2.3.4"])
+
+        self.run_test("", ["test@1.2.0.0-alpha", "test2@2.0.0.0"], self.environment)
+        self.run_test("", ["test@1.2.3.0-beta", "test@1.2.3.4", "test2@2.0.0.0"], env_2)
+        self.run_test("1", ["1.2.0.0-alpha"], self.environment)
+        self.run_test("1", ["1.2.3.0-beta", "1.2.3.4"], env_2)
+
+        # Test packages handling
+
+        self.run_test(
+            "test",
+            [
+                "test@1.0.0.0",
+                "test@1.2.0.0-alpha",
+                "test@1.2.3.0-beta",
+                "test@1.2.3.4",
+                "test2@2.0.0.0",
+            ],
+        )
+        self.run_test("test", ["test@1.0.0.0"], project=project_2)
+        self.run_test("test2", ["test2@2.0.0.0"])
+        self.run_test("z", ["z_test@1.0.0.0", "z_test@2.0.0.0"])
+        self.run_test("z", ["z_test@2.0.0.0"], project=project_2)
+
+        self.run_test(
+            "test@", ["test@1.0.0.0", "test@1.2.0.0-alpha", "test@1.2.3.0-beta", "test@1.2.3.4"]
+        )
+        self.run_test(
+            "test@*", ["test@1.0.0.0", "test@1.2.0.0-alpha", "test@1.2.3.0-beta", "test@1.2.3.4"]
+        )
+        self.run_test("test@1.2", ["test@1.2.0.0-alpha", "test@1.2.3.0-beta", "test@1.2.3.4"])
+
+
+class GetTagValuePaginatorForProjectsSemverPackageTest(BaseSemverTest, TestCase, SnubaTestCase):
+    KEY = SEMVER_PACKAGE_ALIAS
+
+    def test_semver_package(self):
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+        self.create_release(version="test@1.0.0.0+123", additional_projects=[project_2])
+        self.create_release(version="test@1.2.0.0-alpha", environments=[self.environment])
+        self.create_release(version="test2@2.0.0.0+456", environments=[self.environment, env_2])
+        self.create_release(version="z_test@2.0.0.0+456", additional_projects=[project_2])
+
+        self.run_test(None, ["test", "test2", "z_test"])
+        self.run_test("", ["test", "test2", "z_test"])
+
+        self.run_test("t", ["test", "test2"])
+        self.run_test("test", ["test", "test2"])
+        self.run_test("test2", ["test2"])
+        self.run_test("z", ["z_test"])
+
+        self.run_test("", ["test", "z_test"], project=project_2)
+
+        self.run_test("", ["test", "test2"], self.environment)
+        self.run_test("", ["test2"], env_2)
+
+
+class GetTagValuePaginatorForProjectsReleaseStageTest(TestCase, SnubaTestCase):
+    def setUp(self):
+        super().setUp()
+        self.ts = SnubaTagStorage()
+
+    def run_test(self, query, expected_releases, environment=None, project=None):
+        if project is None:
+            project = self.project
+        assert list(
+            self.ts.get_tag_value_paginator(
+                project.id,
+                environment.id if environment else None,
+                RELEASE_STAGE_ALIAS,
+                query=query,
+            ).get_result(10)
+        ) == [
+            TagValue(
+                key=RELEASE_STAGE_ALIAS,
+                value=r.version,
+                times_seen=None,
+                first_seen=None,
+                last_seen=None,
+            )
+            for r in expected_releases
+        ]
+
+    def test_release_stage(self):
+        replaced_release = self.create_release(version="replaced_release")
+        adopted_release = self.create_release(version="adopted_release")
+        not_adopted_release = self.create_release(version="not_adopted_release")
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=adopted_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=replaced_release.id,
+            environment_id=self.environment.id,
+            adopted=timezone.now(),
+            unadopted=timezone.now(),
+        )
+        ReleaseProjectEnvironment.objects.create(
+            project_id=self.project.id,
+            release_id=not_adopted_release.id,
+            environment_id=self.environment.id,
+        )
+
+        env_2 = self.create_environment()
+        project_2 = self.create_project()
+
+        self.run_test("adopted", [adopted_release])
+        self.run_test("not_adopted", [not_adopted_release])
+        self.run_test("replaced", [replaced_release])
+
+        self.run_test("adopted", [], environment=env_2)
+        self.run_test("adopted", [], project=project_2)

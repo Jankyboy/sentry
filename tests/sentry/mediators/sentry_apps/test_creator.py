@@ -1,24 +1,22 @@
-from __future__ import absolute_import
-
-from sentry.utils.compat.mock import patch
 from django.db import IntegrityError
 
 from sentry.mediators.sentry_apps import Creator
 from sentry.models import (
+    ApiApplication,
     AuditLogEntry,
     AuditLogEntryEvent,
-    ApiApplication,
     IntegrationFeature,
     SentryApp,
     SentryAppComponent,
     User,
 )
 from sentry.testutils import TestCase
+from sentry.utils.compat.mock import patch
 
 
 class TestCreator(TestCase):
     def setUp(self):
-        self.user = self.create_user()
+        self.user = self.create_user(email="foo@bar.com", username="scuba_steve")
         self.org = self.create_organization(owner=self.user)
         self.creator = Creator(
             name="nulldb",
@@ -58,6 +56,17 @@ class TestCreator(TestCase):
 
         assert sentry_app
         assert sentry_app.scope_list == ["project:read"]
+
+        assert sentry_app.creator_user == self.user
+        assert sentry_app.creator_label == "foo@bar.com"
+
+    def test_creator_label_no_email(self):
+        self.user.email = ""
+        self.user.save()
+        sentry_app = self.creator.call()
+
+        assert sentry_app.creator_user == self.user
+        assert sentry_app.creator_label == "scuba_steve"
 
     def test_expands_rolled_up_events(self):
         self.creator.events = ["issue"]

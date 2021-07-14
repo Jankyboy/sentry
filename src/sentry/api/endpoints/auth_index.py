@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from django.contrib.auth import logout
 from django.contrib.auth.models import AnonymousUser
 from rest_framework import status
@@ -28,12 +26,8 @@ class AuthIndexEndpoint(Endpoint):
 
     permission_classes = ()
 
-    # XXX: it's not quite clear if this should be documented or not at
-    # this time.
-    # doc_section = DocSection.ACCOUNTS
-
     def get(self, request):
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
         user = extract_lazy_object(request._request.user)
@@ -55,7 +49,7 @@ class AuthIndexEndpoint(Endpoint):
 
             curl -X ###METHOD### -u username:password ###URL###
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
         # If 2fa login is enabled then we cannot sign in with username and
@@ -93,7 +87,7 @@ class AuthIndexEndpoint(Endpoint):
 
         :auth: required
         """
-        if not request.user.is_authenticated():
+        if not request.user.is_authenticated:
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         validator = AuthVerifyValidator(data=request.data)
@@ -106,7 +100,7 @@ class AuthIndexEndpoint(Endpoint):
         if "challenge" in validator.validated_data and "response" in validator.validated_data:
             try:
                 interface = Authenticator.objects.get_interface(request.user, "u2f")
-                if not interface.is_enrolled:
+                if not interface.is_enrolled():
                     raise LookupError()
 
                 challenge = json.loads(validator.validated_data["challenge"])

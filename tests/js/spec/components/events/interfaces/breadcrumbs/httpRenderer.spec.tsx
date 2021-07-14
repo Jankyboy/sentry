@@ -1,12 +1,7 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import HttpRenderer from 'app/components/events/interfaces/breadcrumbs/data/http';
-import {
-  BreadcrumbType,
-  BreadcrumbLevelType,
-} from 'app/components/events/interfaces/breadcrumbs/types';
+import {BreadcrumbLevelType, BreadcrumbType} from 'app/types/breadcrumbs';
 
 describe('HttpRenderer', () => {
   describe('render', () => {
@@ -31,18 +26,10 @@ describe('HttpRenderer', () => {
 
       expect(annotatedTexts.length).toEqual(3);
 
-      expect(
-        annotatedTexts
-          .at(0)
-          .find('strong')
-          .text()
-      ).toEqual('POST ');
+      expect(annotatedTexts.at(0).find('strong').text()).toEqual('POST ');
 
       expect(
-        annotatedTexts
-          .at(1)
-          .find('a[data-test-id="http-renderer-external-link"]')
-          .text()
+        annotatedTexts.at(1).find('a[data-test-id="http-renderer-external-link"]').text()
       ).toEqual('http://example.com/foo');
 
       expect(

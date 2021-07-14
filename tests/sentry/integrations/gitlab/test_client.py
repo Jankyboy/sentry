@@ -1,10 +1,11 @@
-from __future__ import absolute_import
-import responses
 import pytest
+import responses
 
 from sentry.auth.exceptions import IdentityNotValid
 from sentry.models import Identity
+from sentry.shared_integrations.exceptions import ApiError
 from sentry.utils import json
+
 from .testutils import GitLabTestCase
 
 
@@ -12,7 +13,7 @@ class GitlabRefreshAuthTest(GitLabTestCase):
     get_user_should_succeed = True
 
     def setUp(self):
-        super(GitlabRefreshAuthTest, self).setUp()
+        super().setUp()
         self.client = self.installation.get_client()
         self.request_data = {"id": "user_id"}
         self.request_url = "https://example.gitlab.com/api/v4/user"
@@ -24,7 +25,9 @@ class GitlabRefreshAuthTest(GitLabTestCase):
             "created_at": 1536798907,
             "scope": "api",
         }
+        self.repo = self.create_repo(name="Test-Org/foo", external_id=123)
         self.original_identity_data = dict(self.client.identity.data)
+        self.gitlab_id = 123
 
     def tearDown(self):
         responses.reset()
@@ -122,3 +125,46 @@ class GitlabRefreshAuthTest(GitLabTestCase):
         self.assert_response_call(call, self.request_url, 200)
         assert resp == self.request_data
         self.assert_identity_was_not_refreshed()
+
+    @responses.activate
+    def test_check_file(self):
+        path = "src/file.py"
+        ref = "537f2e94fbc489b2564ca3d6a5f0bd9afa38c3c3"
+        responses.add(
+            responses.HEAD,
+            f"https://example.gitlab.com/api/v4/projects/{self.gitlab_id}/repository/files/src%2Ffile.py?ref={ref}",
+            json={"text": 200},
+        )
+
+        resp = self.client.check_file(self.repo, path, ref)
+        assert responses.calls[0].response.status_code == 200
+        assert resp.status_code == 200
+
+    @responses.activate
+    def test_check_no_file(self):
+        path = "src/file.py"
+        ref = "537f2e94fbc489b2564ca3d6a5f0bd9afa38c3c3"
+        responses.add(
+            responses.HEAD,
+            f"https://example.gitlab.com/api/v4/projects/{self.gitlab_id}/repository/files/src%2Ffile.py?ref={ref}",
+            status=404,
+        )
+        with self.assertRaises(ApiError):
+            self.client.check_file(self.repo, path, ref)
+        assert responses.calls[0].response.status_code == 404
+
+    @responses.activate
+    def test_get_stacktrace_link(self):
+        path = "/src/file.py"
+        ref = "537f2e94fbc489b2564ca3d6a5f0bd9afa38c3c3"
+        responses.add(
+            responses.HEAD,
+            f"https://example.gitlab.com/api/v4/projects/{self.gitlab_id}/repository/files/src%2Ffile.py?ref={ref}",
+            json={"text": 200},
+        )
+
+        source_url = self.installation.get_stacktrace_link(self.repo, path, "master", ref)
+        assert (
+            source_url
+            == "https://example.gitlab.com/example-repo/blob/537f2e94fbc489b2564ca3d6a5f0bd9afa38c3c3/src/file.py"
+        )

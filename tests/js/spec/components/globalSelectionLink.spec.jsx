@@ -1,27 +1,20 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import GlobalSelectionLink from 'app/components/globalSelectionLink';
 
 const path = 'http://some.url/';
 
-describe('GlobalSelectionLink', function() {
-  it('has global selection values in query', function() {
+describe('GlobalSelectionLink', function () {
+  it('has global selection values in query', function () {
     const query = {
       project: ['foo', 'bar'],
       environment: 'staging',
     };
 
     const wrapper = mountWithTheme(
-      <GlobalSelectionLink to={path}>Go somewhere!</GlobalSelectionLink>,
-      {
-        context: {
-          location: {
-            query,
-          },
-        },
-      }
+      <GlobalSelectionLink location={{query}} to={path}>
+        Go somewhere!
+      </GlobalSelectionLink>
     );
 
     const updatedToProp = wrapper.find('Link').prop('to');
@@ -31,16 +24,11 @@ describe('GlobalSelectionLink', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('does not have global selection values in query', function() {
+  it('does not have global selection values in query', function () {
     const wrapper = mountWithTheme(
-      <GlobalSelectionLink to={path}>Go somewhere!</GlobalSelectionLink>,
-      {
-        context: {
-          location: {
-            query: {},
-          },
-        },
-      }
+      <GlobalSelectionLink location={{}} to={path}>
+        Go somewhere!
+      </GlobalSelectionLink>
     );
 
     const updatedToProp = wrapper.find('Link').prop('to');
@@ -50,23 +38,16 @@ describe('GlobalSelectionLink', function() {
     expect(wrapper).toSnapshot();
   });
 
-  it('combines query parameters with custom query', function() {
+  it('combines query parameters with custom query', function () {
     const query = {
       project: ['foo', 'bar'],
       environment: 'staging',
     };
     const customQuery = {query: 'something'};
     const wrapper = mountWithTheme(
-      <GlobalSelectionLink to={{pathname: path, query: customQuery}}>
+      <GlobalSelectionLink location={{query}} to={{pathname: path, query: customQuery}}>
         Go somewhere!
-      </GlobalSelectionLink>,
-      {
-        context: {
-          location: {
-            query,
-          },
-        },
-      }
+      </GlobalSelectionLink>
     );
 
     const updatedToProp = wrapper.find('Link').prop('to');
@@ -77,20 +58,15 @@ describe('GlobalSelectionLink', function() {
     });
   });
 
-  it('combines query parameters with no query', function() {
+  it('combines query parameters with no query', function () {
     const query = {
       project: ['foo', 'bar'],
       environment: 'staging',
     };
     const wrapper = mountWithTheme(
-      <GlobalSelectionLink to={{pathname: path}}>Go somewhere!</GlobalSelectionLink>,
-      {
-        context: {
-          location: {
-            query,
-          },
-        },
-      }
+      <GlobalSelectionLink location={{query}} to={{pathname: path}}>
+        Go somewhere!
+      </GlobalSelectionLink>
     );
 
     const updatedToProp = wrapper.find('Link').prop('to');

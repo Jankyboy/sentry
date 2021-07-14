@@ -1,12 +1,10 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import RepositoryActions from 'app/actions/repositoryActions';
 import {Client} from 'app/api';
 import IntegrationRepos from 'app/views/organizationIntegrations/integrationRepos';
 
-describe('IntegrationRepos', function() {
+describe('IntegrationRepos', function () {
   const org = TestStubs.Organization();
   const integration = TestStubs.GitHubIntegration();
   const routerContext = TestStubs.routerContext();
@@ -20,8 +18,8 @@ describe('IntegrationRepos', function() {
     jest.restoreAllMocks();
   });
 
-  describe('Getting repositories', function() {
-    it('handles broken integrations', function() {
+  describe('Getting repositories', function () {
+    it('handles broken integrations', function () {
       Client.addMockResponse({
         url: `/organizations/${org.slug}/integrations/1/repos/`,
         statusCode: 400,
@@ -42,8 +40,8 @@ describe('IntegrationRepos', function() {
     });
   });
 
-  describe('Adding repositories', function() {
-    it('can save successfully', async function() {
+  describe('Adding repositories', function () {
+    it('can save successfully', async function () {
       const addRepo = Client.addMockResponse({
         url: `/organizations/${org.slug}/repos/`,
         method: 'POST',
@@ -81,17 +79,14 @@ describe('IntegrationRepos', function() {
           },
         })
       );
-      const name = wrapper
-        .find('RepositoryRow')
-        .find('strong')
-        .first();
+      const name = wrapper.find('RepositoryRow').find('strong').first();
       expect(name).toHaveLength(1);
       expect(name.text()).toEqual('example/repo-name');
 
       expect(RepositoryActions.resetRepositories).toHaveBeenCalled();
     });
 
-    it('handles failure during save', async function() {
+    it('handles failure during save', async function () {
       const addRepo = Client.addMockResponse({
         url: `/organizations/${org.slug}/repos/`,
         method: 'POST',
@@ -127,7 +122,7 @@ describe('IntegrationRepos', function() {
     });
   });
 
-  describe('migratable repo', function() {
+  describe('migratable repo', function () {
     it('associates repository with integration', async () => {
       Client.addMockResponse({
         url: `/organizations/${org.slug}/repos/`,

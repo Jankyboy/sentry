@@ -1,55 +1,41 @@
-# This is the image to be run
-FROM python:2.7.16-slim-buster
+FROM python:3.6.13-slim-buster
 
 LABEL maintainer="oss@sentry.io"
 LABEL org.opencontainers.image.title="Sentry"
 LABEL org.opencontainers.image.description="Sentry runtime image"
 LABEL org.opencontainers.image.url="https://sentry.io/"
-LABEL org.opencontainers.image.documentation="https://github.com/getsentry/onpremise/tree/v10"
-LABEL org.opencontainers.image.source="https://github.com/getsentry/sentry"
+LABEL org.opencontainers.image.documentation="https://develop.sentry.dev/self-hosted/"
 LABEL org.opencontainers.image.vendor="Functional Software, Inc."
 LABEL org.opencontainers.image.authors="oss@sentry.io"
 
 # add our user and group first to make sure their IDs get assigned consistently
 RUN groupadd -r sentry && useradd -r -m -g sentry sentry
 
-ENV GOSU_VERSION=1.11 \
-  TINI_VERSION=0.18.0
+ENV GOSU_VERSION=1.12 \
+  GOSU_SHA256=0f25a21cf64e58078057adc78f38705163c1d564a959ff30a891c31917011a54 \
+  TINI_VERSION=0.19.0 \
+  TINI_SHA256=93dcc18adc78c65a028a84799ecf8ad40c936fdfc5f2a57b1acda5a8117fa82c
+
 
 RUN set -x \
   && buildDeps=" \
-  dirmngr \
-  gnupg \
   wget \
   " \
   && apt-get update && apt-get install -y --no-install-recommends $buildDeps \
   && rm -rf /var/lib/apt/lists/* \
-  # Fetch trusted keys
-  && for key in \
-  # gosu
-  B42F6819007F00F88E364FD4036A9C25BF357DD4 \
-  # tini
-  595E85A6B1B4779EA4DAAEC70B588DFF0527A9B7 \
-  ; do \
-  # TODO(byk): Replace the keyserver below w/ something owned by Sentry
-  gpg --batch --keyserver hkps://mattrobenolt-keyserver.global.ssl.fastly.net:443 --recv-keys "$key"; \
-  done \
   # grab gosu for easy step-down from root
-  && wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$(dpkg --print-architecture)" \
-  && wget -O /usr/local/bin/gosu.asc "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-$(dpkg --print-architecture).asc" \
-  && gpg --batch --verify /usr/local/bin/gosu.asc /usr/local/bin/gosu \
-  && rm -r /usr/local/bin/gosu.asc \
+  && wget -O /usr/local/bin/gosu "https://github.com/tianon/gosu/releases/download/$GOSU_VERSION/gosu-amd64" \
+  && echo "$GOSU_SHA256 /usr/local/bin/gosu" | sha256sum --check --status \
   && chmod +x /usr/local/bin/gosu \
   # grab tini for signal processing and zombie killing
-  && wget -O /usr/local/bin/tini "https://github.com/krallin/tini/releases/download/v$TINI_VERSION/tini" \
-  && wget -O /usr/local/bin/tini.asc "https://github.com/krallin/tini/releases/download/v$TINI_VERSION/tini.asc" \
-  && gpg --batch --verify /usr/local/bin/tini.asc /usr/local/bin/tini \
-  && rm /usr/local/bin/tini.asc \
+  && wget -O /usr/local/bin/tini "https://github.com/krallin/tini/releases/download/v$TINI_VERSION/tini-amd64" \
+  && echo "$TINI_SHA256 /usr/local/bin/tini" | sha256sum --check --status \
   && chmod +x /usr/local/bin/tini \
   && apt-get purge -y --auto-remove $buildDeps
 
 # Sane defaults for pip
-ENV PIP_NO_CACHE_DIR=off \
+ENV \
+  PIP_NO_CACHE_DIR=1 \
   PIP_DISABLE_PIP_VERSION_CHECK=1 \
   # Sentry config params
   SENTRY_CONF=/etc/sentry \
@@ -57,7 +43,9 @@ ENV PIP_NO_CACHE_DIR=off \
   # Thank to https://stackoverflow.com/a/25260588/90297
   UWSGI_PROFILE_OVERRIDE=ssl=false;xml=false;routing=false \
   # UWSGI dogstatsd plugin
-  UWSGI_NEED_PLUGIN=/var/lib/uwsgi/dogstatsd
+  UWSGI_NEED_PLUGIN=/var/lib/uwsgi/dogstatsd \
+  # grpcio>1.30.0 requires this, see requirements.txt for more detail.
+  GRPC_POLL_STRATEGY=epoll1
 
 # Copy and install dependencies first to leverage Docker layer caching.
 COPY /dist/requirements.txt /tmp/dist/requirements.txt
@@ -66,7 +54,6 @@ RUN set -x \
   # uwsgi
   && buildDeps="$buildDeps \
   gcc \
-  g++ \
   wget \
   " \
   # maxminddb
@@ -117,7 +104,7 @@ RUN set -x \
   && mkdir -p $SENTRY_CONF
 
 COPY /dist/*.whl /tmp/dist/
-RUN pip install /tmp/dist/*.whl && pip check && rm -rf /tmp/dist
+RUN pip install /tmp/dist/*.whl --no-deps && pip check && rm -rf /tmp/dist
 RUN sentry help | sed '1,/Commands:/d' | awk '{print $1}' >  /sentry-commands.txt
 
 COPY ./docker/sentry.conf.py ./docker/config.yml $SENTRY_CONF/
@@ -132,4 +119,5 @@ CMD ["run", "web"]
 ARG SOURCE_COMMIT
 ENV SENTRY_BUILD=${SOURCE_COMMIT:-unknown}
 LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+LABEL org.opencontainers.image.source="https://github.com/getsentry/sentry/tree/${SOURCE_COMMIT:-master}/"
 LABEL org.opencontainers.image.licenses="https://github.com/getsentry/sentry/blob/${SOURCE_COMMIT:-master}/LICENSE"

@@ -1,35 +1,34 @@
-from __future__ import absolute_import
-
 from django.db import IntegrityError
+
 from sentry.data_export.base import ExportQueryType
 from sentry.data_export.models import ExportedData
 from sentry.data_export.tasks import assemble_download, merge_export_blobs
+from sentry.exceptions import InvalidSearchQuery
 from sentry.models import File
-from sentry.snuba.discover import InvalidSearchQuery
-from sentry.testutils import TestCase, SnubaTestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils import SnubaTestCase, TestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.utils.compat.mock import patch
 from sentry.utils.samples import load_data
 from sentry.utils.snuba import (
-    QueryOutsideRetentionError,
-    QueryIllegalTypeOfArgument,
-    SnubaError,
-    RateLimitExceeded,
-    QueryMemoryLimitExceeded,
-    QueryExecutionTimeMaximum,
-    QueryTooManySimultaneous,
     DatasetSelectionError,
     QueryConnectionFailed,
-    QuerySizeExceeded,
     QueryExecutionError,
+    QueryExecutionTimeMaximum,
+    QueryIllegalTypeOfArgument,
+    QueryMemoryLimitExceeded,
+    QueryOutsideRetentionError,
+    QuerySizeExceeded,
+    QueryTooManySimultaneous,
+    RateLimitExceeded,
     SchemaValidationError,
+    SnubaError,
     UnqualifiedQueryError,
 )
 
 
 class AssembleDownloadTest(TestCase, SnubaTestCase):
     def setUp(self):
-        super(AssembleDownloadTest, self).setUp()
+        super().setUp()
         self.user = self.create_user()
         self.org = self.create_organization()
         self.project = self.create_project(organization=self.org)
@@ -77,13 +76,14 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
-        header, raw1, raw2 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"value,times_seen,last_seen,first_seen"
 
         raw1, raw2 = sorted([raw1, raw2])
@@ -108,13 +108,14 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
-        header, raw1, raw2 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"value,times_seen,last_seen,first_seen"
 
         raw1, raw2 = sorted([raw1, raw2])
@@ -183,13 +184,14 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
-        header = de.file.getfile().read().strip()
+        header = file.getfile().read().strip()
         assert header == b"value,times_seen,last_seen,first_seen"
 
     @patch("sentry.data_export.models.ExportedData.email_success")
@@ -205,13 +207,14 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
-        header, raw1, raw2, raw3 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2, raw3 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"title"
 
         assert raw1.startswith(b"<unlabeled event>")
@@ -238,13 +241,14 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
-        header, raw1, raw2 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"title"
 
         assert raw1.startswith(b"<unlabeled event>")
@@ -270,13 +274,14 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
-        header, raw1, raw2, raw3 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2, raw3 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"title"
 
         assert raw1.startswith(b"<unlabeled event>")
@@ -286,7 +291,7 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         assert emailer.called
 
     @patch("sentry.data_export.models.ExportedData.email_failure")
-    def test_discover_missing_enviroment(self, emailer):
+    def test_discover_missing_environment(self, emailer):
         de = ExportedData.objects.create(
             user=self.user,
             organization=self.org,
@@ -331,14 +336,15 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
         # capping MAX_FILE_SIZE forces the last batch to be dropped, leaving 2 rows
-        header, raw1, raw2 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"title"
 
         assert raw1.startswith(b"<unlabeled event>")
@@ -359,14 +365,15 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
-        assert de.file.headers == {"Content-Type": "text/csv"}
-        assert de.file.size is not None
-        assert de.file.checksum is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
         # Convert raw csv to list of line-strings
         # capping MAX_FILE_SIZE forces the last batch to be dropped, leaving 2 rows
-        header, raw1, raw2 = de.file.getfile().read().strip().split(b"\r\n")
+        header, raw1, raw2 = file.getfile().read().strip().split(b"\r\n")
         assert header == b"title"
 
         assert raw1.startswith(b"<unlabeled event>")
@@ -395,7 +402,7 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         assert error == "Invalid date range. Please try a more recent date range."
 
         # unicode
-        mock_query.side_effect = QueryOutsideRetentionError(u"\xfc")
+        mock_query.side_effect = QueryOutsideRetentionError("\xfc")
         with self.tasks():
             assemble_download(de.id)
         error = emailer.call_args[1]["message"]
@@ -418,11 +425,39 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         assert error == "Invalid query. Please fix the query and try again."
 
         # unicode
-        mock_query.side_effect = InvalidSearchQuery(u"\xfc")
+        mock_query.side_effect = InvalidSearchQuery("\xfc")
         with self.tasks():
             assemble_download(de.id)
         error = emailer.call_args[1]["message"]
         assert error == "Invalid query. Please fix the query and try again."
+
+    @patch("sentry.snuba.discover.raw_query")
+    def test_retries_on_recoverable_snuba_errors(self, mock_query):
+        de = ExportedData.objects.create(
+            user=self.user,
+            organization=self.org,
+            query_type=ExportQueryType.DISCOVER,
+            query_info={"project": [self.project.id], "field": ["title"], "query": ""},
+        )
+        mock_query.side_effect = [
+            QueryMemoryLimitExceeded("test"),
+            {
+                "data": [{"count": 3}],
+                "meta": [{"name": "count", "type": "UInt64"}],
+            },
+        ]
+        with self.tasks():
+            assemble_download(de.id, count_down=0)
+        de = ExportedData.objects.get(id=de.id)
+        assert de.date_finished is not None
+        assert de.date_expired is not None
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
+        file = de._get_file()
+        assert file.headers == {"Content-Type": "text/csv"}
+        assert file.size is not None
+        assert file.checksum is not None
+        header, row = file.getfile().read().strip().split(b"\r\n")
 
     @patch("sentry.snuba.discover.raw_query")
     @patch("sentry.data_export.models.ExportedData.email_failure")
@@ -436,33 +471,33 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
 
         mock_query.side_effect = QueryIllegalTypeOfArgument("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Invalid query. Argument to function is wrong type."
 
         # unicode
-        mock_query.side_effect = QueryIllegalTypeOfArgument(u"\xfc")
+        mock_query.side_effect = QueryIllegalTypeOfArgument("\xfc")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Invalid query. Argument to function is wrong type."
 
         mock_query.side_effect = SnubaError("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Please try again."
 
         # unicode
-        mock_query.side_effect = SnubaError(u"\xfc")
+        mock_query.side_effect = SnubaError("\xfc")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Please try again."
 
         mock_query.side_effect = RateLimitExceeded("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert (
             error
@@ -471,7 +506,7 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
 
         mock_query.side_effect = QueryMemoryLimitExceeded("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert (
             error
@@ -480,7 +515,7 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
 
         mock_query.side_effect = QueryExecutionTimeMaximum("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert (
             error
@@ -489,7 +524,7 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
 
         mock_query.side_effect = QueryTooManySimultaneous("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert (
             error
@@ -498,37 +533,37 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
 
         mock_query.side_effect = DatasetSelectionError("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Your query failed to run."
 
         mock_query.side_effect = QueryConnectionFailed("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Your query failed to run."
 
         mock_query.side_effect = QuerySizeExceeded("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Your query failed to run."
 
         mock_query.side_effect = QueryExecutionError("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Your query failed to run."
 
         mock_query.side_effect = SchemaValidationError("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Your query failed to run."
 
         mock_query.side_effect = UnqualifiedQueryError("test")
         with self.tasks():
-            assemble_download(de.id)
+            assemble_download(de.id, count_down=0)
         error = emailer.call_args[1]["message"]
         assert error == "Internal error. Your query failed to run."
 
@@ -547,10 +582,36 @@ class AssembleDownloadTest(TestCase, SnubaTestCase):
         error = emailer.call_args[1]["message"]
         assert error == "Failed to save the assembled file."
 
+    @patch("sentry.data_export.models.ExportedData.email_success")
+    def test_discover_sort(self, emailer):
+        de = ExportedData.objects.create(
+            user=self.user,
+            organization=self.org,
+            query_type=ExportQueryType.DISCOVER,
+            query_info={
+                "project": [self.project.id],
+                "field": ["environment"],
+                "sort": "-environment",
+                "query": "",
+            },
+        )
+        with self.tasks():
+            assemble_download(de.id, batch_size=1)
+        de = ExportedData.objects.get(id=de.id)
+        # Convert raw csv to list of line-strings
+        header, raw1, raw2, raw3 = de._get_file().getfile().read().strip().split(b"\r\n")
+        assert header == b"environment"
+
+        assert raw1.startswith(b"prod")
+        assert raw2.startswith(b"prod")
+        assert raw3.startswith(b"dev")
+
+        assert emailer.called
+
 
 class AssembleDownloadLargeTest(TestCase, SnubaTestCase):
     def setUp(self):
-        super(AssembleDownloadLargeTest, self).setUp()
+        super().setUp()
         self.user = self.create_user()
         self.org = self.create_organization()
         self.project = self.create_project()
@@ -559,7 +620,7 @@ class AssembleDownloadLargeTest(TestCase, SnubaTestCase):
             event = data.copy()
             event.update(
                 {
-                    "transaction": "/event/{0:03d}/".format(i),
+                    "transaction": f"/event/{i:03d}/",
                     "timestamp": iso_format(before_now(minutes=1, seconds=i)),
                     "start_timestamp": iso_format(before_now(minutes=1, seconds=i + 1)),
                 }
@@ -587,8 +648,8 @@ class AssembleDownloadLargeTest(TestCase, SnubaTestCase):
         de = ExportedData.objects.get(id=de.id)
         assert de.date_finished is not None
         assert de.date_expired is not None
-        assert de.file is not None
-        assert isinstance(de.file, File)
+        assert de.file_id is not None
+        assert isinstance(de._get_file(), File)
 
         assert emailer.called
 

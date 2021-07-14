@@ -1,27 +1,26 @@
-from __future__ import absolute_import
-
-from datetime import timedelta
 import logging
-import six
+from datetime import timedelta
+from typing import Any, Dict
 
 from django.utils import timezone
 
 from sentry import eventstore
 from sentry.models import UserReport
 from sentry.tasks.base import instrumented_task
+from sentry.utils.iterators import chunked
 
 logger = logging.getLogger(__name__)
 
 
-@instrumented_task(name="sentry.tasks.update_user_reports", queue="update")
-def update_user_reports(**kwargs):
+@instrumented_task(name="sentry.tasks.update_user_reports", queue="update")  # type: ignore
+def update_user_reports(**kwargs: Any) -> None:
     now = timezone.now()
     user_reports = UserReport.objects.filter(
-        group__isnull=True, environment__isnull=True, date_added__gte=now - timedelta(days=1)
+        group_id__isnull=True, environment_id__isnull=True, date_added__gte=now - timedelta(days=1)
     )
 
     # We do one query per project, just to avoid the small case that two projects have the same event ID
-    project_map = {}
+    project_map: Dict[int, Any] = {}
     for r in user_reports:
         project_map.setdefault(r.project_id, []).append(r)
 
@@ -31,22 +30,26 @@ def update_user_reports(**kwargs):
     updated_reports = 0
     samples = None
 
-    for project_id, reports in six.iteritems(project_map):
+    MAX_EVENTS = kwargs.get("max_events", 5000)
+    for project_id, reports in project_map.items():
         event_ids = [r.event_id for r in reports]
         report_by_event = {r.event_id: r for r in reports}
-        snuba_filter = eventstore.Filter(
-            project_ids=[project_id],
-            event_ids=event_ids,
-            start=now - timedelta(days=2),
-            end=now + timedelta(minutes=5),  # Just to catch clock skew
-        )
-        events = eventstore.get_events(filter=snuba_filter)
+        events = []
+        for event_id_chunk in chunked(event_ids, MAX_EVENTS):
+            snuba_filter = eventstore.Filter(
+                project_ids=[project_id],
+                event_ids=event_id_chunk,
+                start=now - timedelta(days=2),
+                end=now + timedelta(minutes=5),  # Just to catch clock skew
+            )
+            events_chunk = eventstore.get_events(filter=snuba_filter)
+            events.extend(events_chunk)
 
         for event in events:
             report = report_by_event.get(event.event_id)
             if report:
                 reports_with_event += 1
-                report.update(group_id=event.group_id, environment=event.get_environment())
+                report.update(group_id=event.group_id, environment_id=event.get_environment().id)
                 updated_reports += 1
 
         if not samples and len(reports) <= 10:

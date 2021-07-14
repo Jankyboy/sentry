@@ -1,18 +1,16 @@
-from __future__ import absolute_import
-
 import bisect
 import functools
 import math
-
 from datetime import datetime
+
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import connections
+from django.db.models.functions import Lower
 from django.db.models.sql.datastructures import EmptyResultSet
 from django.utils import timezone
 
-from sentry.utils.cursors import build_cursor, Cursor, CursorResult
-from sentry.utils.compat import map
-from sentry.utils.compat import zip
+from sentry.utils.compat import map, zip
+from sentry.utils.cursors import Cursor, CursorResult, build_cursor
 
 quote_name = connections["default"].ops.quote_name
 
@@ -25,8 +23,11 @@ class BadPaginationError(Exception):
     pass
 
 
-class BasePaginator(object):
-    def __init__(self, queryset, order_by=None, max_limit=MAX_LIMIT, on_results=None):
+class BasePaginator:
+    def __init__(
+        self, queryset, order_by=None, max_limit=MAX_LIMIT, on_results=None, post_query_filter=None
+    ):
+
         if order_by:
             if order_by.startswith("-"):
                 self.key, self.desc = order_by[1:], True
@@ -38,6 +39,7 @@ class BasePaginator(object):
         self.queryset = queryset
         self.max_limit = max_limit
         self.on_results = on_results
+        self.post_query_filter = post_query_filter
 
     def _is_asc(self, is_prev):
         return (self.desc and is_prev) or not (self.desc or is_prev)
@@ -60,11 +62,15 @@ class BasePaginator(object):
             if self.key in queryset.query.order_by:
                 if not asc:
                     index = queryset.query.order_by.index(self.key)
-                    queryset.query.order_by[index] = "-%s" % (queryset.query.order_by[index])
+                    new_order_by = list(queryset.query.order_by)
+                    new_order_by[index] = f"-{queryset.query.order_by[index]}"
+                    queryset.query.order_by = tuple(new_order_by)
             elif ("-%s" % self.key) in queryset.query.order_by:
                 if asc:
-                    index = queryset.query.order_by.index("-%s" % (self.key))
-                    queryset.query.order_by[index] = queryset.query.order_by[index][1:]
+                    index = queryset.query.order_by.index(f"-{self.key}")
+                    new_order_by = list(queryset.query.order_by)
+                    new_order_by[index] = queryset.query.order_by[index][1:]
+                    queryset.query.order_b = tuple(new_order_by)
             else:
                 if asc:
                     queryset = queryset.order_by(self.key)
@@ -80,16 +86,12 @@ class BasePaginator(object):
                 col_query, col_params = quote_name(self.key), []
             col_params.append(value)
 
-            if asc:
-                queryset = queryset.extra(
-                    where=["%s.%s >= %%s" % (queryset.model._meta.db_table, col_query)],
-                    params=col_params,
-                )
-            else:
-                queryset = queryset.extra(
-                    where=["%s.%s <= %%s" % (queryset.model._meta.db_table, col_query)],
-                    params=col_params,
-                )
+            col = col_query if "." in col_query else f"{queryset.model._meta.db_table}.{col_query}"
+            operator = ">=" if asc else "<="
+            queryset = queryset.extra(
+                where=[f"{col} {operator} %s"],
+                params=col_params,
+            )
 
         return queryset
 
@@ -99,7 +101,7 @@ class BasePaginator(object):
     def value_from_cursor(self, cursor):
         raise NotImplementedError
 
-    def get_result(self, limit=100, cursor=None, count_hits=False, known_hits=None):
+    def get_result(self, limit=100, cursor=None, count_hits=False, known_hits=None, max_hits=None):
         # cursors are:
         #   (identifier(integer), row offset, is_prev)
         if cursor is None:
@@ -116,8 +118,12 @@ class BasePaginator(object):
 
         # TODO(dcramer): this does not yet work correctly for ``is_prev`` when
         # the key is not unique
+
+        # max_hits can be limited to speed up the query
+        if max_hits is None:
+            max_hits = MAX_HITS_LIMIT
         if count_hits:
-            hits = self.count_hits(MAX_HITS_LIMIT)
+            hits = self.count_hits(max_hits)
         elif known_hits is not None:
             hits = known_hits
         else:
@@ -153,16 +159,24 @@ class BasePaginator(object):
         if cursor.is_prev:
             results.reverse()
 
-        return build_cursor(
+        cursor = build_cursor(
             results=results,
             limit=limit,
             hits=hits,
-            max_hits=MAX_HITS_LIMIT if count_hits else None,
+            max_hits=max_hits if count_hits else None,
             cursor=cursor,
             is_desc=self.desc,
             key=self.get_item_key,
             on_results=self.on_results,
         )
+
+        # Note that this filter is just to remove unwanted rows from the result set.
+        # This will reduce the number of rows returned rather than fill a full page,
+        # and could result in an empty page being returned
+        if self.post_query_filter:
+            cursor.results = self.post_query_filter(cursor.results)
+
+        return cursor
 
     def count_hits(self, max_hits):
         if not max_hits:
@@ -177,7 +191,7 @@ class BasePaginator(object):
         except EmptyResultSet:
             return 0
         cursor = connections[self.queryset.db].cursor()
-        cursor.execute(u"SELECT COUNT(*) FROM ({}) as t".format(h_sql), h_params)
+        cursor.execute(f"SELECT COUNT(*) FROM ({h_sql}) as t", h_params)
         return cursor.fetchone()[0]
 
 
@@ -207,7 +221,7 @@ class DateTimePaginator(BasePaginator):
 # TODO(dcramer): previous cursors are too complex at the moment for many things
 # and are only useful for polling situations. The OffsetPaginator ignores them
 # entirely and uses standard paging
-class OffsetPaginator(object):
+class OffsetPaginator:
     def __init__(
         self, queryset, order_by=None, max_limit=MAX_LIMIT, max_offset=None, on_results=None
     ):
@@ -273,9 +287,7 @@ class MergingOffsetPaginator(OffsetPaginator):
         max_limit=MAX_LIMIT,
         on_results=None,
     ):
-        super(MergingOffsetPaginator, self).__init__(
-            queryset, max_limit=max_limit, on_results=on_results
-        )
+        super().__init__(queryset, max_limit=max_limit, on_results=on_results)
         self.data_load_func = data_load_func
         self.apply_to_queryset = apply_to_queryset
         self.key_from_model = key_from_model or (lambda x: x.id)
@@ -296,7 +308,7 @@ class MergingOffsetPaginator(OffsetPaginator):
         if offset < 0:
             raise BadPaginationError("Pagination offset cannot be negative")
 
-        primary_results = self.data_load_func(offset=offset, limit=limit)
+        primary_results = self.data_load_func(offset=offset, limit=self.max_limit)
 
         queryset = self.apply_to_queryset(self.queryset, primary_results)
 
@@ -347,7 +359,7 @@ def reverse_bisect_left(a, x, lo=0, hi=None):
     return lo
 
 
-class SequencePaginator(object):
+class SequencePaginator:
     def __init__(self, data, reverse=False, max_limit=MAX_LIMIT, on_results=None):
         self.scores, self.values = (
             map(list, zip(*sorted(data, reverse=reverse))) if data else ([], [])
@@ -359,7 +371,7 @@ class SequencePaginator(object):
         self.max_limit = max_limit
         self.on_results = on_results
 
-    def get_result(self, limit, cursor=None, count_hits=False, known_hits=None):
+    def get_result(self, limit, cursor=None, count_hits=False, known_hits=None, max_hits=None):
         limit = min(limit, self.max_limit)
 
         if cursor is None:
@@ -406,10 +418,13 @@ class SequencePaginator(object):
         if self.on_results:
             results = self.on_results(results)
 
+        # max_hits can be limited to speed up the query
+        if max_hits is None:
+            max_hits = MAX_HITS_LIMIT
         if known_hits is not None:
-            hits = min(known_hits, MAX_HITS_LIMIT)
+            hits = min(known_hits, max_hits)
         elif count_hits:
-            hits = min(len(self.scores), MAX_HITS_LIMIT)
+            hits = min(len(self.scores), max_hits)
         else:
             hits = None
 
@@ -418,11 +433,11 @@ class SequencePaginator(object):
             prev=prev_cursor,
             next=next_cursor,
             hits=hits,
-            max_hits=MAX_HITS_LIMIT if hits is not None else None,
+            max_hits=max_hits if hits is not None else None,
         )
 
 
-class GenericOffsetPaginator(object):
+class GenericOffsetPaginator:
     """
     A paginator for getting pages of results for a query using the OFFSET/LIMIT
     mechanism.
@@ -473,31 +488,36 @@ class GenericOffsetPaginator(object):
         # date for queries, this should stop drift from new incoming events.
 
 
-class CombinedQuerysetIntermediary(object):
+class CombinedQuerysetIntermediary:
     is_empty = False
 
     def __init__(self, queryset, order_by):
+        assert isinstance(order_by, list), "order_by must be a list of keys/field names"
         self.queryset = queryset
         self.order_by = order_by
         try:
             instance = queryset[:1].get()
             self.instance_type = type(instance)
-            assert hasattr(
-                instance, self.order_by
-            ), "Model of type {} does not have field {}".format(self.instance_type, self.order_by)
-            self.order_by_type = type(getattr(instance, self.order_by))
+            for key in self.order_by:
+                self._assert_has_field(instance, key)
+            self.order_by_type = type(getattr(instance, self.order_by[0]))
         except ObjectDoesNotExist:
             self.is_empty = True
 
+    def _assert_has_field(self, instance, field):
+        assert hasattr(
+            instance, field
+        ), f"Model of type {self.instance_type} does not have field {field}"
 
-class CombinedQuerysetPaginator(object):
-    """ This paginator can be used to paginate between multiple querysets.
+
+class CombinedQuerysetPaginator:
+    """This paginator can be used to paginate between multiple querysets.
     It needs to be passed a list of CombinedQuerysetIntermediary. Each CombinedQuerysetIntermediary must be populated with a queryset and an order_by key
         i.e. intermediaries = [
                 CombinedQuerysetIntermediary(AlertRule.objects.all(), "name")
                 CombinedQuerysetIntermediary(Rule.objects.all(), "label")
             ]
-    and an optional paramater `desc` to determine whether the sort is ascending or descending. Default is False.
+    and an optional parameter `desc` to determine whether the sort is ascending or descending. Default is False.
 
     There is an issue with sorting between multiple models using a mixture of
     date fields and non-date fields. This is because the cursor value is converted differently for dates vs non-dates.
@@ -510,10 +530,11 @@ class CombinedQuerysetPaginator(object):
     using_dates = False
     model_key_map = {}
 
-    def __init__(self, intermediaries, desc=False, on_results=None):
+    def __init__(self, intermediaries, desc=False, on_results=None, case_insensitive=False):
         self.desc = desc
         self.intermediaries = intermediaries
         self.on_results = on_results
+        self.case_insensitive = case_insensitive
         for intermediary in list(self.intermediaries):
             if intermediary.is_empty:
                 self.intermediaries.remove(intermediary)
@@ -535,7 +556,16 @@ class CombinedQuerysetPaginator(object):
             ), "When sorting by a date, it must be the key used on all intermediaries"
 
     def key_from_item(self, item):
-        return self.model_key_map.get(type(item))
+        return self.model_key_map.get(type(item))[0]
+
+    def _prep_value(self, item, key, for_prev):
+        value = getattr(item, key)
+        value_type = type(value)
+        if isinstance(value, float):
+            return math.floor(value) if self._is_asc(for_prev) else math.ceil(value)
+        elif value_type is str and self.case_insensitive:
+            return value.lower()
+        return value
 
     def get_item_key(self, item, for_prev=False):
         if self.using_dates:
@@ -543,11 +573,7 @@ class CombinedQuerysetPaginator(object):
                 self.multiplier * float(getattr(item, self.key_from_item(item)).strftime("%s.%f"))
             )
         else:
-            value = getattr(item, self.key_from_item(item))
-            value_type = type(value)
-            if value_type is float:
-                return math.floor(value) if self._is_asc(for_prev) else math.ceil(value)
-            return value
+            return self._prep_value(item, self.key_from_item(item), for_prev)
 
     def value_from_cursor(self, cursor):
         if self.using_dates:
@@ -556,8 +582,7 @@ class CombinedQuerysetPaginator(object):
             )
         else:
             value = cursor.value
-            value_type = type(value)
-            if value_type is float:
+            if isinstance(value, float):
                 return math.floor(value) if self._is_asc(cursor.is_prev) else math.ceil(value)
             return value
 
@@ -568,28 +593,46 @@ class CombinedQuerysetPaginator(object):
         asc = self._is_asc(is_prev)
         combined_querysets = list()
         for intermediary in self.intermediaries:
-            key = intermediary.order_by
+            key = intermediary.order_by[0]
             filters = {}
+            annotate = {}
+
+            if self.case_insensitive:
+                key = f"{key}_lower"
+                annotate[key] = Lower(intermediary.order_by[0])
 
             if asc:
-                order_by = key
-                filter_condition = "%s__gte" % key
+                filter_condition = f"{key}__gte"
             else:
-                order_by = "-%s" % key
-                filter_condition = "%s__lte" % key
+                filter_condition = f"{key}__lte"
 
             if value is not None:
                 filters[filter_condition] = value
 
-            queryset = intermediary.queryset.filter(**filters).order_by(order_by)[: (limit + extra)]
+            queryset = intermediary.queryset.annotate(**annotate).filter(**filters)
+            for key in intermediary.order_by:
+                if self.case_insensitive:
+                    key = f"{key}_lower"
+                if asc:
+                    queryset = queryset.order_by(key)
+                else:
+                    queryset = queryset.order_by(f"-{key}")
+
+            queryset = queryset[: (limit + extra)]
             combined_querysets += list(queryset)
 
         def _sort_combined_querysets(item):
-            key_value = self.get_item_key(item, is_prev)
-            return ((key_value, type(item).__name__),)
+            sort_keys = []
+            sort_keys.append(self.get_item_key(item, is_prev))
+            if len(self.model_key_map.get(type(item))) > 1:
+                for k in self.model_key_map.get(type(item))[1:]:
+                    sort_keys.append(k)
+            sort_keys.append(type(item).__name__)
+            return tuple(sort_keys)
 
         combined_querysets.sort(
-            key=_sort_combined_querysets, reverse=not asc,
+            key=_sort_combined_querysets,
+            reverse=not asc,
         )
 
         return combined_querysets
@@ -637,3 +680,64 @@ class CombinedQuerysetPaginator(object):
             is_desc=self.desc,
             on_results=self.on_results,
         )
+
+
+class ChainPaginator:
+    """
+    Chain multiple datasources together and paginate them as one source.
+    The datasources should be provided in the order they should be used.
+
+    The `sources` should be a list of sliceable collections. It is also
+    assumed that sources have their data sorted already.
+    """
+
+    def __init__(self, sources, max_limit=MAX_LIMIT, max_offset=None, on_results=None):
+        self.sources = sources
+        self.max_limit = max_limit
+        self.max_offset = max_offset
+        self.on_results = on_results
+
+    def get_result(self, limit=100, cursor=None):
+        # offset is page #
+        # value is page limit
+        if cursor is None:
+            cursor = Cursor(0, 0, 0)
+
+        limit = min(limit, self.max_limit)
+
+        page = cursor.offset
+        offset = cursor.offset * cursor.value
+
+        if self.max_offset is not None and offset >= self.max_offset:
+            raise BadPaginationError("Pagination offset too large")
+        if limit <= 0:
+            raise BadPaginationError("Limit must be positive")
+        if offset < 0:
+            raise BadPaginationError("Pagination offset cannot be negative")
+
+        results = []
+        # note: we shouldn't use itertools.islice(itertools.chain.from_iterable(self.sources))
+        # because source may be a QuerySet which is much more efficient to slice directly
+        for source in self.sources:
+            # Get an additional item so we can check for a next page.
+            remaining = limit - len(results) + 1
+            results.extend(source[offset : offset + remaining])
+            # don't do offset = max(0, offset - len(source)) because len(source) may be expensive
+            if len(results) == 0:
+                offset -= len(source)
+            else:
+                offset = 0
+            if len(results) > limit:
+                assert len(results) == limit + 1
+                break
+
+        next_cursor = Cursor(limit, page + 1, False, len(results) > limit)
+        prev_cursor = Cursor(limit, page - 1, True, page > 0)
+
+        if next_cursor.has_results:
+            results.pop()
+
+        if self.on_results:
+            results = self.on_results(results)
+
+        return CursorResult(results=results, next=next_cursor, prev=prev_cursor)

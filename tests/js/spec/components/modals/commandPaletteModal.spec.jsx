@@ -1,20 +1,17 @@
-import React from 'react';
-
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {openCommandPalette} from 'app/actionCreators/modal';
-import App from 'app/views/app';
-import FormSearchStore from 'app/stores/formSearchStore';
 import {navigateTo} from 'app/actionCreators/navigation';
+import FormSearchStore from 'app/stores/formSearchStore';
+import App from 'app/views/app';
 
-jest.mock('jquery');
 jest.mock('app/actionCreators/formSearch');
 jest.mock('app/actionCreators/navigation');
 
-describe('Command Palette Modal', function() {
+describe('Command Palette Modal', function () {
   let orgsMock;
 
-  beforeEach(function() {
+  beforeEach(function () {
     FormSearchStore.onLoadSearchMap([]);
 
     MockApiClient.clearMockResponses();
@@ -66,7 +63,7 @@ describe('Command Palette Modal', function() {
     });
   });
 
-  it('can open command palette modal and search', async function() {
+  it('can open command palette modal and search', async function () {
     const wrapper = mountWithTheme(
       <App params={{orgId: 'org-slug'}}>{<div>placeholder content</div>}</App>,
       TestStubs.routerContext([
@@ -79,7 +76,7 @@ describe('Command Palette Modal', function() {
     );
 
     // No Modal
-    expect(wrapper.find('ModalDialog')).toHaveLength(0);
+    expect(wrapper.find('Modal')).toHaveLength(0);
 
     openCommandPalette({params: {orgId: 'org-slug'}});
     await tick();
@@ -87,8 +84,8 @@ describe('Command Palette Modal', function() {
     wrapper.update();
 
     // Should have Modal + input
-    expect(wrapper.find('ModalDialog')).toHaveLength(1);
-    wrapper.find('ModalDialog input').simulate('change', {target: {value: 'bil'}});
+    expect(wrapper.find('Modal')).toHaveLength(1);
+    wrapper.find('Modal input').simulate('change', {target: {value: 'bil'}});
 
     await tick();
     wrapper.update();
@@ -102,31 +99,22 @@ describe('Command Palette Modal', function() {
     );
 
     expect(
-      wrapper
-        .find('SearchResult [data-test-id="badge-display-name"]')
-        .first()
-        .text()
+      wrapper.find('SearchResult [data-test-id="badge-display-name"]').first().text()
     ).toBe('billy-org Dashboard');
 
-    expect(
-      wrapper
-        .find('ModalDialog SearchResultWrapper')
-        .first()
-        .prop('highlighted')
-    ).toBe(true);
+    expect(wrapper.find('Modal SearchResultWrapper').first().prop('highlighted')).toBe(
+      true
+    );
 
-    expect(
-      wrapper
-        .find('ModalDialog SearchResultWrapper')
-        .at(1)
-        .prop('highlighted')
-    ).toBe(false);
+    expect(wrapper.find('Modal SearchResultWrapper').at(1).prop('highlighted')).toBe(
+      false
+    );
 
     wrapper
       .find('SearchResult [data-test-id="badge-display-name"]')
       .first()
       .simulate('click');
 
-    expect(navigateTo).toHaveBeenCalledWith('/billy-org/', expect.anything());
+    expect(navigateTo).toHaveBeenCalledWith('/billy-org/', expect.anything(), undefined);
   });
 });

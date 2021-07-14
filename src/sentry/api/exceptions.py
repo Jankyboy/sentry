@@ -1,6 +1,6 @@
-from __future__ import absolute_import
+from typing import List, Optional
 
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from rest_framework import status
 from rest_framework.exceptions import APIException
 
@@ -29,6 +29,14 @@ class SentryAPIException(APIException):
         self.detail = {"detail": detail}
 
 
+class ParameterValidationError(SentryAPIException):
+    status_code = status.HTTP_400_BAD_REQUEST
+    code = "parameter-validation-error"
+
+    def __init__(self, message: str, context: Optional[List[str]] = None) -> None:
+        super().__init__(message=message, context=".".join(context or []))
+
+
 class ProjectMoved(SentryAPIException):
     status_code = status.HTTP_302_FOUND
     # code/message currently don't get used
@@ -36,7 +44,7 @@ class ProjectMoved(SentryAPIException):
     message = "Resource has been moved"
 
     def __init__(self, new_url, slug):
-        super(ProjectMoved, self).__init__(url=new_url, slug=slug)
+        super().__init__(url=new_url, slug=slug)
 
 
 class SsoRequired(SentryAPIException):
@@ -45,8 +53,17 @@ class SsoRequired(SentryAPIException):
     message = "Must login via SSO"
 
     def __init__(self, organization):
-        super(SsoRequired, self).__init__(
-            loginUrl=reverse("sentry-auth-organization", args=[organization.slug])
+        super().__init__(loginUrl=reverse("sentry-auth-organization", args=[organization.slug]))
+
+
+class MemberDisabledOverLimit(SentryAPIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "member-disabled-over-limit"
+    message = "Organization over member limit"
+
+    def __init__(self, organization):
+        super().__init__(
+            next=reverse("sentry-organization-disabled-member", args=[organization.slug])
         )
 
 
@@ -62,13 +79,44 @@ class SudoRequired(SentryAPIException):
     message = "Account verification required."
 
     def __init__(self, user):
-        super(SudoRequired, self).__init__(username=user.username)
+        super().__init__(username=user.username)
+
+
+class EmailVerificationRequired(SentryAPIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "email-verification-required"
+    message = "Email verification required."
+
+    def __init__(self, user):
+        super().__init__(username=user.username)
 
 
 class TwoFactorRequired(SentryAPIException):
     status_code = status.HTTP_401_UNAUTHORIZED
     code = "2fa-required"
     message = "Organization requires two-factor authentication to be enabled"
+
+
+class AppConnectAuthenticationError(SentryAPIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "app-connect-authentication-error"
+    message = "App connect authentication error"
+
+
+class ItunesAuthenticationError(SentryAPIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "itunes-authentication-error"
+    message = "Itunes authentication error"
+
+
+class ItunesTwoFactorAuthenticationRequired(SentryAPIException):
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "itunes-2fa-required"
+    message = "Itunes requires two-factor authentication to be enabled"
+
+
+class ConflictError(APIException):
+    status_code = status.HTTP_409_CONFLICT
 
 
 class InvalidRepository(Exception):

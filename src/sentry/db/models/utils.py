@@ -1,15 +1,12 @@
-from __future__ import absolute_import
-
 import operator
+from uuid import uuid4
 
 from django.db.models import F
 from django.db.models.expressions import CombinedExpression, Value
-from django.utils.crypto import get_random_string
 from django.template.defaultfilters import slugify
-from uuid import uuid4
+from django.utils.crypto import get_random_string
 
 from sentry.db.exceptions import CannotResolveExpression
-
 
 COMBINED_EXPRESSION_CALLBACKS = {
     CombinedExpression.ADD: operator.add,
@@ -49,11 +46,6 @@ def resolve_combined_expression(instance, node):
     return runner
 
 
-# TODO(mark) Remove these compatibility aliases once getsentry doesn't use them.
-ExpressionNode = CombinedExpression
-resolve_expression_node = resolve_combined_expression
-
-
 def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug", *args, **kwargs):
     base_value = slugify(label)[:max_length]
 
@@ -74,7 +66,7 @@ def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug",
     setattr(inst, field_name, base_value)
 
     # We don't need to further mutate if we're unique at this point
-    if not base_qs.filter(**{"{}__iexact".format(field_name): base_value}).exists():
+    if not base_qs.filter(**{f"{field_name}__iexact": base_value}).exists():
         return
 
     # We want to sanely generate the shortest unique slug possible, so
@@ -92,14 +84,14 @@ def slugify_instance(inst, label, reserved=(), max_length=30, field_name="slug",
             end = get_random_string(size, allowed_chars="abcdefghijklmnopqrstuvwxyz0123456790")
             value = base_value[: max_length - size - 1] + "-" + end
             setattr(inst, field_name, value)
-            if not base_qs.filter(**{"{}__iexact".format(field_name): value}).exists():
+            if not base_qs.filter(**{f"{field_name}__iexact": value}).exists():
                 return
 
     # If at this point, we've exhausted all possibilities, we'll just end up hitting
     # an IntegrityError from database, which is ok, and unlikely to happen
 
 
-class Creator(object):
+class Creator:
     """
     A descriptor that invokes `to_python` when attributes are set.
     This provides backwards compatibility for fields that used to use

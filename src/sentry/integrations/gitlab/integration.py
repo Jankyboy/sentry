@@ -1,26 +1,24 @@
-from __future__ import absolute_import
+from urllib.parse import urlparse
 
-import six
-from six.moves.urllib.parse import urlparse
-from django.utils.translation import ugettext_lazy as _
 from django import forms
+from django.utils.translation import ugettext_lazy as _
 
-from sentry.web.helpers import render_to_response
-from sentry.identity.pipeline import IdentityProviderPipeline
-from sentry.identity.gitlab import get_user_info, get_oauth_data
+from sentry.identity.gitlab import get_oauth_data, get_user_info
 from sentry.identity.gitlab.provider import GitlabIdentityProvider
+from sentry.identity.pipeline import IdentityProviderPipeline
 from sentry.integrations import (
     FeatureDescription,
-    IntegrationInstallation,
     IntegrationFeatures,
-    IntegrationProvider,
+    IntegrationInstallation,
     IntegrationMetadata,
+    IntegrationProvider,
 )
-from sentry.shared_integrations.exceptions import ApiError, IntegrationError
 from sentry.integrations.repositories import RepositoryMixin
 from sentry.pipeline import NestedPipelineView, PipelineView
-from sentry.utils.http import absolute_uri
+from sentry.shared_integrations.exceptions import ApiError, IntegrationError
 from sentry.utils.hashlib import sha1_text
+from sentry.utils.http import absolute_uri
+from sentry.web.helpers import render_to_response
 
 from .client import GitLabApiClient, GitLabSetupClient
 from .issues import GitlabIssueBasic
@@ -57,6 +55,13 @@ FEATURES = [
         """,
         IntegrationFeatures.ISSUE_BASIC,
     ),
+    FeatureDescription(
+        """
+        Link your Sentry stack traces back to your GitLab source code with stack
+        trace linking.
+        """,
+        IntegrationFeatures.STACKTRACE_LINK,
+    ),
 ]
 
 metadata = IntegrationMetadata(
@@ -64,7 +69,7 @@ metadata = IntegrationMetadata(
     features=FEATURES,
     author="The Sentry Team",
     noun=_("Installation"),
-    issue_url="https://github.com/getsentry/sentry/issues/",
+    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug.yml&title=GitLab%20Integration%20Problem",
     source_url="https://github.com/getsentry/sentry/tree/master/src/sentry/integrations/gitlab",
     aspects={},
 )
@@ -74,7 +79,7 @@ class GitlabIntegration(IntegrationInstallation, GitlabIssueBasic, RepositoryMix
     repo_search = True
 
     def __init__(self, *args, **kwargs):
-        super(GitlabIntegration, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.default_identity = None
 
     def get_group_id(self):
@@ -86,11 +91,32 @@ class GitlabIntegration(IntegrationInstallation, GitlabIssueBasic, RepositoryMix
 
         return GitLabApiClient(self)
 
+    def get_codeowner_file(self, repo, ref=None):
+        filepath_options = ["CODEOWNERS", ".gitlab/CODEOWNERS", "docs/CODEOWNERS"]
+        for filepath in filepath_options:
+            try:
+                contents = self.get_client().get_file(repo, filepath, ref)
+            except ApiError:
+                continue
+
+            html_url = self.format_source_url(repo, filepath, ref)
+            return {"filepath": filepath, "html_url": html_url, "raw": contents}
+
+        return None
+
     def get_repositories(self, query=None):
         # Note: gitlab projects are the same things as repos everywhere else
         group = self.get_group_id()
         resp = self.get_client().search_group_projects(group, query)
         return [{"identifier": repo["id"], "name": repo["name_with_namespace"]} for repo in resp]
+
+    def format_source_url(self, repo, filepath, branch):
+        base_url = self.model.metadata["base_url"]
+        repo_name = repo.config["path"]
+
+        # Must format the url ourselves since `check_file` is a head request
+        # "https://gitlab.com/gitlab-org/gitlab/blob/master/README.md"
+        return f"{base_url}/{repo_name}/blob/{branch}/{filepath}"
 
     def search_projects(self, query):
         client = self.get_client()
@@ -189,8 +215,8 @@ class InstallationConfigView(PipelineView):
                 pipeline.bind_state(
                     "oauth_config_information",
                     {
-                        "access_token_url": u"{}/oauth/token".format(form_data.get("url")),
-                        "authorize_url": u"{}/oauth/authorize".format(form_data.get("url")),
+                        "access_token_url": "{}/oauth/token".format(form_data.get("url")),
+                        "authorize_url": "{}/oauth/authorize".format(form_data.get("url")),
                         "client_id": form_data.get("client_id"),
                         "client_secret": form_data.get("client_secret"),
                         "verify_ssl": form_data.get("verify_ssl"),
@@ -242,7 +268,14 @@ class GitlabIntegrationProvider(IntegrationProvider):
 
     needs_default_identity = True
 
-    features = frozenset([IntegrationFeatures.ISSUE_BASIC, IntegrationFeatures.COMMITS])
+    features = frozenset(
+        [
+            IntegrationFeatures.ISSUE_BASIC,
+            IntegrationFeatures.COMMITS,
+            IntegrationFeatures.STACKTRACE_LINK,
+            IntegrationFeatures.CODEOWNERS,
+        ]
+    )
 
     setup_dialog_config = {"width": 1030, "height": 1000}
 
@@ -256,7 +289,7 @@ class GitlabIntegrationProvider(IntegrationProvider):
         identity_pipeline_config = dict(
             oauth_scopes=sorted(GitlabIdentityProvider.oauth_scopes),
             redirect_url=absolute_uri("/extensions/gitlab/setup/"),
-            **self.pipeline.fetch_state("oauth_config_information")
+            **self.pipeline.fetch_state("oauth_config_information"),
         )
 
         return NestedPipelineView(
@@ -281,7 +314,7 @@ class GitlabIntegrationProvider(IntegrationProvider):
                     "verify_ssl": installation_data["verify_ssl"],
                     "group": installation_data["group"],
                     "include_subgroups": installation_data["include_subgroups"],
-                    "error_message": six.text_type(e),
+                    "error_message": str(e),
                     "error_status": e.code,
                 },
             )
@@ -318,11 +351,11 @@ class GitlabIntegrationProvider(IntegrationProvider):
             # This value is embedded then in the webook token that we
             # give to gitlab to allow us to find the integration a hook came
             # from.
-            "external_id": u"{}:{}".format(hostname, group["id"]),
+            "external_id": "{}:{}".format(hostname, group["id"]),
             "metadata": {
                 "icon": group["avatar_url"],
                 "instance": hostname,
-                "domain_name": u"{}/{}".format(hostname, group["full_path"]),
+                "domain_name": "{}/{}".format(hostname, group["full_path"]),
                 "scopes": scopes,
                 "verify_ssl": verify_ssl,
                 "base_url": base_url,
@@ -332,7 +365,7 @@ class GitlabIntegrationProvider(IntegrationProvider):
             },
             "user_identity": {
                 "type": "gitlab",
-                "external_id": u"{}:{}".format(hostname, user["id"]),
+                "external_id": "{}:{}".format(hostname, user["id"]),
                 "scopes": scopes,
                 "data": oauth_data,
             },

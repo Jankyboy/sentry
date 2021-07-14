@@ -1,16 +1,14 @@
-from __future__ import absolute_import
-
-from sentry.utils.compat import mock
 from selenium.common.exceptions import TimeoutException
 
 from sentry.models import Project
 from sentry.testutils import AcceptanceTestCase
+from sentry.utils.compat import mock
 from sentry.utils.retries import TimedRetryPolicy
 
 
 class OrganizationOnboardingTest(AcceptanceTestCase):
     def setUp(self):
-        super(OrganizationOnboardingTest, self).setUp()
+        super().setUp()
         self.user = self.create_user("foo@example.com")
         self.org = self.create_organization(name="Rowdy Tiger", owner=None)
         self.team = self.create_team(organization=self.org, name="Mariachi Band")
@@ -53,9 +51,5 @@ class OrganizationOnboardingTest(AcceptanceTestCase):
         assert project.platform == "node"
 
         self.browser.click('[data-test-id="onboarding-getting-started-invite-members"]')
-        self.browser.wait_until('[name="email"]')
+        self.browser.wait_until("[role='dialog']")
         self.browser.snapshot(name="onboarding - invite members")
-
-        self.browser.click('[data-test-id="onboarding-getting-started-learn-more"]')
-        self.browser.wait_until_not('[name="email"]')
-        self.browser.snapshot(name="onboarding - learn more")

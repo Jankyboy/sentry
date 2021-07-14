@@ -1,31 +1,27 @@
-from __future__ import absolute_import
-
-import time
-import pytest
 import zipfile
-from sentry.utils.compat.mock import patch
+from io import BytesIO
 
-from six import BytesIO
-
-from django.core.urlresolvers import reverse
+import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.urls import reverse
 
 from sentry import eventstore
-from sentry.testutils import TransactionTestCase, RelayStoreHelper
-from sentry.models import EventAttachment
 from sentry.lang.native.utils import STORE_CRASH_REPORTS_ALL
-
+from sentry.models import EventAttachment, File
+from sentry.testutils import RelayStoreHelper, TransactionTestCase
+from sentry.testutils.helpers.task_runner import BurstTaskRunner
+from sentry.utils.compat.mock import patch
 from tests.symbolicator import get_fixture_path, insta_snapshot_stacktrace_data
-
 
 # IMPORTANT:
 # For these tests to run, write `symbolicator.enabled: true` into your
 # `~/.sentry/config.yml` and run `sentry devservices up`
 
 
+@pytest.mark.snuba
 class SymbolicatorMinidumpIntegrationTest(RelayStoreHelper, TransactionTestCase):
     @pytest.fixture(autouse=True)
-    def initialize(self, live_server):
+    def initialize(self, live_server, reset_snuba):
         self.project.update_option("sentry:builtin_symbol_sources", [])
         new_prefix = live_server.url
 
@@ -88,12 +84,14 @@ class SymbolicatorMinidumpIntegrationTest(RelayStoreHelper, TransactionTestCase)
         hello, minidump = attachments
 
         assert hello.name == "hello.txt"
-        assert hello.file.type == "event.attachment"
-        assert hello.file.checksum == "2ef7bde608ce5404e97d5f042f95f89f1c232871"
+        hello_file = File.objects.get(id=hello.file_id)
+        assert hello_file.type == "event.attachment"
+        assert hello_file.checksum == "2ef7bde608ce5404e97d5f042f95f89f1c232871"
 
         assert minidump.name == "windows.dmp"
-        assert minidump.file.type == "event.minidump"
-        assert minidump.file.checksum == "74bb01c850e8d65d3ffbc5bad5cabc4668fce247"
+        minidump_file = File.objects.get(id=minidump.file_id)
+        assert minidump_file.type == "event.minidump"
+        assert minidump_file.checksum == "74bb01c850e8d65d3ffbc5bad5cabc4668fce247"
 
     def test_full_minidump_json_extra(self):
         self.project.update_option("sentry:store_crash_reports", STORE_CRASH_REPORTS_ALL)
@@ -139,7 +137,7 @@ class SymbolicatorMinidumpIntegrationTest(RelayStoreHelper, TransactionTestCase)
         self.project.update_option("sentry:store_crash_reports", STORE_CRASH_REPORTS_ALL)
 
         with self.feature(
-            {"organizations:event-attachments": True, "projects:reprocessing-v2": True}
+            {"organizations:event-attachments": True, "organizations:reprocessing-v2": True}
         ):
             with open(get_fixture_path("windows.dmp"), "rb") as f:
                 event = self.post_and_retrieve_minidump(
@@ -150,21 +148,16 @@ class SymbolicatorMinidumpIntegrationTest(RelayStoreHelper, TransactionTestCase)
 
             self.upload_symbols()
 
-            from sentry.tasks.reprocessing2 import reprocess_event
+            from sentry.tasks.reprocessing2 import reprocess_group
 
-            with self.tasks():
-                reprocess_event.delay(
-                    project_id=self.project.id, event_id=event.event_id, start_time=time.time()
-                )
+            with BurstTaskRunner() as burst:
+                reprocess_group.delay(project_id=self.project.id, group_id=event.group_id)
 
-            (new_event,) = eventstore.get_events(
-                eventstore.Filter(
-                    project_ids=[self.project.id],
-                    conditions=[["tags[original_event_id]", "=", event.event_id]],
-                )
-            )
+            burst(max_jobs=100)
+
+            new_event = eventstore.get_event_by_id(self.project.id, event.event_id)
             assert new_event is not None
-            assert new_event.event_id != event.event_id
+            assert new_event.event_id == event.event_id
 
         insta_snapshot_stacktrace_data(self, new_event.data, subname="reprocessed")
 
@@ -174,5 +167,6 @@ class SymbolicatorMinidumpIntegrationTest(RelayStoreHelper, TransactionTestCase)
             )
 
             assert minidump.name == "windows.dmp"
-            assert minidump.file.type == "event.minidump"
-            assert minidump.file.checksum == "74bb01c850e8d65d3ffbc5bad5cabc4668fce247"
+            minidump_file = File.objects.get(id=minidump.file_id)
+            assert minidump_file.type == "event.minidump"
+            assert minidump_file.checksum == "74bb01c850e8d65d3ffbc5bad5cabc4668fce247"

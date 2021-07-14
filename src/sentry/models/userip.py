@@ -1,5 +1,3 @@
-from __future__ import absolute_import
-
 from django.conf import settings
 from django.core.cache import cache
 from django.db import models
@@ -10,7 +8,7 @@ from sentry.utils.geo import geo_by_addr
 
 
 class UserIP(Model):
-    __core__ = True
+    __include_in_export__ = True
 
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)
     ip_address = models.GenericIPAddressField()

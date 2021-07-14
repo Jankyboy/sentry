@@ -1,12 +1,11 @@
-from __future__ import absolute_import
-
 __all__ = ("PubSubAnalytics",)
 
 import logging
 
-from sentry.utils.json import dumps
 from google.auth.exceptions import GoogleAuthError
 from google.cloud import pubsub_v1
+
+from sentry.utils.json import dumps
 
 from .base import Analytics
 
@@ -30,11 +29,11 @@ class PubSubAnalytics(Analytics):
         try:
             self.publisher = pubsub_v1.PublisherClient(settings)
         except GoogleAuthError:
-            logger.warn("Unable to initialize PubSubAnalytics, no auth found")
+            logger.warning("Unable to initialize PubSubAnalytics, no auth found")
             self.publisher = None
         else:
             self.topic = self.publisher.topic_path(project, topic)
 
     def record_event(self, event):
         if self.publisher is not None:
-            self.publisher.publish(self.topic, data=dumps(event.serialize()))
+            self.publisher.publish(self.topic, data=dumps(event.serialize()).encode("utf-8"))

@@ -1,27 +1,20 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import absolute_import
-
-from django.utils.functional import cached_property
-
 import os
 
 import pytest
+from django.utils.functional import cached_property
 
 from sentry import eventstore
-from sentry.utils import json
-from sentry.stacktraces.processing import normalize_stacktraces_for_grouping
-from sentry.event_manager import EventManager
+from sentry.event_manager import EventManager, get_event_type, materialize_metadata
+from sentry.grouping.api import apply_server_fingerprinting, load_grouping_config
 from sentry.grouping.enhancer import Enhancements
-from sentry.grouping.api import load_grouping_config
 from sentry.grouping.fingerprinting import FingerprintingRules
-from sentry.grouping.api import apply_server_fingerprinting
-
+from sentry.stacktraces.processing import normalize_stacktraces_for_grouping
+from sentry.utils import json
 
 _grouping_fixture_path = os.path.join(os.path.dirname(__file__), "grouping_inputs")
 
 
-class GroupingInput(object):
+class GroupingInput:
     def __init__(self, filename):
         self.filename = filename
 
@@ -34,10 +27,9 @@ class GroupingInput(object):
         grouping_input = dict(self.data)
         # Customize grouping config from the _grouping config
         grouping_info = grouping_input.pop("_grouping", None) or {}
-        enhancement_base = grouping_info.get("enhancement_base")
         enhancements = grouping_info.get("enhancements")
-        if enhancement_base or enhancements:
-            enhancement_bases = [enhancement_base] if enhancement_base else []
+        if enhancements:
+            enhancement_bases = Enhancements.loads(grouping_config["enhancements"]).bases
             e = Enhancements.from_config_string(enhancements or "", bases=enhancement_bases)
             grouping_config["enhancements"] = e.dumps()
 
@@ -70,7 +62,7 @@ def with_grouping_input(name):
 _fingerprint_fixture_path = os.path.join(os.path.dirname(__file__), "fingerprint_inputs")
 
 
-class FingerprintInput(object):
+class FingerprintInput:
     def __init__(self, filename):
         self.filename = filename
 
@@ -91,6 +83,9 @@ class FingerprintInput(object):
 
         data.setdefault("fingerprint", ["{{ default }}"])
         apply_server_fingerprinting(data, config)
+        event_type = get_event_type(data)
+        event_metadata = event_type.get_metadata(data)
+        data.update(materialize_metadata(data, event_type, event_metadata))
 
         evt = eventstore.create_event(data=data)
         return config, evt

@@ -1,19 +1,16 @@
-import React from 'react';
 import * as Sentry from '@sentry/react';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
 
 import {RouteError} from 'app/views/routeError';
 
-jest.mock('jquery');
-
-describe('RouteError', function() {
-  afterEach(function() {
+describe('RouteError', function () {
+  afterEach(function () {
     Sentry.captureException.mockClear();
     Sentry.showReportDialog.mockClear();
   });
 
-  it('captures errors with raven', async function() {
+  it('captures errors with raven', async function () {
     const error = new Error('Big Bad Error');
     const routes = TestStubs.routes();
     mountWithTheme(

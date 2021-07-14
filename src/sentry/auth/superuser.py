@@ -9,13 +9,11 @@ In Sentry a user must achieve the following to be treated as a superuser:
   standard auth. This session has a shorter lifespan.
 """
 
-from __future__ import absolute_import
 
 import ipaddress
 import logging
-import six
-
 from datetime import datetime, timedelta
+
 from django.conf import settings
 from django.core.signing import BadSignature
 from django.utils import timezone
@@ -60,8 +58,8 @@ def is_active_superuser(request):
     return su.is_active
 
 
-class Superuser(object):
-    allowed_ips = [ipaddress.ip_network(six.text_type(v), strict=False) for v in ALLOWED_IPS]
+class Superuser:
+    allowed_ips = [ipaddress.ip_network(str(v), strict=False) for v in ALLOWED_IPS]
 
     org_id = ORG_ID
 
@@ -69,7 +67,7 @@ class Superuser(object):
         self.request = request
         if allowed_ips is not UNSET:
             self.allowed_ips = frozenset(
-                ipaddress.ip_network(six.text_type(v), strict=False) for v in allowed_ips or ()
+                ipaddress.ip_network(str(v), strict=False) for v in allowed_ips or ()
             )
         if org_id is not UNSET:
             self.org_id = org_id
@@ -78,13 +76,13 @@ class Superuser(object):
     @property
     def is_active(self):
         # if we've been logged out
-        if not self.request.user.is_authenticated():
+        if not self.request.user.is_authenticated:
             return False
         # if superuser status was changed
         if not self.request.user.is_superuser:
             return False
         # if the user has changed
-        if six.text_type(self.request.user.id) != self.uid:
+        if str(self.request.user.id) != self.uid:
             return False
         return self._is_active
 
@@ -100,7 +98,7 @@ class Superuser(object):
         # if there's no IPs configured, we allow assume its the same as *
         if not allowed_ips:
             return True, None
-        ip = ipaddress.ip_address(six.text_type(self.request.META["REMOTE_ADDR"]))
+        ip = ipaddress.ip_address(str(self.request.META["REMOTE_ADDR"]))
         if not any(ip in addr for addr in allowed_ips):
             return False, "invalid-ip"
         return True, None
@@ -125,13 +123,13 @@ class Superuser(object):
 
         if not cookie_token:
             if data:
-                logger.warn(
+                logger.warning(
                     "superuser.missing-cookie-token",
                     extra={"ip_address": request.META["REMOTE_ADDR"], "user_id": request.user.id},
                 )
             return False
         elif not data:
-            logger.warn(
+            logger.warning(
                 "superuser.missing-session-data",
                 extra={"ip_address": request.META["REMOTE_ADDR"], "user_id": request.user.id},
             )
@@ -139,21 +137,21 @@ class Superuser(object):
 
         session_token = data.get("tok")
         if not session_token:
-            logger.warn(
+            logger.warning(
                 "superuser.missing-session-token",
                 extra={"ip_address": request.META["REMOTE_ADDR"], "user_id": request.user.id},
             )
             return
 
         if not constant_time_compare(cookie_token, session_token):
-            logger.warn(
+            logger.warning(
                 "superuser.invalid-token",
                 extra={"ip_address": request.META["REMOTE_ADDR"], "user_id": request.user.id},
             )
             return
 
-        if data["uid"] != six.text_type(request.user.id):
-            logger.warn(
+        if data["uid"] != str(request.user.id):
+            logger.warning(
                 "superuser.invalid-uid",
                 extra={
                     "ip_address": request.META["REMOTE_ADDR"],
@@ -169,7 +167,7 @@ class Superuser(object):
         try:
             data["idl"] = datetime.utcfromtimestamp(float(data["idl"])).replace(tzinfo=timezone.utc)
         except (TypeError, ValueError):
-            logger.warn(
+            logger.warning(
                 "superuser.invalid-idle-expiration",
                 extra={"ip_address": request.META["REMOTE_ADDR"], "user_id": request.user.id},
                 exc_info=True,
@@ -186,7 +184,7 @@ class Superuser(object):
         try:
             data["exp"] = datetime.utcfromtimestamp(float(data["exp"])).replace(tzinfo=timezone.utc)
         except (TypeError, ValueError):
-            logger.warn(
+            logger.warning(
                 "superuser.invalid-expiration",
                 extra={"ip_address": request.META["REMOTE_ADDR"], "user_id": request.user.id},
                 exc_info=True,
@@ -222,15 +220,15 @@ class Superuser(object):
 
             if not self.is_active:
                 if self._inactive_reason:
-                    logger.warn(
-                        u"superuser.{}".format(self._inactive_reason),
+                    logger.warning(
+                        f"superuser.{self._inactive_reason}",
                         extra={
                             "ip_address": request.META["REMOTE_ADDR"],
                             "user_id": request.user.id,
                         },
                     )
                 else:
-                    logger.warn(
+                    logger.warning(
                         "superuser.inactive-unknown-reason",
                         extra={
                             "ip_address": request.META["REMOTE_ADDR"],
@@ -246,7 +244,7 @@ class Superuser(object):
         if current_datetime is None:
             current_datetime = timezone.now()
         self.token = token
-        self.uid = six.text_type(user.id)
+        self.uid = str(user.id)
         # the absolute maximum age of this session
         self.expires = expires
         # do we have a valid superuser session?
@@ -257,7 +255,7 @@ class Superuser(object):
             "exp": self.expires.strftime("%s"),
             "idl": (current_datetime + IDLE_MAX_AGE).strftime("%s"),
             "tok": self.token,
-            # XXX(dcramer): do we really need the uid safety m echanism
+            # XXX(dcramer): do we really need the uid safety mechanism
             "uid": self.uid,
         }
 

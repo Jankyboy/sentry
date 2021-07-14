@@ -1,21 +1,19 @@
-import React from 'react';
+import {mountWithTheme} from 'sentry-test/enzyme';
 
-import {mount} from 'sentry-test/enzyme';
-
+import SettingsBreadcrumbStore from 'app/stores/settingsBreadcrumbStore';
+import SettingsBreadcrumb from 'app/views/settings/components/settingsBreadcrumb';
 import BreadcrumbTitle from 'app/views/settings/components/settingsBreadcrumb/breadcrumbTitle';
 import Crumb from 'app/views/settings/components/settingsBreadcrumb/crumb';
-import SettingsBreadcrumb from 'app/views/settings/components/settingsBreadcrumb';
-import SettingsBreadcrumbStore from 'app/stores/settingsBreadcrumbStore';
 
-describe('BreadcrumbTitle', function() {
+describe('BreadcrumbTitle', function () {
   const routes = [
     {name: 'One', path: '/one/'},
     {name: 'Two', path: '/two/'},
     {name: 'Three', path: '/three/'},
   ];
 
-  it('renders', async function() {
-    const wrapper = mount(
+  it('renders', async function () {
+    const wrapper = mountWithTheme(
       <div>
         <SettingsBreadcrumb routes={routes} />;
         <BreadcrumbTitle routes={routes} title="Last Title" />
@@ -24,18 +22,13 @@ describe('BreadcrumbTitle', function() {
 
     await tick();
     wrapper.update();
-    expect(
-      wrapper
-        .find(Crumb)
-        .last()
-        .text()
-    ).toEqual('Last Title ');
+    expect(wrapper.find(Crumb).last().text()).toEqual('Last Title ');
   });
 
-  it('cleans up routes', async function() {
+  it('cleans up routes', async function () {
     const upOneRoutes = routes.slice(0, -1);
-    const breadcrumbs = mount(<SettingsBreadcrumb routes={routes} />);
-    mount(
+    const breadcrumbs = mountWithTheme(<SettingsBreadcrumb routes={routes} />);
+    mountWithTheme(
       <div>
         <BreadcrumbTitle routes={upOneRoutes} title="Second Title" />
         <BreadcrumbTitle routes={routes} title="Last Title" />
