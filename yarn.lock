@@ -4455,10 +4455,10 @@
   resolved "https://registry.yarnpkg.com/@types/scheduler/-/scheduler-0.16.2.tgz#1a62f89525723dde24ba1b01b092bf5df8ad4d39"
   integrity sha512-hppQEBDmlwhFAXKJX2KnWLYu5yMfi91yazPb2l+lbJiwW+wdo1gNeRA+3RgNSO39WYX2euey41KEwnqesU2Jew==
 
-"@types/scroll-to-element@^2.0.1":
-  version "2.0.1"
-  resolved "https://registry.yarnpkg.com/@types/scroll-to-element/-/scroll-to-element-2.0.1.tgz#3e92b1063777bf285e4cedd6eb9e8faf4736f97f"
-  integrity sha512-zRwZyfMlHVjnhZzJD5y+yL8wcph6fE/ZqXpa4r96jR+BS0hDIjmsZmSCgoYEIxepSyvcCUJdFq8pPhInOGarFA==
+"@types/scroll-to-element@^2.0.5":
+  version "2.0.5"
+  resolved "https://registry.yarnpkg.com/@types/scroll-to-element/-/scroll-to-element-2.0.5.tgz#026ce24a9990382cf44adfdc35ae4f9fdc24d03a"
+  integrity sha512-vMFM0h7dCW/dgz2Xy2OaKoAqwBn30yTxxGNY82ZwvshfZcKYHpu9IZYCvQjqo3XBkodmLvCS+lCNDtZefMEtcg==
 
 "@types/serve-static@*":
   version "1.13.10"
