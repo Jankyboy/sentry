@@ -1,11 +1,16 @@
-import type {Theme} from '@emotion/react';
+import {type Theme, useTheme} from '@emotion/react';
+import styled, {
+  type CreateStyledComponent,
+  type FilteringStyledOptions,
+} from '@emotion/styled';
+import type {StyledOptions} from '@emotion/styled/dist/declarations/src/types';
 import color from 'color';
 
 import commonTheme, {
   type ColorMapping,
   darkTheme,
+  type FormTheme,
   generateAlertTheme,
-  generateBadgeTheme,
   generateButtonTheme,
   generateLevelTheme,
   generateTagTheme,
@@ -14,92 +19,116 @@ import commonTheme, {
   lightTheme,
 } from 'sentry/utils/theme';
 
+const formTheme: FormTheme = {
+  /**
+   * Common styles for form inputs & buttons, separated by size.
+   * Should be used to ensure consistent sizing among form elements.
+   */
+  form: {
+    md: {
+      height: 32,
+      minHeight: 32,
+      fontSize: '0.875rem',
+      lineHeight: '1rem',
+    },
+    sm: {
+      height: 28,
+      minHeight: 28,
+      fontSize: '0.875rem',
+      lineHeight: '1rem',
+    },
+    xs: {
+      height: 24,
+      minHeight: 24,
+      fontSize: '0.75rem',
+      lineHeight: '0.875rem',
+    },
+  },
+
+  /**
+   * Padding for form inputs
+   * @TODO(jonasbadalic) This should exist on form component
+   */
+  formPadding: {
+    md: {
+      paddingLeft: 12,
+      paddingRight: 12,
+      paddingTop: 8,
+      paddingBottom: 8,
+    },
+    sm: {
+      paddingLeft: 8,
+      paddingRight: 8,
+      paddingTop: 6,
+      paddingBottom: 6,
+    },
+    xs: {
+      paddingLeft: 6,
+      paddingRight: 6,
+      paddingTop: 4,
+      paddingBottom: 4,
+    },
+  },
+  formRadius: {
+    md: {
+      borderRadius: '6px',
+    },
+    sm: {
+      borderRadius: '5px',
+    },
+    xs: {
+      borderRadius: '4px',
+    },
+  },
+};
+
 // @TODO(jonasbadalic): eventually, we should port component usage to these values
 function generateChonkTokens(colorScheme: typeof lightColors) {
   return {
-    static: {
-      text: {
-        primary: colorScheme.dynamic.grayTransparent500,
-        secondary: colorScheme.dynamic.grayTransparent400,
-        accent: colorScheme.dynamic.blurple400,
-        success: colorScheme.dynamic.green400,
-        warning: colorScheme.dynamic.yellow400,
-        danger: colorScheme.dynamic.red400,
-      },
-      graphic: {
-        icon: {
-          primary: colorScheme.dynamic.grayTransparent500,
-          secondary: colorScheme.dynamic.grayTransparent400,
-          tertiary: colorScheme.dynamic.grayTransparent300,
-          quaternary: colorScheme.dynamic.grayTransparent200,
-          accent: colorScheme.static.blurple400,
-          success: colorScheme.static.green100,
-          warning: colorScheme.static.yellow100,
-          danger: colorScheme.static.red400,
-        },
-        chart: {
-          annotation: {
-            axisLabel: colorScheme.dynamic.grayOpaque400,
-          },
-          canvas: {
-            lineGrid: colorScheme.dynamic.grayOpaque100,
-          },
-        },
-      },
-      background: {
-        primary: colorScheme.dynamic.surface400,
-        secondary: colorScheme.dynamic.surface300,
-        tertiary: colorScheme.dynamic.surface200,
-      },
-      border: {
-        primary: colorScheme.dynamic.surface100,
-        secondary: colorScheme.dynamic.surface200,
-      },
+    content: {
+      primary: colorScheme.dynamic.grayTransparent500,
+      secondary: colorScheme.dynamic.grayTransparent400,
+      accent: colorScheme.dynamic.blue400,
+      success: colorScheme.dynamic.green400,
+      warning: colorScheme.dynamic.yellow400,
+      danger: colorScheme.dynamic.red400,
     },
-    interactive: {
-      outline: {
-        default: {
-          color: colorScheme.static.blurple400,
-        },
-        danger: {
-          color: colorScheme.static.red400,
-        },
-      },
-      link: {
-        accent: {
-          color: {
-            default: colorScheme.dynamic.blurple400,
-            hover: colorScheme.dynamic.blurple400,
-            active: colorScheme.dynamic.blurple400,
-          },
-        },
-      },
+    background: {
+      primary: colorScheme.dynamic.surface500,
+      secondary: colorScheme.dynamic.surface400,
+      tertiary: colorScheme.dynamic.surface300,
+    },
+    border: {
+      primary: colorScheme.dynamic.surface100,
+      secondary: colorScheme.dynamic.surface200,
+    },
+    component: {
       button: {
         default: {
           chonk: colorScheme.dynamic.surface100,
           children: colorScheme.dynamic.grayTransparent500,
           background: {
-            default: colorScheme.dynamic.surface400,
-            hover: colorScheme.dynamic.surface300,
-            active: colorScheme.dynamic.surface200,
+            default: colorScheme.dynamic.surface500,
+            hover: colorScheme.dynamic.surface400,
+            active: colorScheme.dynamic.surface300,
           },
         },
         transparent: {
           chonk: colorScheme.dynamic.surface100,
           children: colorScheme.dynamic.grayTransparent500,
           background: {
-            default: colorScheme.dynamic.surface400,
-            hover: colorScheme.dynamic.surface300,
-            active: colorScheme.dynamic.surface200,
+            default: colorScheme.dynamic.surface500,
+            hover: colorScheme.dynamic.surface400,
+            active: colorScheme.dynamic.surface300,
           },
         },
         accent: {
-          chonk: colorScheme.dynamic.blurple100,
+          chonk: colorScheme.dynamic.blue100,
           children: colorScheme.static.white,
           background: {
-            default: colorScheme.static.blurple400,
-            hover: colorScheme.static.blurple300,
-            active: colorScheme.static.blurple200,
+            default: colorScheme.static.blue400,
+            hover: colorScheme.static.blue300,
+            active: colorScheme.static.blue200,
           },
         },
         warning: {
@@ -121,6 +150,29 @@ function generateChonkTokens(colorScheme: typeof lightColors) {
           },
         },
       },
+      chart: {
+        annotation: {
+          axisLabel: colorScheme.dynamic.grayOpaque400,
+        },
+        canvas: {
+          lineGrid: colorScheme.dynamic.grayOpaque100,
+        },
+      },
+      link: {
+        accent: {
+          color: {
+            default: colorScheme.dynamic.blue400,
+            hover: colorScheme.dynamic.blue400,
+            active: colorScheme.dynamic.blue400,
+          },
+        },
+      },
+      util: {
+        outline: {
+          accent: colorScheme.static.blue400,
+          danger: colorScheme.static.red400,
+        },
+      },
     },
   };
 }
@@ -135,17 +187,15 @@ const space = {
   xl: '16px',
 } as const;
 
-//   borderRadius: {
-//     // @TODO(jonasbadalic): none doesn't need to exist
-//     // none: 0,
-//     nano: 1,
-//     micro: 2,
-//     mini: 3,
-//     small: 4,
-//     medium: 5,
-//     large: 6,
-//   },
-// };
+const radius = {
+  nano: '1px',
+  micro: '2px',
+  mini: '3px',
+  sm: '4px',
+  md: '5px',
+  lg: '6px',
+  // @TODO(jonasbadalic): do we need an xl?
+} as const;
 
 const lightColors = {
   // @TODO(jonasbadalic): add explanation about static and dynamic color differences and intended usage
@@ -153,10 +203,10 @@ const lightColors = {
     black: '#181423',
     white: '#F6F5FA',
 
-    blurple400: '#7553FF',
-    blurple300: '#6C4DEB',
-    blurple200: '#6246D4',
-    blurple100: '#553DB8',
+    blue400: '#7553FF',
+    blue300: '#6C4DEB',
+    blue200: '#6246D4',
+    blue100: '#553DB8',
 
     pink400: '#FF70BC',
     pink300: '#ED69AF',
@@ -180,10 +230,11 @@ const lightColors = {
   },
 
   dynamic: {
-    surface400: '#FFFFFF',
-    surface300: '#FDFCFF',
-    surface200: '#ECEBF0',
-    surface100: '#E2E1E5',
+    surface500: '#FFFFFF',
+    surface400: '#FDFCFF',
+    surface300: '#F9F7FC',
+    surface200: '#ECEBF0', // Currently used for borderSecondary
+    surface100: '#E2E1E5', // Currently used for button chonk & borderPrimary
 
     // @TODO(jonasbadalic): Why does gray opaque have 500?
     grayOpaque500: '#181423',
@@ -198,10 +249,10 @@ const lightColors = {
     grayTransparent200: 'rgba(24, 20, 35, 0.14)',
     grayTransparent100: 'rgba(24, 20, 35, 0.05)',
 
-    blurple400: '#6C4DEB',
-    blurple300: '#5E42CC',
-    blurple200: '#523AB2',
-    blurple100: '#553DB8',
+    blue400: '#6C4DEB',
+    blue300: '#5E42CC',
+    blue200: '#523AB2',
+    blue100: '#553DB8',
 
     pink400: '#BD337C',
     pink300: '#A32C6C',
@@ -230,10 +281,10 @@ const darkColors: typeof lightColors = {
     black: '#181423',
     white: '#F6F5FA',
 
-    blurple400: '#7553FF',
-    blurple300: '#6C4DEB',
-    blurple200: '#6246D4',
-    blurple100: '#553DB8',
+    blue400: '#7553FF',
+    blue300: '#6C4DEB',
+    blue200: '#6246D4',
+    blue100: '#553DB8',
 
     pink400: '#FF70BC',
     pink300: '#ED69AF',
@@ -257,10 +308,11 @@ const darkColors: typeof lightColors = {
   },
 
   dynamic: {
-    surface400: '#292536',
-    surface300: '#252130',
-    surface200: '#191721',
-    surface100: '#0B0A0F',
+    surface500: '#292536',
+    surface400: '#252130',
+    surface300: '#211E2B',
+    surface200: '#191721', // Currently used for borderSecondary
+    surface100: '#0B0A0F', // Currently used for button chonk & borderPrimary
 
     // @TODO(jonasbadalic): why 500 range?
     grayOpaque500: '#F6F5FA',
@@ -276,10 +328,10 @@ const darkColors: typeof lightColors = {
     grayTransparent200: 'rgba(246, 245, 250, 0.18)',
     grayTransparent100: 'rgba(246, 245, 250, 0.10)',
 
-    blurple400: '#A791FF',
-    blurple300: '#B7A6FF',
-    blurple200: '#C6B8FF',
-    blurple100: '#07050F',
+    blue400: '#A791FF',
+    blue300: '#B7A6FF',
+    blue200: '#C6B8FF',
+    blue100: '#07050F',
 
     pink400: '#FF70BC',
     pink300: '#FF82C4',
@@ -371,90 +423,90 @@ const generateAliases = (
   /**
    * Heading text color
    */
-  headingColor: tokens.static.text.primary,
+  headingColor: tokens.content.primary,
 
   /**
    * Primary text color
    */
-  textColor: tokens.static.text.primary,
+  textColor: tokens.content.primary,
 
   /**
    * Text that should not have as much emphasis
    */
-  subText: tokens.static.text.secondary,
+  subText: tokens.content.secondary,
 
   /**
    * Background for the main content area of a page?
    */
-  bodyBackground: tokens.static.background.secondary,
+  bodyBackground: tokens.background.secondary,
 
   /**
    * Primary background color
    */
-  background: tokens.static.background.primary,
+  background: tokens.background.primary,
 
   /**
    * Elevated background color
    */
-  backgroundElevated: tokens.static.background.primary,
+  backgroundElevated: tokens.background.primary,
 
   /**
    * Secondary background color used as a slight contrast against primary background
    */
-  backgroundSecondary: tokens.static.background.secondary,
+  backgroundSecondary: tokens.background.secondary,
 
   /**
    * Tertiary background color used as a stronger contrast against primary background
    */
-  backgroundTertiary: tokens.static.background.tertiary,
+  backgroundTertiary: tokens.background.tertiary,
 
   /**
    * Background for the header of a page
    */
-  headerBackground: tokens.static.background.primary,
+  headerBackground: tokens.background.primary,
 
   /**
    * Primary border color
    */
-  border: tokens.static.border.primary,
-  translucentBorder: tokens.static.border.primary,
+  border: tokens.border.primary,
+  translucentBorder: tokens.border.primary,
 
   /**
    * Inner borders, e.g. borders inside of a grid
    */
-  innerBorder: tokens.static.border.secondary,
-  translucentInnerBorder: tokens.static.border.secondary,
+  innerBorder: tokens.border.secondary,
+  translucentInnerBorder: tokens.border.secondary,
 
   /**
    * A color that denotes a "success", or something good
    */
-  success: tokens.static.graphic.icon.success,
-  successText: tokens.static.text.success,
+  success: tokens.content.success,
+  successText: tokens.content.success,
   // @TODO(jonasbadalic): should this reference a static color?
   successFocus: colors.static.green200, // Not being used
 
   /**
    * A color that denotes an error, or something that is wrong
    */
-  error: tokens.static.graphic.icon.danger,
-  errorText: tokens.static.text.danger,
-  errorFocus: tokens.interactive.outline.danger.color,
+  error: tokens.content.danger,
+  errorText: tokens.content.danger,
+  errorFocus: tokens.component.util.outline.danger,
 
   /**
    * A color that denotes danger, for dangerous actions like deletion
    */
-  danger: tokens.static.graphic.icon.danger,
-  dangerText: tokens.static.text.danger,
+  danger: tokens.content.danger,
+  dangerText: tokens.content.danger,
   // @TODO(jonasbadalic): should this reference a static color?
-  dangerFocus: colors.static.red200, // Not being used
+  dangerFocus: tokens.component.util.outline.danger, // Not being used
 
   /**
    * A color that denotes a warning
    */
-  warning: tokens.static.graphic.icon.warning,
-  warningText: tokens.static.text.warning,
+  warning: tokens.content.warning,
+  warningText: tokens.content.warning,
   // @TODO(jonasbadalic): should this reference a static color?
-  warningFocus: colors.static.yellow200, // Not being used
+  warningFocus: colors.dynamic.yellow200, // Not being used
 
   /**
    * A color that indicates something is disabled where user can not interact or use
@@ -469,22 +521,22 @@ const generateAliases = (
    * interaction (hover/press) states.
    * @deprecated
    */
-  hover: tokens.interactive.button.default.background.hover,
+  hover: tokens.component.button.default.background.hover,
 
   /**
    * Indicates that something is "active" or "selected"
    * NOTE: These are largely used for form elements, which I haven't mocked in ChonkUI
    */
-  active: colors.static.blurple200,
-  activeHover: colors.static.blurple300,
-  activeText: colors.static.blurple400,
+  active: colors.static.blue200,
+  activeHover: colors.static.blue300,
+  activeText: colors.static.blue400,
 
   /**
    * Indicates that something has "focus", which is different than "active" state as it is more temporal
    * and should be a bit subtler than active
    */
-  focus: tokens.interactive.outline.default.color,
-  focusBorder: tokens.interactive.outline.default.color,
+  focus: tokens.component.util.outline.accent,
+  focusBorder: tokens.component.util.outline.accent,
 
   /**
    * Inactive
@@ -495,10 +547,10 @@ const generateAliases = (
   /**
    * Link color indicates that something is clickable
    */
-  linkColor: tokens.interactive.link.accent.color.default,
-  linkHoverColor: tokens.interactive.link.accent.color.hover,
-  linkUnderline: tokens.interactive.link.accent.color.default,
-  linkFocus: tokens.interactive.outline.default.color,
+  linkColor: tokens.component.link.accent.color.default,
+  linkHoverColor: tokens.component.link.accent.color.hover,
+  linkUnderline: tokens.component.link.accent.color.default,
+  linkFocus: tokens.component.util.outline.accent,
 
   /**
    * Form placeholder text color
@@ -513,18 +565,18 @@ const generateAliases = (
   /**
    *
    */
-  rowBackground: tokens.static.background.primary,
+  rowBackground: tokens.background.primary,
 
   /**
    * Color of lines that flow across the background of the chart to indicate axes levels
    * (This should only be used for yAxis)
    */
-  chartLineColor: tokens.static.graphic.chart.annotation.axisLabel,
+  chartLineColor: tokens.component.chart.annotation.axisLabel,
 
   /**
    * Color for chart label text
    */
-  chartLabel: tokens.static.graphic.chart.canvas.lineGrid,
+  chartLabel: tokens.component.chart.canvas.lineGrid,
 
   /**
    * Color for the 'others' series in topEvent charts
@@ -534,7 +586,7 @@ const generateAliases = (
   /**
    * Default Progressbar color
    */
-  progressBar: colors.static.blurple400,
+  progressBar: colors.static.blue400,
 
   /**
    * Default Progressbar color
@@ -549,13 +601,13 @@ const generateAliases = (
   /**
    * Tag progress bars
    */
-  tagBarHover: colors.static.blurple300,
+  tagBarHover: colors.static.blue300,
   tagBar: colors.dynamic.grayTransparent200,
 
   // @todo(jonasbadalic) should these reference static colors?
   searchTokenBackground: {
-    valid: colors.static.blurple100,
-    validActive: color(colors.static.blurple100).opaquer(1.0).string(),
+    valid: colors.static.blue100,
+    validActive: color(colors.static.blue100).opaquer(1.0).string(),
     invalid: colors.static.red100,
     invalidActive: color(colors.static.red100).opaquer(0.8).string(),
     warning: colors.static.yellow100,
@@ -567,8 +619,8 @@ const generateAliases = (
    * NOTE: Not being used anymore in the new Search UI
    */
   searchTokenBorder: {
-    valid: colors.static.blurple200,
-    validActive: color(colors.static.blurple200).opaquer(1).string(),
+    valid: colors.static.blue200,
+    validActive: color(colors.static.blue200).opaquer(1).string(),
     invalid: colors.static.red200,
     invalidActive: color(colors.static.red200).opaquer(1).string(),
     warning: colors.static.yellow200,
@@ -583,7 +635,7 @@ const generateAliases = (
   /**
    * Count on button
    */
-  buttonCount: tokens.static.text.primary,
+  buttonCount: tokens.content.primary,
 
   /**
    * Background of alert banners at the top
@@ -600,10 +652,10 @@ const chonkLightColorMapping: ColorMapping = {
   lightModeBlack: lightColors.static.black,
   lightModeWhite: lightColors.static.white,
 
-  surface100: lightColors.dynamic.surface100,
-  surface200: lightColors.dynamic.surface200,
-  surface300: lightColors.dynamic.surface300,
-  surface400: lightColors.dynamic.surface400,
+  surface100: lightColors.dynamic.surface200,
+  surface200: lightColors.dynamic.surface300,
+  surface300: lightColors.dynamic.surface400,
+  surface400: lightColors.dynamic.surface500,
 
   translucentSurface100: lightColors.dynamic.surface100,
   translucentSurface200: lightColors.dynamic.surface200,
@@ -619,15 +671,15 @@ const chonkLightColorMapping: ColorMapping = {
   translucentGray200: lightColors.dynamic.grayTransparent200,
   translucentGray100: lightColors.dynamic.grayTransparent100,
 
-  purple400: lightColors.dynamic.blurple400,
-  purple300: lightColors.dynamic.blurple300,
-  purple200: lightColors.dynamic.blurple200,
-  purple100: lightColors.dynamic.blurple100,
+  purple400: lightColors.dynamic.blue400,
+  purple300: lightColors.dynamic.blue300,
+  purple200: lightColors.dynamic.blue200,
+  purple100: lightColors.dynamic.blue100,
 
-  blue400: lightColors.dynamic.blurple400,
-  blue300: lightColors.dynamic.blurple300,
-  blue200: lightColors.dynamic.blurple200,
-  blue100: lightColors.dynamic.blurple100,
+  blue400: lightColors.dynamic.blue400,
+  blue300: lightColors.dynamic.blue300,
+  blue200: lightColors.dynamic.blue200,
+  blue100: lightColors.dynamic.blue100,
 
   green400: lightColors.dynamic.green400,
   green300: lightColors.dynamic.green300,
@@ -658,10 +710,10 @@ const chonkDarkColorMapping: ColorMapping = {
   lightModeBlack: darkColors.static.black,
   lightModeWhite: darkColors.static.white,
 
-  surface100: darkColors.dynamic.surface100,
-  surface200: darkColors.dynamic.surface200,
-  surface300: darkColors.dynamic.surface300,
-  surface400: darkColors.dynamic.surface400,
+  surface100: darkColors.dynamic.surface200,
+  surface200: darkColors.dynamic.surface300,
+  surface300: darkColors.dynamic.surface400,
+  surface400: darkColors.dynamic.surface500,
 
   translucentSurface100: darkColors.dynamic.surface100,
   translucentSurface200: darkColors.dynamic.surface200,
@@ -677,15 +729,15 @@ const chonkDarkColorMapping: ColorMapping = {
   translucentGray200: darkColors.dynamic.grayTransparent200,
   translucentGray100: darkColors.dynamic.grayTransparent100,
 
-  purple400: darkColors.dynamic.blurple400,
-  purple300: darkColors.dynamic.blurple300,
-  purple200: darkColors.dynamic.blurple200,
-  purple100: darkColors.dynamic.blurple100,
+  purple400: darkColors.dynamic.blue400,
+  purple300: darkColors.dynamic.blue300,
+  purple200: darkColors.dynamic.blue200,
+  purple100: darkColors.dynamic.blue100,
 
-  blue400: darkColors.dynamic.blurple400,
-  blue300: darkColors.dynamic.blurple300,
-  blue200: darkColors.dynamic.blurple200,
-  blue100: darkColors.dynamic.blurple100,
+  blue400: darkColors.dynamic.blue400,
+  blue300: darkColors.dynamic.blue300,
+  blue200: darkColors.dynamic.blue200,
+  blue100: darkColors.dynamic.blue100,
 
   green400: darkColors.dynamic.green400,
   green300: darkColors.dynamic.green300,
@@ -712,9 +764,14 @@ const chonkDarkColorMapping: ColorMapping = {
 const lightAliases = generateAliases(generateChonkTokens(lightColors), lightColors);
 const darkAliases = generateAliases(generateChonkTokens(darkColors), darkColors);
 
-interface ChonkTheme extends Omit<Theme, 'isChonk'> {
-  colors: {dark: typeof lightColors; light: typeof lightColors};
+interface ChonkTheme extends Omit<typeof lightTheme, 'isChonk'> {
+  colors: typeof lightColors & {
+    background: ReturnType<typeof generateChonkTokens>['background'];
+    border: ReturnType<typeof generateChonkTokens>['border'];
+    content: ReturnType<typeof generateChonkTokens>['content'];
+  };
   isChonk: true;
+  radius: typeof radius;
   space: typeof space;
 }
 
@@ -723,6 +780,7 @@ export const DO_NOT_USE_lightChonkTheme: ChonkTheme = {
 
   // @TODO: color theme contains some colors (like chart color palette, diff, tag and level)
   ...commonTheme,
+  ...formTheme,
   ...chonkLightColorMapping,
   ...lightAliases,
   ...lightShadows,
@@ -733,11 +791,10 @@ export const DO_NOT_USE_lightChonkTheme: ChonkTheme = {
   },
 
   space,
-
+  radius,
   // @TODO: these colors need to be ported
   ...generateThemeUtils(chonkLightColorMapping, lightAliases),
   alert: generateAlertTheme(chonkLightColorMapping, lightAliases),
-  badge: generateBadgeTheme(chonkLightColorMapping),
   button: generateButtonTheme(chonkLightColorMapping, lightAliases),
   tag: generateTagTheme(chonkLightColorMapping),
   level: generateLevelTheme(chonkLightColorMapping),
@@ -755,8 +812,10 @@ export const DO_NOT_USE_lightChonkTheme: ChonkTheme = {
   stacktraceActiveText: lightTheme.stacktraceActiveText,
 
   colors: {
-    light: lightColors,
-    dark: darkColors,
+    ...lightColors,
+    content: generateChonkTokens(lightColors).content,
+    background: generateChonkTokens(lightColors).background,
+    border: generateChonkTokens(lightColors).border,
   },
 
   sidebar: {
@@ -770,6 +829,7 @@ export const DO_NOT_USE_darkChonkTheme: ChonkTheme = {
 
   // @TODO: color theme contains some colors (like chart color palette, diff, tag and level)
   ...commonTheme,
+  ...formTheme,
   ...chonkDarkColorMapping,
   ...darkAliases,
   ...darkShadows,
@@ -782,7 +842,6 @@ export const DO_NOT_USE_darkChonkTheme: ChonkTheme = {
   // @TODO: these colors need to be ported
   ...generateThemeUtils(chonkDarkColorMapping, darkAliases),
   alert: generateAlertTheme(chonkDarkColorMapping, darkAliases),
-  badge: generateBadgeTheme(chonkDarkColorMapping),
   button: generateButtonTheme(chonkDarkColorMapping, darkAliases),
   tag: generateTagTheme(chonkDarkColorMapping),
   level: generateLevelTheme(chonkDarkColorMapping),
@@ -797,12 +856,14 @@ export const DO_NOT_USE_darkChonkTheme: ChonkTheme = {
   stacktraceActiveText: darkTheme.stacktraceActiveText,
 
   colors: {
-    light: lightColors,
-    dark: darkColors,
+    ...darkColors,
+    content: generateChonkTokens(darkColors).content,
+    background: generateChonkTokens(darkColors).background,
+    border: generateChonkTokens(darkColors).border,
   },
 
   space,
-
+  radius,
   sidebar: {
     // @TODO: these colors need to be ported
     ...darkTheme.sidebar,
@@ -822,5 +883,121 @@ declare module '@emotion/react' {
   type SentryTheme = typeof lightTheme;
   export interface Theme extends SentryTheme {
     isChonk: boolean;
+  }
+}
+
+/**
+ * Chonk utilities and overrrides to assert correct theme type
+ * inside chonk components without having to check for theme.isChonk everywhere
+ */
+// eslint-disable-next-line @typescript-eslint/naming-convention
+interface DO_NOT_USE_ChonkTheme extends ChonkTheme {
+  isChonk: true;
+}
+
+// Emotion has no override available for styled, so we create our own,
+// which allows us to use chonkStyled and access the chonk theme and write
+// our components with a future type API.
+interface ChonkCreateStyled {
+  <
+    C extends React.ComponentClass<React.ComponentProps<C>>,
+    ForwardedProps extends keyof React.ComponentProps<C> &
+      string = keyof React.ComponentProps<C> & string,
+  >(
+    component: C,
+    options: FilteringStyledOptions<React.ComponentProps<C>, ForwardedProps>
+  ): CreateStyledComponent<
+    Pick<React.ComponentProps<C>, ForwardedProps> & {
+      theme?: DO_NOT_USE_ChonkTheme;
+    },
+    Record<string, unknown>,
+    {
+      ref?: React.Ref<InstanceType<C>>;
+    }
+  >;
+  <C extends React.ComponentClass<React.ComponentProps<C>>>(
+    component: C,
+    options?: StyledOptions<React.ComponentProps<C>>
+  ): CreateStyledComponent<
+    React.ComponentProps<C> & {
+      theme?: DO_NOT_USE_ChonkTheme;
+    },
+    Record<string, unknown>,
+    {
+      ref?: React.Ref<InstanceType<C>>;
+    }
+  >;
+  <
+    C extends React.ComponentType<React.ComponentProps<C>>,
+    ForwardedProps extends keyof React.ComponentProps<C> &
+      string = keyof React.ComponentProps<C> & string,
+  >(
+    component: C,
+    options: FilteringStyledOptions<React.ComponentProps<C>, ForwardedProps>
+  ): CreateStyledComponent<
+    Pick<React.ComponentProps<C>, ForwardedProps> & {
+      theme?: DO_NOT_USE_ChonkTheme;
+    }
+  >;
+  <C extends React.ComponentType<React.ComponentProps<C>>>(
+    component: C,
+    options?: StyledOptions<React.ComponentProps<C>>
+  ): CreateStyledComponent<
+    React.ComponentProps<C> & {
+      theme?: DO_NOT_USE_ChonkTheme;
+    }
+  >;
+  <
+    Tag extends keyof React.JSX.IntrinsicElements,
+    ForwardedProps extends keyof React.JSX.IntrinsicElements[Tag] &
+      string = keyof React.JSX.IntrinsicElements[Tag] & string,
+  >(
+    tag: Tag,
+    options: FilteringStyledOptions<React.JSX.IntrinsicElements[Tag], ForwardedProps>
+  ): CreateStyledComponent<
+    {
+      as?: React.ElementType;
+      theme?: DO_NOT_USE_ChonkTheme;
+    },
+    Pick<React.JSX.IntrinsicElements[Tag], ForwardedProps>
+  >;
+  <Tag extends keyof React.JSX.IntrinsicElements>(
+    tag: Tag,
+    options?: StyledOptions<React.JSX.IntrinsicElements[Tag]>
+  ): CreateStyledComponent<
+    {
+      as?: React.ElementType;
+      theme?: DO_NOT_USE_ChonkTheme;
+    },
+    React.JSX.IntrinsicElements[Tag]
+  >;
+}
+
+type ChonkStyled = {
+  [Tag in keyof React.JSX.IntrinsicElements]: CreateStyledComponent<
+    {
+      as?: React.ElementType;
+      theme?: DO_NOT_USE_ChonkTheme;
+    },
+    React.JSX.IntrinsicElements[Tag]
+  >;
+};
+
+// Emotion has no override available for styled, so we create our own,
+// which allows us to use chonkStyled and access the chonk theme and write
+// our components with a future type API.
+interface ChonkStyle extends ChonkCreateStyled, ChonkStyled {}
+export const chonkStyled = styled as ChonkStyle;
+
+export function useChonkTheme(): ChonkTheme {
+  const theme = useTheme() as Theme | ChonkTheme;
+
+  assertChonkTheme(theme);
+  return theme;
+}
+
+function assertChonkTheme(theme: Theme): asserts theme is ChonkTheme {
+  if (!theme.isChonk) {
+    throw new Error('A chonk component may only be called inside a chonk theme context');
   }
 }
